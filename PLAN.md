@@ -14,7 +14,7 @@ Linux-Kernel + eigenes, minimales Userland (Buildroot). Kein GUI, Zugang nur per
 
 ## Phasen
 
-### Phase 0 – Boot → SSH  *(fertig, 2026-10-25)*
+### Phase 0 – Boot → SSH  *(abgeschlossen, 2026-10-25)*
 - Buildroot 2026.02.3 LTS, x86_64, musl, busybox, dropbear, Kernel 6.18.7
 - Login nur per SSH-Key (`~/.ssh/aios_ed25519`), Passwort-Login über SSH aus (geprüft)
 - Läuft in QEMU (`./run.sh`, SSH auf localhost:2222)
@@ -34,8 +34,11 @@ Linux-Kernel + eigenes, minimales Userland (Buildroot). Kein GUI, Zugang nur per
 
   Boot-Zeit unverändert (Streuung auf dem geteilten VPS ±2 s); unter Emulation dominiert nicht die
   Kernelgröße. Der erste Boot eines neuen Images braucht ~10 s länger (dropbear erzeugt Host-Keys).
-- Offen: serielle Konsole ohne Passwort (nur für QEMU ok), busybox-`nslookup` stolpert
-  über Kommentar in `/etc/resolv.conf`, Host-Keys bei jedem neuen Image neu (Phase 1: State-Partition)
+- Konsole gesperrt: root hat kein nutzbares Passwort (`*`), Login nur per SSH-Key (getestet:
+  leeres/beliebiges Passwort an der Konsole → zurück zum Prompt, keine Shell)
+- DNS: udhcpc-Skript schreibt pro Interface nach `/run/udhcpc/<if>` und baut `resolv.conf`
+  ohne Kommentare zusammen → busybox-`nslookup` funktioniert, Renew ohne Duplikate
+- Übertragen nach Phase 1: Host-Keys bei jedem neuen Image neu (→ Zustands-Partition)
 
 ### Phase 1 – AI-OS-Basis
 - Root-Dateisystem read-only (squashfs), Zustand auf eigener Partition
@@ -52,10 +55,50 @@ Linux-Kernel + eigenes, minimales Userland (Buildroot). Kein GUI, Zugang nur per
   Kotia-Chunks), Zusammensetzen + Hash-Prüfung
 - Module einzeln an-/abschaltbar und neu indexierbar, Fortschritt als JSON
 - Auswahl per Konfiguration beim Aufsetzen (`nodes:`, `indexers:`, `watch:`)
+- **Speicherort pro Node/Indexer wählbar** (wichtig für den Pi mit kleiner SD-Karte):
+  ```yaml
+  nodes:
+    arcade:
+      enabled: true
+      storage:
+        device: /dev/sda1     # oder label:/uuid: – gemountet wird immer per UUID
+        path: /data/arcade    # Zielpfad auf der Platte
+        format: false         # nur nach ausdrücklicher Bestätigung
+  ```
+  - Standard ohne Angabe: Zustands-Partition des Systems
+  - Hookup zeigt erkannte Platten/Partitionen mit Größe, freiem Platz und Dateisystem,
+    warnt, wenn der Platz für Chain + Indizes absehbar nicht reicht
+  - Formatieren nie automatisch, nur nach Bestätigung, mit Anzeige was gelöscht würde
+  - **Schutz gegen volllaufende SD-Karte:** Dienst startet nur, wenn die Platte wirklich
+    gemountet ist (sonst würde er in den leeren Mountpoint auf der SD schreiben); fehlt sie,
+    bleibt der Dienst gestoppt und meldet das als Status
+  - Umziehen auf eine andere Platte später möglich (Dienst stoppen, kopieren, umhängen)
 
 ### Phase 3 – Wallet-Anbindung
 - PSBT-Brücke zum Gerät des Users (QR / App / Hardware-Wallet)
 - Optionaler Signier-Dienst für Service-Wallets (standardmäßig aus)
 
+### Hardware-Profile und Installer  *(gehört eng zu Phase 1: Bootloader + A/B-Layout)*
+Ziel: Test auf Raspberry Pi, Betrieb auch auf beliebigen x86_64-Geräten.
+
+| Profil          | Arch    | Boot                         | Kernel                                   |
+|-----------------|---------|------------------------------|------------------------------------------|
+| `qemu_x86_64`   | x86_64  | QEMU direkt (Entwicklung)    | tinyconfig + virtio (wie jetzt)          |
+| `pc_x86_64`     | x86_64  | UEFI (+ BIOS-Fallback)       | USB, SATA, NVMe, gängige NICs + Firmware, Notfall-Bildschirm; seltene Treiber als Module |
+| `rpi_arm64`     | aarch64 | Pi-Firmware (Pi 4/5, USB/SD) | Pi-Kernel + Device Tree                  |
+| `vps_x86_64`    | x86_64  | UEFI/BIOS von Platte         | wie QEMU + Bootloader                    |
+
+- **Universal-Stick:** eine FAT-Bootpartition kann gleichzeitig die Pi-Firmware (`config.txt`,
+  arm64-Kernel) und `EFI/BOOT/BOOTX64.EFI` (x86-Kernel) enthalten – derselbe Stick bootet auf
+  Pi und PC, jeder zieht sich seinen Teil. (Zu prüfen: Pi 5 / Pi 4 USB-Boot, UEFI mit MBR.)
+- Auf der FAT-Partition liegt `authorized_keys` – der User legt seinen Key dort ab, nicht im Image.
+- Gebootet: DHCP, SSH, meldet sich als `arcadeos.local` (mDNS) und zeigt die IP auf dem Bildschirm.
+- **Installer erkennt die Plattform selbst** und wählt das passende Build:
+  Architektur (`uname -m`), Pi-Modell (`/proc/device-tree/model`), x86-Hersteller/Modell (DMI),
+  UEFI vs. BIOS, CPU-Features, Netzwerkkarten/Platten (PCI/USB-IDs) → Profil + ggf. Module/Firmware.
+  Zeigt das Ergebnis vor der Installation an; Profil manuell überschreibbar.
+- Installation läuft per SSH (durch den Agenten): Zielplatte wählen (Bestätigung), Layout
+  Boot + A + B + Zustand anlegen, mit „commit confirmed“ bis der Rechner sauber von der Platte bootet.
+
 ### Später
-- Echte Hardware (Raspberry Pi, x86 Bare Metal), Kernel weiter abspecken
+- Kernel weiter abspecken, weitere Boards
