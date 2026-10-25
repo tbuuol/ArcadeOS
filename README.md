@@ -57,10 +57,25 @@ gelöscht). Fehlt der Kernel eines Slots, startet GRUB den anderen.
 Lässt sich `state` nicht einbinden, läuft das System mit tmpfs weiter (Status in `/run/state.json`).
 `disk.img` behält den Zustand zwischen Boots; ein neuer Build setzt ihn zurück.
 
+## Updates
+
+Jeder Build erzeugt `output/images/update.tar`. Einspielen (System + Kernel in den inaktiven Slot):
+
+```sh
+ssh root@host arcadeos-update install - < output/images/update.tar
+ssh root@host reboot                      # startet einmalig in den neuen Slot
+ssh root@host arcadeos-update confirm     # innerhalb von 10 min, sonst zurück zum alten Slot
+```
+
+`arcadeos-update status` zeigt laufenden und festen Slot, Probeboot, Restzeit und Versionen als JSON;
+`arcadeos-update rollback` macht den anderen Slot wieder fest. Hängt oder stürzt das neue System ab,
+startet der Watchdog bzw. `panic=10` neu und es landet im alten Slot.
+
 ## Tests
 
 ```sh
 tests/qemu-state.sh      # UEFI/GRUB, A/B-Probeboot, read-only Rootfs, Persistenz, Fallback
+tests/qemu-update.sh     # A/B-Updates: kaputte Pakete, Frist, confirm, Watchdog, rollback (ca. 6 min)
 ```
 
 ## Aufbau

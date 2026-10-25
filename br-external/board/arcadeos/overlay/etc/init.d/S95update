@@ -1,0 +1,42 @@
+#!/bin/sh
+#
+# Probeboot-Frist: Laeuft das System in einem noch nicht bestaetigten Slot, startet es nach der
+# Frist neu (-> GRUB bootet wieder den festen Slot), sofern nicht vorher
+# 'arcadeos-update confirm' aufgerufen wurde. Frist: /state/update/confirm_timeout (Standard 600 s).
+#
+
+. /usr/lib/arcadeos/common.sh
+
+DEADLINE=/run/arcadeos-update.deadline
+TIMER_PID=/run/arcadeos-update.timer
+
+start() {
+	# Werks-System: Manifest des laufenden Slots anlegen, falls es (noch) keins gibt
+	run=$(running_slot)
+	if [ -n "$run" ] && [ -d /state/update ] && [ ! -f "/state/update/slot-$run.manifest" ]; then
+		sed -n 's/^VERSION=/version=/p; s/^ARCH=/arch=/p' /etc/arcadeos-release > "/state/update/slot-$run.manifest"
+	fi
+	status=$(arcadeos-update status 2>/dev/null) || return 0
+	case "$status" in *'"trying":true'*) ;; *) return 0;; esac
+	t=$(cat /state/update/confirm_timeout 2>/dev/null | tr -cd 0-9)
+	t=${t:-600}
+	echo $(( $(uptime_s) + t )) > $DEADLINE
+	(
+		sleep "$t"
+		logger -t arcadeos-update "Slot $(running_slot) nicht bestaetigt, Neustart zurueck zum festen Slot"
+		reboot
+	) </dev/null >/dev/null 2>&1 &
+	echo $! > $TIMER_PID
+	echo "Probeboot Slot $(running_slot): bestaetigen mit 'arcadeos-update confirm' innerhalb ${t}s, sonst Neustart zurueck"
+}
+
+stop() {
+	[ -f $TIMER_PID ] && kill "$(cat $TIMER_PID)" 2>/dev/null
+	return 0
+}
+
+case "$1" in
+	start|stop) "$1";;
+	restart|reload) stop; start;;
+	*) echo "Usage: $0 {start|stop|restart|reload}"; exit 1;;
+esac

@@ -1,0 +1,175 @@
+#!/bin/sh
+#
+# arcadeos-update – A/B-Updates fuer ArcadeOS
+#
+#   arcadeos-update status                       Zustand als JSON
+#   arcadeos-update install <paket|-> [--reboot] Paket in den inaktiven Slot schreiben, Probeboot setzen
+#   arcadeos-update confirm                      laufenden Probeboot-Slot fest uebernehmen
+#   arcadeos-update rollback [--reboot]          anderen Slot wieder fest machen
+#
+# Ablauf: install -> Neustart in den neuen Slot (einmaliger Probeboot) -> confirm ueber eine neue
+# SSH-Verbindung innerhalb der Frist (/state/update/confirm_timeout, Standard 600 s).
+# Ohne confirm startet das System nach der Frist neu und landet wieder im alten Slot; ebenso nach
+# Absturz, Kernel-Panic (panic=10) oder Haenger (Watchdog).
+#
+# Paket (tar): manifest (key=value: version, arch, rootfs_sha256, kernel_sha256),
+#              rootfs.squashfs, bzImage. Paket ueber SSH streamen:
+#   ssh root@host arcadeos-update install - < update.tar
+#
+
+set -eu
+. /usr/lib/arcadeos/common.sh
+
+BOOT=/boot
+ENV=$BOOT/EFI/BOOT/grubenv
+UPD=/state/update
+DEADLINE=/run/arcadeos-update.deadline
+TIMER_PID=/run/arcadeos-update.timer
+
+die() { echo "arcadeos-update: $*" >&2; exit 1; }
+
+lower() { echo "$1" | tr AB ab; }
+
+boot_mount() {  # ro|rw
+	if mountpoint -q $BOOT; then
+		mount -o remount,"$1" $BOOT
+	else
+		dev=$(find_part boot) || die "Boot-Partition nicht gefunden"
+		mount -t vfat -o "$1",noatime,nodev,nosuid,noexec "/dev/$dev" $BOOT
+	fi
+}
+
+boot_umount() {
+	sync
+	umount $BOOT 2>/dev/null || true
+}
+
+genv_get() {
+	sed -n "s/^$1=//p" "$ENV" | head -1
+}
+
+# Setzt einen Wert in grubenv (1024-Byte-Block, mit '#' aufgefuellt; Format von grub-editenv).
+# Wird an Ort und Stelle ueberschrieben, damit die Datei ihre Cluster behaelt (GRUB schreibt dorthin).
+genv_set() {
+	tmp=/run/grubenv.$$
+	{
+		printf '# GRUB Environment Block\n'
+		grep -v -e '^#' -e "^$1=" "$ENV" | grep -v '^$' || true
+		printf '%s=%s\n' "$1" "$2"
+		head -c 1024 /dev/zero | tr '\0' '#'
+	} | head -c 1024 > "$tmp"
+	dd if="$tmp" of="$ENV" bs=1024 count=1 conv=notrunc,fsync 2>/dev/null
+	rm -f "$tmp"
+}
+
+# Wert aus einem Manifest lesen (nie per "." einbinden: Paketinhalt ist nicht vertrauenswuerdig)
+mf() {
+	sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1 | tr -cd 'A-Za-z0-9._:+-'
+}
+
+slot_version() {
+	if [ -f "$UPD/slot-$1.manifest" ]; then
+		mf "$UPD/slot-$1.manifest" version
+	elif [ "$1" = "$(running_slot)" ]; then
+		mf /etc/arcadeos-release VERSION
+	fi
+}
+
+cmd_status() {
+	boot_mount ro
+	fixed=$(genv_get slot); try=$(genv_get try_slot)
+	boot_umount
+	run=$(running_slot)
+	trying=false; [ "$run" != "$fixed" ] && trying=true
+	remaining=null
+	if [ -f $DEADLINE ]; then remaining=$(( $(cat $DEADLINE) - $(uptime_s) )); fi
+	printf '{"running":"%s","fixed":"%s","try_slot":"%s","trying":%s,"confirm_remaining_s":%s,' \
+		"$run" "${fixed:-A}" "$try" "$trying" "$remaining"
+	printf '"slots":{"A":{"version":"%s"},"B":{"version":"%s"}}}\n' "$(slot_version A)" "$(slot_version B)"
+}
+
+cmd_install() {
+	src=${1:-}; [ -n "$src" ] || die "Aufruf: arcadeos-update install <paket|-> [--reboot]"
+	run=$(running_slot); [ -n "$run" ] || die "laufender Slot unbekannt (arcadeos.slot fehlt)"
+	boot_mount ro; fixed=$(genv_get slot); boot_umount
+	[ "$run" = "${fixed:-A}" ] || die "laeuft im unbestaetigten Probeboot (Slot $run) – erst 'confirm' oder Neustart"
+	tgt=$(other_slot "$run"); t=$(lower "$tgt")
+	dev=$(find_part "rootfs-$t") || die "Partition rootfs-$t nicht gefunden"
+
+	work=$UPD/incoming
+	rm -rf "$work"; mkdir -p "$work"
+	trap 'rm -rf "$work"' EXIT
+	if [ "$src" = - ]; then tar -x -C "$work" -f -; else tar -x -C "$work" -f "$src"; fi
+	for f in manifest rootfs.squashfs bzImage; do [ -f "$work/$f" ] || die "Paket unvollstaendig: $f fehlt"; done
+
+	m=$work/manifest
+	ver=$(mf "$m" version); arch=$(mf "$m" arch)
+	[ "$arch" = "$(uname -m)" ] || die "Paket ist fuer '$arch', dieses System ist $(uname -m)"
+	rsha=$(sha256sum < "$work/rootfs.squashfs" | cut -d' ' -f1)
+	ksha=$(sha256sum < "$work/bzImage" | cut -d' ' -f1)
+	[ "$rsha" = "$(mf "$m" rootfs_sha256)" ] || die "Pruefsumme rootfs.squashfs stimmt nicht"
+	[ "$ksha" = "$(mf "$m" kernel_sha256)" ] || die "Pruefsumme bzImage stimmt nicht"
+	size=$(wc -c < "$work/rootfs.squashfs")
+	psize=$(( $(cat /sys/class/block/$dev/size) * 512 ))
+	[ "$size" -le "$psize" ] || die "rootfs ($size B) passt nicht in rootfs-$t ($psize B)"
+
+	echo "Version $ver -> Slot $tgt (/dev/$dev)" >&2
+	rm -f "$UPD/slot-$tgt.manifest"
+	dd if="$work/rootfs.squashfs" of="/dev/$dev" bs=1M conv=fsync 2>/dev/null
+	[ "$(head -c "$size" "/dev/$dev" | sha256sum | cut -d' ' -f1)" = "$rsha" ] || die "Lesepruefung rootfs-$t fehlgeschlagen"
+
+	boot_mount rw
+	mkdir -p "$BOOT/$t"
+	cp "$work/bzImage" "$BOOT/$t/bzImage.new"
+	sync
+	mv "$BOOT/$t/bzImage.new" "$BOOT/$t/bzImage"
+	[ "$(sha256sum < "$BOOT/$t/bzImage" | cut -d' ' -f1)" = "$ksha" ] || { boot_umount; die "Lesepruefung Kernel fehlgeschlagen"; }
+	genv_set try_slot "$tgt"
+	boot_umount
+
+	cp "$m" "$UPD/slot-$tgt.manifest"
+	logger -t arcadeos-update "Version $ver in Slot $tgt installiert, Probeboot gesetzt" 2>/dev/null || true
+	printf '{"installed":"%s","version":"%s","next":"reboot, dann confirm"}\n' "$tgt" "$ver"
+	[ "${2:-}" = --reboot ] && reboot
+	return 0
+}
+
+cmd_confirm() {
+	run=$(running_slot)
+	boot_mount rw
+	fixed=$(genv_get slot)
+	if [ "$run" != "${fixed:-A}" ]; then
+		genv_set slot "$run"
+		genv_set try_slot ""
+	fi
+	boot_umount
+	if [ -f $TIMER_PID ]; then kill "$(cat $TIMER_PID)" 2>/dev/null || true; rm -f $TIMER_PID; fi
+	rm -f $DEADLINE
+	logger -t arcadeos-update "Slot $run bestaetigt" 2>/dev/null || true
+	printf '{"confirmed":"%s"}\n' "$run"
+}
+
+cmd_rollback() {
+	run=$(running_slot); tgt=$(other_slot "$run"); t=$(lower "$tgt")
+	boot_mount rw
+	fixed=$(genv_get slot)
+	if [ "$run" != "${fixed:-A}" ]; then
+		boot_umount
+		echo '{"rollback":"Probeboot laeuft noch unbestaetigt – Neustart genuegt"}'
+	else
+		[ -f "$BOOT/$t/bzImage" ] || { boot_umount; die "Slot $tgt hat keinen Kernel"; }
+		genv_set slot "$tgt"
+		boot_umount
+		printf '{"rollback":"%s","next":"reboot"}\n' "$tgt"
+	fi
+	[ "${1:-}" = --reboot ] && reboot
+	return 0
+}
+
+case "${1:-}" in
+	status)   cmd_status ;;
+	install)  shift; cmd_install "$@" ;;
+	confirm)  cmd_confirm ;;
+	rollback) shift; cmd_rollback "$@" ;;
+	*) sed -n '3,9s/^# \{0,1\}//p' "$0"; exit 1 ;;
+esac

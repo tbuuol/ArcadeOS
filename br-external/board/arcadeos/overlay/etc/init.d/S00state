@@ -7,17 +7,10 @@
 # Status fuer Mensch und Agent: /run/state.json
 #
 
+. /usr/lib/arcadeos/common.sh
+
 STATE=/state
 PARTNAME=state
-
-find_part() {
-	for u in /sys/class/block/*/uevent; do
-		grep -qx "PARTNAME=$1" "$u" 2>/dev/null || continue
-		sed -n 's/^DEVNAME=//p' "$u"
-		return 0
-	done
-	return 1
-}
 
 status() {
 	printf '{"mode":"%s","device":"%s","reason":"%s"}\n' "$1" "$2" "$3" > /run/state.json
@@ -37,7 +30,7 @@ start() {
 		echo "FALLBACK tmpfs ($reason)"
 		logger -t state "WARNUNG: $reason, /state ist fluechtig" 2>/dev/null
 	fi
-	mkdir -p "$STATE/dropbear" "$STATE/seedrng" "$STATE/log"
+	mkdir -p "$STATE/dropbear" "$STATE/seedrng" "$STATE/log" "$STATE/update"
 	chmod 0700 "$STATE/dropbear" "$STATE/seedrng"
 }
 

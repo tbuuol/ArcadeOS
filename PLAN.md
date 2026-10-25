@@ -61,7 +61,20 @@ Linux-Kernel + eigenes, minimales Userland (Buildroot). Kein GUI, Zugang nur per
     Gleiches Prinzip auf dem Pi mit `tryboot.txt` + `os_prefix=b/` (nicht getestet, keine Hardware)
   - Tests: 19 Prüfungen, u.a. Probeboot auf leeren Slot B → Fallback auf A, `try_slot` verbraucht
   - Boot bis SSH unter Emulation jetzt ~16 s (UEFI-Firmware kostet ~5 s)
-- A/B-Updates: Update-Befehl, Watchdog, Bestätigung des neuen Slots; „commit confirmed“ mit Auto-Rollback
+- ✅ **A/B-Updates** (2026-10-25)
+  - `arcadeos-update status|install|confirm|rollback`, Ausgabe als JSON
+  - Paket `update.tar` (manifest + rootfs.squashfs + bzImage) entsteht bei jedem Build; Version
+    = Datum + Git-Stand. Install auch gestreamt: `ssh root@host arcadeos-update install - < update.tar`
+  - Install prüft Prüfsummen, Architektur, Platz; schreibt nur den inaktiven Slot, liest zurück,
+    setzt den einmaligen Probeboot. Verweigert, solange ein Probeboot unbestätigt läuft
+  - Probeboot: Frist (`/state/update/confirm_timeout`, Standard 600 s), danach Neustart → alter Slot.
+    `confirm` über neue SSH-Verbindung macht den Slot fest (beweist nebenbei, dass SSH geht)
+  - Watchdog (`S01watchdog`, 30 s; Treiber i6300esb/iTCO/sp5100) und `panic=10`: Hänger oder
+    Absturz im Probeboot → Neustart → alter Slot
+  - Tests: `tests/qemu-update.sh`, 35 Prüfungen (kaputte Pakete, Frist, confirm, Watchdog, rollback)
+  - Noch offen: Pakete sind nur per Prüfsumme gesichert, nicht signiert (→ Signatur mit
+    Projekt-Key, Prüfung vor dem Schreiben); Pi-Weg (tryboot) ungetestet
+- „commit confirmed“ mit Auto-Rollback für Konfigurationsänderungen (braucht zentrale Konfiguration auf `/state`)
 - `agentd`: Systemzustand als JSON / MCP-Server über SSH
 - Audit-Log
 

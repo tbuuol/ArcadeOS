@@ -12,4 +12,5 @@ exec qemu-system-x86_64 -M pc -accel "$ACCEL" -m 256 -smp 2 \
     -drive if=pflash,format=raw,file="$VARS" \
     -drive file="$DISK",if=virtio,format=raw \
     -netdev user,id=n0,hostfwd=tcp:127.0.0.1:2222-:22 -device virtio-net-pci,netdev=n0 \
+    -device i6300esb -action watchdog=reset \
     -nographic "$@"

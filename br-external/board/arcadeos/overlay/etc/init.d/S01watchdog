@@ -1,0 +1,26 @@
+#!/bin/sh
+#
+# Fuettert den Hardware-Watchdog. Haengt das System (oder stirbt dieser Dienst),
+# startet die Hardware nach 30 s neu. Waehrend eines Probeboots heisst das: zurueck zum alten Slot.
+#
+
+start() {
+	printf "Starting watchdog: "
+	if [ ! -c /dev/watchdog ]; then
+		echo "kein Hardware-Watchdog"
+		return 0
+	fi
+	watchdog -T 30 -t 5 /dev/watchdog && echo "OK" || echo "FAIL"
+}
+
+stop() {
+	printf "Stopping watchdog: "
+	# busybox watchdog schliesst bei SIGTERM sauber ("magic close") und schaltet den Zaehler ab
+	killall watchdog 2>/dev/null && echo "OK" || echo "nicht aktiv"
+}
+
+case "$1" in
+	start|stop) "$1";;
+	restart|reload) stop; start;;
+	*) echo "Usage: $0 {start|stop|restart|reload}"; exit 1;;
+esac
