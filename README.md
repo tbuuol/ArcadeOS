@@ -26,8 +26,22 @@ und `date +%s > build.start`).
 ssh -p 2222 -i ~/.ssh/<dein-key> root@127.0.0.1
 ```
 
+## Kernel
+
+Eigene, schlanke Config: `make tinyconfig` plus
+[linux-fragment.config](br-external/board/arcadeos/linux-fragment.config) (nur virtio, serielle
+Konsole, ext4, IPv4/IPv6, keine Module). Nach einer Änderung am Fragment neu erzeugen:
+
+```sh
+tar xf buildroot-2026.02.3/dl/linux/linux-6.18.7.tar.xz -C /tmp
+PATH=$PWD/output/host/bin:$PATH br-external/board/arcadeos/gen-linux-config.sh /tmp/linux-6.18.7
+```
+
+Das Skript prüft, dass jede Option aus dem Fragment wirklich gesetzt ist (fehlende Abhängigkeiten
+fallen sonst still weg), und schreibt `linux.config`.
+
 ## Aufbau
 
-- `br-external/` – Buildroot-External-Tree: Defconfig, Rootfs-Overlay, Post-Build-Skript
+- `br-external/` – Buildroot-External-Tree: Defconfig, Kernel-Config, Rootfs-Overlay, Post-Build-Skript
 - `keys/` – `authorized_keys` für root (nicht im Repo)
 - `run.sh` – QEMU-Start (KVM, falls vorhanden, sonst Emulation)

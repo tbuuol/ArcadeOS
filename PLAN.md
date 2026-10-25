@@ -20,8 +20,22 @@ Linux-Kernel + eigenes, minimales Userland (Buildroot). Kein GUI, Zugang nur per
 - Läuft in QEMU (`./run.sh`, SSH auf localhost:2222)
 - Ergebnis: bzImage 6,6 MB, Rootfs belegt 5,2 MB, 11 MB RAM nach dem Boot,
   SSH nach 14 s (ohne KVM), Build ca. 30 min
+- Kernel abgespeckt: tinyconfig + `board/arcadeos/linux-fragment.config` (nur virtio, serielle
+  Konsole, ext4, IPv4/6, keine Module/USB/VT/Input). Vergleich mit gleichem Rootfs, ohne KVM,
+  Median aus 5 Boots:
+
+  |                     | QEMU-Standard | ArcadeOS |
+  |---------------------|---------------|----------|
+  | bzImage             | 6,6 MB        | 3,5 MB   |
+  | RAM belegt / frei   | 11 / 235 MB   | 9 / 240 MB |
+  | Kernel-Build        | 354 s         | 83 s     |
+  | Login-Prompt        | 8,8 s         | 8,9 s    |
+  | SSH bereit          | 10,2 s        | 11,1 s   |
+
+  Boot-Zeit unverändert (Streuung auf dem geteilten VPS ±2 s); unter Emulation dominiert nicht die
+  Kernelgröße. Der erste Boot eines neuen Images braucht ~10 s länger (dropbear erzeugt Host-Keys).
 - Offen: serielle Konsole ohne Passwort (nur für QEMU ok), busybox-`nslookup` stolpert
-  über Kommentar in `/etc/resolv.conf`, Kernel noch nicht abgespeckt (QEMU-Standardconfig)
+  über Kommentar in `/etc/resolv.conf`, Host-Keys bei jedem neuen Image neu (Phase 1: State-Partition)
 
 ### Phase 1 – AI-OS-Basis
 - Root-Dateisystem read-only (squashfs), Zustand auf eigener Partition
