@@ -33,7 +33,15 @@ BR2_TARGET_ROOTFS_SQUASHFS4_ZSTD=y
 # BR2_TARGET_ROOTFS_TAR is not set
 # BR2_TARGET_GENERIC_REMOUNT_ROOTFS_RW is not set
 
-# Disk-Image (GPT: rootfs-a, rootfs-b, state)
+# Bootloader: GRUB als UEFI-Programm, A/B-Auswahl ueber grubenv (board/arcadeos/grub.cfg)
+BR2_TARGET_GRUB2=y
+# BR2_TARGET_GRUB2_I386_PC is not set
+BR2_TARGET_GRUB2_X86_64_EFI=y
+BR2_TARGET_GRUB2_BUILTIN_MODULES_EFI="boot linux fat part_gpt part_msdos normal loadenv test echo serial terminal efi_gop"
+
+# Disk-Image (GPT: boot, rootfs-a, rootfs-b, state)
 BR2_PACKAGE_HOST_GENIMAGE=y
 BR2_PACKAGE_HOST_E2FSPROGS=y
+BR2_PACKAGE_HOST_DOSFSTOOLS=y
+BR2_PACKAGE_HOST_MTOOLS=y
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_ARCADEOS_PATH)/board/arcadeos/post-image.sh"

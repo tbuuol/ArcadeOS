@@ -42,7 +42,7 @@ Linux-Kernel + eigenes, minimales Userland (Buildroot). Kein GUI, Zugang nur per
 
 ### Phase 1 – AI-OS-Basis  *(in Arbeit)*
 - ✅ **Root-Dateisystem read-only, Zustand auf eigener Partition** (2026-10-25)
-  - `disk.img` (GPT): `rootfs-a` (squashfs/zstd, 2,0 MB), `rootfs-b` (leer, für A/B), `state` (ext4)
+  - `rootfs-a` (squashfs/zstd, 2,0 MB), `rootfs-b` (leer, für A/B), `state` (ext4)
   - Kernel bootet `root=PARTLABEL=rootfs-a ro` – unabhängig vom Gerätenamen
   - `S00state` sucht die Partition `state` per Partitionsname (`/sys/class/block`, ohne udev),
     mountet sie unter `/state`; schlägt das fehl → tmpfs, System bleibt per SSH erreichbar
@@ -51,7 +51,17 @@ Linux-Kernel + eigenes, minimales Userland (Buildroot). Kein GUI, Zugang nur per
   - Test: `tests/qemu-state.sh` (14 Prüfungen: ro, Persistenz über Neustart, Fallback)
   - Noch offen: kein `fsck` beim Start (ext4-Journal fängt unsauberes Abschalten meist ab),
     `state` wächst noch nicht auf die volle Plattengröße (→ Installer)
-- A/B-Images, „commit confirmed“ mit Auto-Rollback
+- ✅ **Bootloader + UEFI** (2026-10-25) – Layout gemeinsam für x86 und Pi 4/5:
+  - `disk.img` (GPT): `boot` (FAT32/ESP) · `rootfs-a` 512M · `rootfs-b` 512M · `state` (ext4)
+  - `boot` enthält `EFI/BOOT/bootx64.efi` (GRUB 2.12, 600 KB), `grub.cfg`, `grubenv` und den
+    Kernel pro Slot in `a/` bzw. `b/`; später zusätzlich Pi-Firmware, `config.txt`, `tryboot.txt`
+  - Kernel als EFI-Programm (EFI-Stub), `run.sh` bootet über OVMF wie ein echter PC
+  - **A/B im Bootloader:** `grubenv` hat `slot` (fest) und `try_slot` (einmaliger Probeboot,
+    wird vor dem Start gelöscht); fehlt der Kernel eines Slots, startet GRUB den anderen.
+    Gleiches Prinzip auf dem Pi mit `tryboot.txt` + `os_prefix=b/` (nicht getestet, keine Hardware)
+  - Tests: 19 Prüfungen, u.a. Probeboot auf leeren Slot B → Fallback auf A, `try_slot` verbraucht
+  - Boot bis SSH unter Emulation jetzt ~16 s (UEFI-Firmware kostet ~5 s)
+- A/B-Updates: Update-Befehl, Watchdog, Bestätigung des neuen Slots; „commit confirmed“ mit Auto-Rollback
 - `agentd`: Systemzustand als JSON / MCP-Server über SSH
 - Audit-Log
 

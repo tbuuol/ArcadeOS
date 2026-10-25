@@ -6,7 +6,7 @@ Schlankes Linux für einen KI-Betreiber: Linux-Kernel, musl, busybox und dropbea
 
 ## Bauen
 
-Benötigt (Ubuntu/Debian): `build-essential unzip qemu-system-x86`
+Benötigt (Ubuntu/Debian): `build-essential unzip qemu-system-x86 ovmf`
 
 ```sh
 wget https://buildroot.org/downloads/buildroot-2026.02.3.tar.xz
@@ -42,13 +42,17 @@ fallen sonst still weg), und schreibt `linux.config`.
 
 ## Disk-Layout
 
-`output/images/disk.img` (GPT):
+`output/images/disk.img` (GPT), gemeinsam für x86_64 (UEFI) und Raspberry Pi 4/5:
 
 | Partition  | Inhalt                                   |
 |------------|------------------------------------------|
-| `rootfs-a` | System, squashfs, read-only              |
-| `rootfs-b` | zweiter System-Slot für Updates (A/B), anfangs leer |
+| `boot`     | FAT32/EFI: GRUB, `grub.cfg`, `grubenv` (A/B-Auswahl), Kernel pro Slot in `a/` und `b/` |
+| `rootfs-a` | System A, squashfs, read-only            |
+| `rootfs-b` | System B für Updates, anfangs leer       |
 | `state`    | ext4, unter `/state`: Host-Keys, Seed, später Konfiguration und Daten |
+
+A/B: `grubenv` enthält `slot=A|B` (fest) und `try_slot` (einmaliger Probeboot, wird vor dem Start
+gelöscht). Fehlt der Kernel eines Slots, startet GRUB den anderen.
 
 Lässt sich `state` nicht einbinden, läuft das System mit tmpfs weiter (Status in `/run/state.json`).
 `disk.img` behält den Zustand zwischen Boots; ein neuer Build setzt ihn zurück.
@@ -56,7 +60,7 @@ Lässt sich `state` nicht einbinden, läuft das System mit tmpfs weiter (Status 
 ## Tests
 
 ```sh
-tests/qemu-state.sh      # read-only Rootfs, Persistenz über Neustart, Fallback
+tests/qemu-state.sh      # UEFI/GRUB, A/B-Probeboot, read-only Rootfs, Persistenz, Fallback
 ```
 
 ## Aufbau
@@ -65,4 +69,4 @@ tests/qemu-state.sh      # read-only Rootfs, Persistenz über Neustart, Fallback
   Rootfs-Overlay, Post-Build/Post-Image-Skripte
 - `tests/` – Tests in QEMU
 - `keys/` – `authorized_keys` für root (nicht im Repo)
-- `run.sh` – QEMU-Start (KVM, falls vorhanden, sonst Emulation)
+- `run.sh` – QEMU-Start mit UEFI/OVMF (KVM, falls vorhanden, sonst Emulation)
