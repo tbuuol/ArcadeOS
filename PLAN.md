@@ -1,4 +1,4 @@
-# AIOS – schlankes OS für einen KI-Betreiber
+# ArcadeOS – schlankes OS für einen KI-Betreiber
 
 Linux-Kernel + eigenes, minimales Userland (Buildroot). Kein GUI, Zugang nur per SSH-Key.
 

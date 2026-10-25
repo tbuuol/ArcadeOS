@@ -1,4 +1,4 @@
-# AIOS
+# ArcadeOS
 
 Schlankes Linux für einen KI-Betreiber: Linux-Kernel, musl, busybox und dropbear, gebaut mit
 [Buildroot](https://buildroot.org). Kein GUI, Zugang nur per SSH-Key. Ziele und Phasen stehen in
@@ -12,7 +12,7 @@ Benötigt (Ubuntu/Debian): `build-essential unzip qemu-system-x86`
 wget https://buildroot.org/downloads/buildroot-2026.02.3.tar.xz
 tar xf buildroot-2026.02.3.tar.xz
 cat ~/.ssh/<dein-key>.pub > keys/authorized_keys
-make -C buildroot-2026.02.3 O=$PWD/output BR2_EXTERNAL=$PWD/br-external aios_x86_64_defconfig
+make -C buildroot-2026.02.3 O=$PWD/output BR2_EXTERNAL=$PWD/br-external arcadeos_x86_64_defconfig
 make -C output          # ca. 30 min beim ersten Mal
 ```
 

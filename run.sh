@@ -1,5 +1,5 @@
 #!/bin/sh
-# Startet AIOS in QEMU. SSH: ssh -p 2222 -i ~/.ssh/aios_ed25519 root@localhost
+# Startet ArcadeOS in QEMU. SSH: ssh -p 2222 -i ~/.ssh/aios_ed25519 root@localhost
 # Serielle Konsole im Terminal, beenden mit Ctrl-A X.
 IMG="$(dirname "$0")/output/images"
 ACCEL=tcg; [ -w /dev/kvm ] && ACCEL=kvm
