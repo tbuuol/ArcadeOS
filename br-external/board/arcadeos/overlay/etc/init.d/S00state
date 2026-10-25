@@ -1,0 +1,54 @@
+#!/bin/sh
+#
+# Bindet die Zustands-Partition (GPT/MBR-Partitionsname "state") unter /state ein.
+# Das Root-Dateisystem ist read-only; alles Persistente liegt hier.
+# Fehlt die Partition oder laesst sie sich nicht mounten, wird /state ein tmpfs:
+# das System laeuft dann ohne Persistenz weiter, SSH bleibt erreichbar.
+# Status fuer Mensch und Agent: /run/state.json
+#
+
+STATE=/state
+PARTNAME=state
+
+find_part() {
+	for u in /sys/class/block/*/uevent; do
+		grep -qx "PARTNAME=$1" "$u" 2>/dev/null || continue
+		sed -n 's/^DEVNAME=//p' "$u"
+		return 0
+	done
+	return 1
+}
+
+status() {
+	printf '{"mode":"%s","device":"%s","reason":"%s"}\n' "$1" "$2" "$3" > /run/state.json
+}
+
+start() {
+	printf "Mounting state: "
+	mkdir -p /run
+	dev=$(find_part "$PARTNAME")
+	if [ -n "$dev" ] && mount -t ext4 -o noatime,nodev,nosuid "/dev/$dev" "$STATE" 2>/dev/null; then
+		status persistent "/dev/$dev" ""
+		echo "OK (/dev/$dev)"
+	else
+		if [ -z "$dev" ]; then reason="keine Partition '$PARTNAME' gefunden"; else reason="mount /dev/$dev fehlgeschlagen"; fi
+		mount -t tmpfs -o mode=0755,size=32m,nodev,nosuid tmpfs "$STATE"
+		status ephemeral "${dev:+/dev/$dev}" "$reason"
+		echo "FALLBACK tmpfs ($reason)"
+		logger -t state "WARNUNG: $reason, /state ist fluechtig" 2>/dev/null
+	fi
+	mkdir -p "$STATE/dropbear" "$STATE/seedrng" "$STATE/log"
+	chmod 0700 "$STATE/dropbear" "$STATE/seedrng"
+}
+
+stop() {
+	printf "Unmounting state: "
+	sync
+	umount "$STATE" 2>/dev/null && echo "OK" || echo "busy"
+}
+
+case "$1" in
+	start|stop) "$1";;
+	restart|reload) stop; start;;
+	*) echo "Usage: $0 {start|stop|restart|reload}"; exit 1;;
+esac

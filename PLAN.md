@@ -40,8 +40,17 @@ Linux-Kernel + eigenes, minimales Userland (Buildroot). Kein GUI, Zugang nur per
   ohne Kommentare zusammen → busybox-`nslookup` funktioniert, Renew ohne Duplikate
 - Übertragen nach Phase 1: Host-Keys bei jedem neuen Image neu (→ Zustands-Partition)
 
-### Phase 1 – AI-OS-Basis
-- Root-Dateisystem read-only (squashfs), Zustand auf eigener Partition
+### Phase 1 – AI-OS-Basis  *(in Arbeit)*
+- ✅ **Root-Dateisystem read-only, Zustand auf eigener Partition** (2026-10-25)
+  - `disk.img` (GPT): `rootfs-a` (squashfs/zstd, 2,0 MB), `rootfs-b` (leer, für A/B), `state` (ext4)
+  - Kernel bootet `root=PARTLABEL=rootfs-a ro` – unabhängig vom Gerätenamen
+  - `S00state` sucht die Partition `state` per Partitionsname (`/sys/class/block`, ohne udev),
+    mountet sie unter `/state`; schlägt das fehl → tmpfs, System bleibt per SSH erreichbar
+  - Status maschinenlesbar in `/run/state.json` (`persistent`/`ephemeral` + Grund)
+  - Persistent: dropbear-Host-Keys (`/etc/dropbear` → `/state/dropbear`), Zufalls-Seed
+  - Test: `tests/qemu-state.sh` (14 Prüfungen: ro, Persistenz über Neustart, Fallback)
+  - Noch offen: kein `fsck` beim Start (ext4-Journal fängt unsauberes Abschalten meist ab),
+    `state` wächst noch nicht auf die volle Plattengröße (→ Installer)
 - A/B-Images, „commit confirmed“ mit Auto-Rollback
 - `agentd`: Systemzustand als JSON / MCP-Server über SSH
 - Audit-Log

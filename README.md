@@ -40,8 +40,29 @@ PATH=$PWD/output/host/bin:$PATH br-external/board/arcadeos/gen-linux-config.sh /
 Das Skript prüft, dass jede Option aus dem Fragment wirklich gesetzt ist (fehlende Abhängigkeiten
 fallen sonst still weg), und schreibt `linux.config`.
 
+## Disk-Layout
+
+`output/images/disk.img` (GPT):
+
+| Partition  | Inhalt                                   |
+|------------|------------------------------------------|
+| `rootfs-a` | System, squashfs, read-only              |
+| `rootfs-b` | zweiter System-Slot für Updates (A/B), anfangs leer |
+| `state`    | ext4, unter `/state`: Host-Keys, Seed, später Konfiguration und Daten |
+
+Lässt sich `state` nicht einbinden, läuft das System mit tmpfs weiter (Status in `/run/state.json`).
+`disk.img` behält den Zustand zwischen Boots; ein neuer Build setzt ihn zurück.
+
+## Tests
+
+```sh
+tests/qemu-state.sh      # read-only Rootfs, Persistenz über Neustart, Fallback
+```
+
 ## Aufbau
 
-- `br-external/` – Buildroot-External-Tree: Defconfig, Kernel-Config, Rootfs-Overlay, Post-Build-Skript
+- `br-external/` – Buildroot-External-Tree: Defconfig, Kernel-Config, Disk-Layout (genimage),
+  Rootfs-Overlay, Post-Build/Post-Image-Skripte
+- `tests/` – Tests in QEMU
 - `keys/` – `authorized_keys` für root (nicht im Repo)
 - `run.sh` – QEMU-Start (KVM, falls vorhanden, sonst Emulation)
