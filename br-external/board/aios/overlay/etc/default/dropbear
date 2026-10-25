@@ -1,0 +1,2 @@
+# Nur Key-Login: -s = keine Passwoerter, -g = kein Passwort-Login fuer root
+DROPBEAR_ARGS="-s -g"
