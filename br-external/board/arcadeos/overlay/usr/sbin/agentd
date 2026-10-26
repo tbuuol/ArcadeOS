@@ -59,7 +59,7 @@ local function shq(s) return "'" .. tostring(s):gsub("'", "'\\''") .. "'" end
 local tools = {
 	{
 		name = "system_status",
-		description = "Gesamtzustand: Version, Uptime, Last, Speicher, Platten, Zustands-Partition, "
+		description = "Gesamtzustand: Version, Uptime, Last, Speicher, Platten, Uhrzeit/NTP, Netz, Zustands-Partition, "
 			.. "A/B-Slots (laufend/fest/Probeboot) und Konfiguration (inkl. offener Transaktion).",
 		inputSchema = { type = "object", properties = {} },
 		run = function()
@@ -72,6 +72,9 @@ local tools = {
 				load = load,
 				memory = meminfo(),
 				disk = { root = df("/"), state = df("/state") },
+				time = { utc = (sh("date -u +%Y-%m-%dT%H:%M:%SZ")):gsub("%s+$", ""), ntp = sh_json("cat /run/ntp.json") },
+				network = { qdisc = (sh("tc qdisc show dev eth0 | head -1")):gsub("%s+$", ""),
+					congestion = (readfile("/proc/sys/net/ipv4/tcp_congestion_control") or ""):gsub("%s+$", "") },
 				state = sh_json("cat /run/state.json"),
 				update = sh_json("arcadeos-update status"),
 				config = sh_json("arcadeos-config show"),
@@ -113,7 +116,7 @@ local tools = {
 		name = "config_set",
 		description = "Aendert Konfigurationswerte als Transaktion: sofort aktiv, aber ohne config_confirm "
 			.. "innerhalb der Frist (Standard 120 s) automatisch zurueck. Schluessel: hostname, net.mode "
-			.. "(dhcp|static), net.address (IP/Praefix), net.gateway, net.dns, config.confirm_timeout. "
+			.. "(dhcp|static), net.address (IP/Praefix), net.gateway, net.dns, ntp.servers, config.confirm_timeout. "
 			.. "Nach Netzwerkaenderungen per neuer Verbindung pruefen, dann bestaetigen.",
 		inputSchema = {
 			type = "object",

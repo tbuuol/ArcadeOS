@@ -1,0 +1,29 @@
+#!/bin/sh
+#
+# Zeitsynchronisation (busybox ntpd). Server: /run/arcadeos/ntp.servers (aus arcadeos-config
+# ntp.servers, Standard: pool.ntp.org). Status fuer Mensch und Agent: /run/ntp.json
+#
+
+servers() {
+	s=$(cat /run/arcadeos/ntp.servers 2>/dev/null)
+	echo "${s:-0.pool.ntp.org 1.pool.ntp.org 2.pool.ntp.org}"
+}
+
+start() {
+	printf "Starting ntpd: "
+	args=""
+	for s in $(servers); do args="$args -p $s"; done
+	echo '{"synced":false,"event":"start"}' > /run/ntp.json
+	start-stop-daemon -S -q -x /usr/sbin/ntpd -- $args -S /usr/lib/arcadeos/ntp-event && echo "OK" || echo "FAIL"
+}
+
+stop() {
+	printf "Stopping ntpd: "
+	start-stop-daemon -K -q -x /usr/sbin/ntpd && echo "OK" || echo "nicht aktiv"
+}
+
+case "$1" in
+	start|stop) "$1";;
+	restart|reload) stop; sleep 1; start;;
+	*) echo "Usage: $0 {start|stop|restart|reload}"; exit 1;;
+esac

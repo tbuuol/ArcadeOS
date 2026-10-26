@@ -1,0 +1,11 @@
+#!/bin/sh
+# Von busybox ntpd bei Ereignissen aufgerufen (step, stratum, unsync, periodic); schreibt /run/ntp.json
+. /usr/lib/arcadeos/common.sh
+synced=false
+case "$1" in
+	step) synced=true ;;   # Uhr wurde gestellt: auf ~1 s genau, reicht fuer das Mesh (60 s)
+	stratum|periodic) [ "${stratum:-16}" -lt 16 ] 2>/dev/null && synced=true ;;
+esac
+printf '{"synced":%s,"event":"%s","stratum":%s,"offset_s":"%s","poll_s":"%s","at_uptime":%s}\n' \
+	"$synced" "$1" "${stratum:-16}" "${offset:-}" "${poll_interval:-}" "$(uptime_s)" > /run/ntp.json.new
+mv /run/ntp.json.new /run/ntp.json

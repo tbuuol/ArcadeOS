@@ -51,7 +51,7 @@ check "$($S hostname)" "pi-test" "Hostname nach Neustart zurueck"
 check "$(cfg pending)" "false" "keine offene Aenderung"
 
 echo "== Statische IP (richtig): neue Verbindung geht, confirm, Neustart"
-$S 'arcadeos-config set net.mode=static net.address=10.0.2.15/24 net.gateway=10.0.2.2 net.dns=10.0.2.3' >/dev/null 2>&1
+$SQ 'arcadeos-config set net.mode=static net.address=10.0.2.15/24 net.gateway=10.0.2.2 net.dns=10.0.2.3' >/dev/null 2>&1
 sleep 3
 wait_ssh && ok "SSH ueber neue Verbindung" || bad "kein SSH mit statischer IP"
 $S 'grep -q "inet static" /etc/network/interfaces' && ok "interfaces: statisch" || bad "interfaces nicht statisch"
@@ -62,7 +62,7 @@ $S 'ip -4 addr show eth0' | grep -q '10.0.2.15/24' && ok "statische IP nach Neus
 $S 'pidof udhcpc' >/dev/null && bad "udhcpc laeuft trotz static" || ok "kein DHCP-Client"
 
 echo "== Statische IP (falsch): SSH bricht ab, System nimmt es selbst zurueck"
-$S 'arcadeos-config set net.address=10.9.9.9/24 net.gateway=10.9.9.1' >/dev/null 2>&1
+$SQ 'arcadeos-config set net.address=10.9.9.9/24 net.gateway=10.9.9.1' >/dev/null 2>&1
 GONE=0; for i in $(seq 1 60); do $S true 2>/dev/null || { GONE=1; break; }; sleep 1; done
 [ $GONE = 1 ] && ok "SSH weg" || bad "SSH geht noch (Test ungueltig?)"
 T0=$(date +%s)
@@ -71,7 +71,7 @@ $S 'ip -4 addr show eth0' | grep -q '10.0.2.15/24' && ok "alte statische IP wied
 check "$(cfg pending)" "false" "keine offene Aenderung"
 
 echo "== Zurueck auf DHCP"
-$S 'arcadeos-config set net.mode=dhcp' >/dev/null 2>&1; sleep 3; wait_ssh
+$SQ 'arcadeos-config set net.mode=dhcp' >/dev/null 2>&1; sleep 3; wait_ssh
 $S arcadeos-config confirm >/dev/null && ok "DHCP bestaetigt" || bad "confirm"
 $S 'pidof udhcpc' >/dev/null && ok "DHCP-Client laeuft" || bad "kein DHCP-Client"
 

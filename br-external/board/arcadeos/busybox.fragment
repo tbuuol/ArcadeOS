@@ -1,0 +1,7 @@
+# Zeitsynchronisation (das Mesh braucht eine Uhr auf ~60 s genau)
+CONFIG_NTPD=y
+CONFIG_FEATURE_NTPD_SERVER=n
+CONFIG_FEATURE_NTPD_CONF=n
+# Warteschlangen anzeigen/steuern (Netztuning, Diagnose)
+CONFIG_TC=y
+CONFIG_FEATURE_TC_INGRESS=n

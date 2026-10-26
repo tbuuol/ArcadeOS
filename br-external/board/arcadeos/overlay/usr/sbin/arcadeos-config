@@ -14,7 +14,8 @@
 # wiederhergestellt – auch nach einem Neustart waehrend der Frist.
 #
 # Schluessel: hostname, net.mode (dhcp|static), net.address (IP/Praefix), net.gateway,
-#             net.dns (Leerzeichen-getrennt), config.confirm_timeout (Sekunden)
+#             net.dns (Leerzeichen-getrennt), ntp.servers (Leerzeichen-getrennt),
+#             config.confirm_timeout (Sekunden)
 # Dateien:    /state/config/system.conf, /state/config/authorized_keys
 #
 
@@ -42,6 +43,7 @@ validate() {  # key value
 		net.gateway) valid_ip "$2" || die "ungueltiges net.gateway: $2" ;;
 		net.dns) for d in $2; do valid_ip "$d" || die "ungueltiger DNS-Server: $d"; done ;;
 		config.confirm_timeout) [ "$2" -ge 30 ] 2>/dev/null || die "config.confirm_timeout mindestens 30" ;;
+		ntp.servers) for n in $2; do echo "$n" | grep -qE '^[A-Za-z0-9.-]{1,253}$' || die "ungueltiger NTP-Server: $n"; done ;;
 		*) die "unbekannter Schluessel: $1" ;;
 	esac
 }
@@ -63,6 +65,7 @@ cmd_show() {
 	printf '{"hostname":%s,"net":{"mode":%s,"address":%s,"gateway":%s,"dns":%s},' \
 		"$(json_str "$(get hostname)")" "$(json_str "$(get net.mode)")" "$(json_str "$(get net.address)")" \
 		"$(json_str "$(get net.gateway)")" "$(json_str "$(get net.dns)")"
+	printf '"ntp_servers":%s,' "$(json_str "$(get ntp.servers)")"
 	printf '"ssh_keys":{"recovery":%s,"config":%s},"pending":%s,"confirm_remaining_s":%s}\n' \
 		"$(grep -c . /etc/arcadeos/recovery_keys 2>/dev/null || echo 0)" \
 		"$(grep -c . "$CFG/authorized_keys" 2>/dev/null || echo 0)" "$pending" "$remaining"

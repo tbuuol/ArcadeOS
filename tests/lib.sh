@@ -8,6 +8,8 @@ KEY=${KEY:-$HOME/.ssh/aios_ed25519}
 SSHOPTS="-p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=3 -o ServerAliveInterval=5 -o ServerAliveCountMax=6 -o BatchMode=yes"
 # timeout + Keepalive: bricht die VM mitten in einer Verbindung weg, haengt ssh sonst minutenlang
 S="timeout 60 ssh -i $KEY $SSHOPTS root@127.0.0.1"
+# fuer Befehle, die absichtlich das Netzwerk umwerfen: nicht an der abgerissenen Verbindung haengen
+SQ="timeout 10 ssh -i $KEY $SSHOPTS root@127.0.0.1"
 MINISIGN="$ROOT/output/host/bin/minisign"
 PASS=0; FAIL=0
 

@@ -96,32 +96,40 @@ Linux-Kernel + eigenes, minimales Userland (Buildroot). Kein GUI, Zugang nur per
 - Tests: `tests/qemu-{state,update,config,agentd}.sh`
 - Größe: Rootfs 2,4 MB (squashfs), Kernel 3,6 MB
 
-### Mesh – Analyse und Vorschlag  *(Entscheidung offen, 2026-10-26)*
-Das Arcade-Mesh (`arcade/mesh/`, ~6.300 Zeilen Python) ist bereits genau das, was ArcadeOS-Instanzen
-untereinander bräuchten:
-- Identität = eigener Ed25519-Mesh-Key, Verbindung X25519-verschlüsselt und per Key authentifiziert
-- Peers kommen aus Ankündigungen **auf der Chain** (Pepecoin testnet), keine URLs/Server/Hubs
-- NAT: dialt raus; IPv6-„Meeting“ (gleichzeitiges Öffnen im 15-s-Takt der Uhr); notfalls WebSocket
-  über einen selbst geöffneten Cloudflare-Tunnel; leitet für andere weiter
-- Darauf: Räume (Echtzeit), geteilte Cores (`coreshare`), Core-zu-Core-Tunnel (`corelink`),
-  Index-Vergleich zwischen Arcades (`indexcheck`), Betreiber-Liste, STUN für WebRTC u.a.
+### Netztuning + Zeit  *(fertig, 2026-10-26)*
+- BBR-Staukontrolle, fq als Warteschlange, `tcp_notsent_lowat=16384`: kleine Nachrichten warten nicht
+  hinter Megabytes im Sendepuffer; BBR hält den Puffer im Router/Modem kurz (langsamer Upload zu Hause)
+- Kernel zusätzlich mit fq_codel und cake (für spätere Bandbreitenbegrenzung)
+- Zeit: busybox-ntpd (Pool-Server, `arcadeos-config set ntp.servers=…`), Status `/run/ntp.json`
+- agentd `system_status` zeigt Uhrzeit/NTP und Netz; Test `tests/qemu-net.sh` (14 Prüfungen)
 
-**Vorschlag:** kein eigenes Netz, sondern die Arcade selbst (unverändert, Upstream-Releases) als
-Dienst auf ArcadeOS → jede Instanz ist ein vollwertiger Mesh-Knoten, kompatibel mit allen
-bestehenden Arcades. ArcadeOS liefert, was eine App allein nicht kann:
-- Mesh-Key und Konten auf `/state` (bleiben über A/B-Updates), Daten auf externer Platte
-- **Zeitsynchronisation (NTP)** – fehlt heute; das Mesh braucht sie (IPv6-Takt, 60 s Toleranz)
-- optional Portfreigabe am Router (NAT-PMP/UPnP), IPv6 ab Werk, Firewall
-- Dienstüberwachung, Updates mit Rollback, Status/Mesh-Peers in agentd
-- Laufzeit in Buildroot vorhanden: python3, python-requests, python-pynacl (libsodium ist schon da)
+### Phase 2a – Mesh  *(in Arbeit)*
+**Entscheidung (tbuuol, 2026-10-26):** Arcade-Software und ArcadeOS bleiben getrennt, nichts wird
+zusammengeführt. ArcadeOS bekommt einen **eigenen Mesh-Dienst `meshd`**, der das Mesh-Protokoll der
+Arcades spricht (Spezifikation: [docs/mesh-protocol.md](docs/mesh-protocol.md)) und so mit den
+Live-Arcades ein gemeinsames Netz bildet.
 
-Neue ArcadeOS-Funktionen über das Mesh (z.B. signierte OS-Updates von Peers verteilen) als neue
-Frame-Arten per PR bei Martin, statt eines zweiten Netzes.
+Warum ein eigener Dienst – gemessen 2026-10-26 gegen Live-Arcades:
+- Protokoll effizient: 0,17 ms CPU je Weiterleitung (Martins Code), nachbauen lohnt dafür nicht
+- aber Ausreißer: Netz 107 ms ±2, Mesh-Ping p90 219–364 ms, p99 bis ~1 s – im Arcade-Prozess
+  (Mesh teilt sich den Python-GIL mit Web/Index), nicht im Netz; mit eigenem Rust-Client bestätigt
+- `meshd` in **Rust**: speichersicher (Daten aus dem Internet), kein GIL, keine GC-Pausen, ~0,7 MB
 
-**Folge für Phase 2:** Die Arcade hat schon eigene Indizes (SQLite), UTXO-Set (`utxoset.py`) und
-Kotia/MoonBrix-Assets. Statt utxo-db/asset-db neu zu bauen: Arcade-Index nutzen, nur Fehlendes ergänzen.
+Meilensteine:
+1. ✅ Link-Schicht: Rahmen, HELLO, Handshake (X25519, BLAKE2b, Ed25519), XChaCha20-Poly1305,
+   ping/pong, addrs; `meshd probe` verbindet sich mit allen erreichbaren Live-Arcades
+2. WebSocket-Transport (`wss://…/mesh`; zwei Live-Arcades sind nur so erreichbar)
+3. Dauerbetrieb: Peer-Verwaltung (6 ausgehend, bis 32 eingehend), Adressbuch auf `/state`,
+   Mesh-Key auf `/state`, ping/Timeout, Weiterleitung von `sub`/`pub` (kanonisches JSON wie Python)
+4. Räume für lokale Anwendungen (Schnittstelle über Unix-Socket), Grenzen wie die Arcades
+5. Peers aus Chain-Ankündigungen lesen (braucht Zugriff auf Pepecoin-Daten), eigene Ankündigung
+6. IPv6-„Meeting“, Dialback, optional Portfreigabe am Router (NAT-PMP)
+7. Buildroot-Paket, Init-Skript, Watchdog, agentd-Werkzeuge (Peers, Räume, RTT), Tests in QEMU
 
-### Phase 2 – Node + Indexer
+Nebenbefund: auf diesem Server liefen 18 verwaiste Worker-Prozesse der Arcade (475 MB) von früheren
+Neustarts – gehört nicht zu ArcadeOS, Hinweis an den Betreiber.
+
+### Phase 2b – Node + Indexer
 - Node(s) als Dienst (Arcade-Chain, optional Kotia)
 - Index-Bus: verteilt Blöcke an Module, zentrales Reorg-Handling
 - Modul **utxo-db**: Adresse/Scripthash → UTXOs + Historie; Watch-only = Abfrage per xpub;

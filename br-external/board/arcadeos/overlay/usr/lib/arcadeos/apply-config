@@ -72,4 +72,13 @@ else
 	rm -f /run/udhcpc/static
 fi
 [ "$MODE" = live ] && [ "$NETCHANGE" = 1 ] && ifup -a >/dev/null 2>&1
+
+# 4. NTP-Server; live nur bei Aenderung ntpd neu starten
+get ntp.servers > $R/ntp.servers.new
+if ! cmp -s $R/ntp.servers.new $R/ntp.servers 2>/dev/null; then
+	mv $R/ntp.servers.new $R/ntp.servers
+	[ "$MODE" = live ] && /etc/init.d/S48ntpd restart >/dev/null 2>&1
+else
+	rm -f $R/ntp.servers.new
+fi
 exit 0

@@ -107,6 +107,7 @@ tests/qemu-state.sh      # UEFI/GRUB, A/B-Probeboot, read-only Rootfs, Persisten
 tests/qemu-update.sh     # A/B-Updates: Signaturen, kaputte Pakete, Frist, confirm, Watchdog, rollback
 tests/qemu-config.sh     # Konfiguration: confirm, Frist, Neustart, falsche IP, SSH-Keys
 tests/qemu-agentd.sh     # MCP-Server über SSH
+tests/qemu-net.sh        # Netztuning (BBR, fq, notsent_lowat) und NTP
 ```
 
 ## Aufbau
@@ -115,5 +116,8 @@ tests/qemu-agentd.sh     # MCP-Server über SSH
   Rootfs-Overlay, Post-Build/Post-Image-Skripte
 - `tests/` – Tests in QEMU (`lib.sh`: gemeinsame Hilfsfunktionen)
 - `tools/` – `sign-update.sh` (Update-Paket signieren)
+- `meshd/` – Mesh-Dienst in Rust (Arcade-Mesh-Protokoll, [docs/mesh-protocol.md](docs/mesh-protocol.md));
+  bisher Link-Schicht und `meshd probe host:port …` (Verbindungstest)
+- `docs/` – Spezifikationen
 - `keys/` – `authorized_keys` für root (nicht im Repo)
 - `run.sh` – QEMU-Start mit UEFI/OVMF (KVM, falls vorhanden, sonst Emulation)
