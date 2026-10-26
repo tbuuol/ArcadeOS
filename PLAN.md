@@ -103,6 +103,24 @@ Linux-Kernel + eigenes, minimales Userland (Buildroot). Kein GUI, Zugang nur per
 - Zeit: busybox-ntpd (Pool-Server, `arcadeos-config set ntp.servers=…`), Status `/run/ntp.json`
 - agentd `system_status` zeigt Uhrzeit/NTP und Netz; Test `tests/qemu-net.sh` (14 Prüfungen)
 
+### Befund: Neustart-Fehler in QEMU 8.2.2 (Test-Umgebung, nicht ArcadeOS)  *(2026-10-26)*
+Ohne KVM (reine Emulation, ein Host-Thread pro virtuellem Kern) fiel bei ~3 % der Neustarts die VM aus.
+Mit Logs eingegrenzt (`run.sh` DEBUG_DIR: QEMU-Reset-Log, QMP-Abfrage der hängenden VM, Kernel-Log):
+- **Absturz:** Segfault von qemu-system-x86 beim Kernel-Start der VM, in
+  `address_space_translate_internal` (Speicherkarte von QEMU; Symbole aus Ubuntus ddebs) – Lesezugriff
+  auf ungültigen Speicher, passt zu einem Thread-Wettlauf beim Umbau der Speicherkarte
+- **Hänger beim Reset:** ArcadeOS fährt sauber herunter, die UEFI-Firmware läuft danach in der DXE-Phase;
+  Kern 0 kreist in einem 3,9-KB-Modul mit Sprüngen in die CPU-Verwaltung, Kern 1 schläft (HLT) an der
+  normalen Parkadresse für Nebenkerne → Weck-Interrupt zwischen den Kernen verloren. Genaues EDK2-Modul
+  nicht bestimmt (Ubuntus OVMF ohne Modulnamen)
+- **Vergleich:** QEMU 8.2.2 (Ubuntu): 4 Fehler in ~120 Neustarts. QEMU 10.2.0 (eigener Build,
+  `tools_qemu_defconfig` → `output-tools/`): 0 Fehler in 150 Neustarts (Dauerlauf) plus alle Testreihen
+- **Folge:** `run.sh` nimmt QEMU 10.2 aus `output-tools/`, falls vorhanden. Kein Workaround in ArcadeOS.
+- Ein dritter „Hänger“ war ein Fehlalarm des Testwerkzeugs (reboot-Befehl unter Last nicht angekommen);
+  `reboot_vm`/`reboot-soak.sh` wiederholen ihn jetzt
+- Werkzeuge: `tests/reboot-soak.sh`, `tools/qmp.py dump` (Register, Befehlszeiger-Stichproben, Modul am
+  Befehlszeiger), Tests sichern bei Fehlschlag alle Logs in `test-logs/`
+
 ### Phase 2a – Mesh  *(in Arbeit)*
 **Entscheidung (tbuuol, 2026-10-26):** Arcade-Software und ArcadeOS bleiben getrennt, nichts wird
 zusammengeführt. ArcadeOS bekommt einen **eigenen Mesh-Dienst `meshd`**, der das Mesh-Protokoll der

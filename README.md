@@ -8,6 +8,14 @@ Schlankes Linux für einen KI-Betreiber: Linux-Kernel, musl, busybox und dropbea
 
 Benötigt (Ubuntu/Debian): `build-essential unzip qemu-system-x86 ovmf`
 
+Für die Tests empfohlen: eigenes QEMU 10.2 (Ubuntus QEMU 8.2.2 fällt ohne KVM bei ~3 % der Neustarts aus,
+siehe PLAN.md). `run.sh` nimmt es automatisch, wenn es gebaut ist:
+
+```sh
+make -C buildroot-2026.02.3 O=$PWD/output-tools BR2_EXTERNAL=$PWD/br-external tools_qemu_defconfig
+make -C output-tools host-qemu       # einmalig, ca. 40 min
+```
+
 ```sh
 wget https://buildroot.org/downloads/buildroot-2026.02.3.tar.xz
 tar xf buildroot-2026.02.3.tar.xz
@@ -121,6 +129,7 @@ tests/qemu-config.sh     # Konfiguration: confirm, Frist, Neustart, falsche IP, 
 tests/qemu-agentd.sh     # MCP-Server über SSH
 tests/qemu-net.sh        # Netztuning (BBR, fq, notsent_lowat) und NTP
 tests/qemu-mesh.sh       # meshd: Live-Verbindungen, Key bleibt, Neustart nach Absturz (braucht Internet)
+tests/reboot-soak.sh     # Neustart-Dauerlauf mit Diagnose (QMP-Abfrage bei Hänger)
 ```
 
 ## Aufbau
@@ -133,4 +142,4 @@ tests/qemu-mesh.sh       # meshd: Live-Verbindungen, Key bleibt, Neustart nach A
   `meshd run` (Dauerbetrieb, im Image als Dienst `S60meshd`), `meshd status`, `meshd probe host:port|wss://… …`
 - `docs/` – Spezifikationen
 - `keys/` – `authorized_keys` für root (nicht im Repo)
-- `run.sh` – QEMU-Start mit UEFI/OVMF (KVM, falls vorhanden, sonst Emulation)
+- `run.sh` – QEMU-Start mit UEFI/OVMF (KVM, falls vorhanden, sonst Emulation); `DEBUG_DIR=…` für Diagnose

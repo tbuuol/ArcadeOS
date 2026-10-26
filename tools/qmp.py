@@ -51,6 +51,29 @@ def rips(regs_text):
     return out
 
 
+def identify(q, rip, workdir="/tmp"):
+    """Welches UEFI-Modul (PE-Image) enthaelt diese Adresse? Nur fuer identitaetsabgebildete Adressen
+    unter 4 GB (Firmware-Phase). Liest 2 MB unterhalb der Adresse per pmemsave, sucht rueckwaerts den
+    MZ-Kopf auf einer 4-KB-Grenze und darin den Debug-Pfad (*.dll / *.efi / *.pdb)."""
+    addr = int(rip, 16)
+    if addr >= 1 << 32:
+        return None
+    size = 2 * 1024 * 1024
+    start = max(0, (addr & ~0xFFF) - size + 0x1000)
+    path = f"{workdir}/qmp-mem-{start:x}.bin"
+    r = q.cmd("pmemsave", val=start, size=addr - start + 0x1000, filename=path)
+    if "error" in r:
+        return {"error": r["error"].get("desc")}
+    data = open(path, "rb").read()
+    for off in range((len(data) - 1) & ~0xFFF, -1, -0x1000):
+        if data[off:off + 2] == b"MZ":
+            img = data[off:]
+            names = re.findall(rb"[\x20-\x7e]{6,200}\.(?:dll|efi|pdb)", img[:size])
+            return {"image_base": hex(start + off), "offset": hex(addr - start - off),
+                    "name": names[0].decode() if names else None}
+    return {"image_base": None}
+
+
 def main():
     if len(sys.argv) < 3:
         print(__doc__)
@@ -68,6 +91,12 @@ def main():
         for i in range(n):
             print(i, json.dumps(rips(q.hmp("info registers -a"))))
             time.sleep(1)
+        print("== Module am Befehlszeiger (Firmware-Phase)")
+        for cpu, rip in sorted(rips(q.hmp("info registers -a")).items()):
+            try:
+                print(cpu, rip, json.dumps(identify(q, rip)))
+            except Exception as e:                  # noqa: BLE001 -- Diagnose darf nicht abbrechen
+                print(cpu, rip, "Fehler:", e)
         print("== info pic"); print(q.hmp("info pic"))
         print("== info lapic"); print(q.hmp("info lapic"))
         return

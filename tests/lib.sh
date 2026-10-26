@@ -50,7 +50,13 @@ hang_dump() {
     echo "  VM antwortet nicht ($1) – Abfrage ueber QMP nach debug/hang-$1.txt"
     python3 -I "$ROOT/tools/qmp.py" "$SP/debug/qmp.sock" dump 10 > "$SP/debug/hang-$1.txt" 2>&1
 }
-reboot_vm() { b=$(bootid); $S reboot >/dev/null 2>&1; wait_reboot "$b"; }
+# Neustart; kommt die VM nach 60 s noch mit derselben Boot-ID, war der Befehl nicht angekommen: wiederholen
+reboot_vm() {
+    b=$(bootid); $S reboot >/dev/null 2>&1
+    for i in $(seq 1 60); do sleep 1; n=$(bootid); [ -n "$n" ] && [ "$n" != "$b" ] && { WAITED=$i; return 0; }; done
+    [ "$(bootid)" = "$b" ] && { echo "  (reboot nicht angekommen, erneut)"; $S reboot >/dev/null 2>&1; }
+    wait_reboot "$b"
+}
 # Wert eines (eindeutigen) Schluessels aus einer JSON-Zeile
 jfield() { sed -n "s/.*\"$1\":\"\{0,1\}\([^\",}]*\).*/\1/p"; }
 check() {  # wert erwartet beschreibung

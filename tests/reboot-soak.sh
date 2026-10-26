@@ -5,6 +5,8 @@
 # test-logs/reboot-soak-<zeit>/ gesichert.
 # Aufruf: [QEMU=…] [TCG_THREAD=single] tests/reboot-soak.sh [N=150] [SMP=2] [SSH_PORT=2224]
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# wie run.sh: eigener QEMU-Build, falls vorhanden (fuer die Angabe im Protokoll)
+[ -z "${QEMU:-}" ] && [ -x "$ROOT/output-tools/host/bin/qemu-system-x86_64" ] && QEMU="$ROOT/output-tools/host/bin/qemu-system-x86_64"
 N=${1:-150}; SMPN=${2:-2}; PORT=${3:-2224}
 OUT="$ROOT/test-logs/reboot-soak-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUT/debug"
@@ -22,10 +24,17 @@ echo "Start: SMP=$SMPN QEMU=${QEMU:-qemu-system-x86_64} ($("${QEMU:-qemu-system-
 for r in $(seq 1 "$N"); do
     b=$(bid); r0=$(resets); t0=$(date +%s)
     $S reboot >/dev/null 2>&1
-    got=0
+    got=0; same=0; resent=0
     for i in $(seq 1 300); do
-        sleep 1; n=$(bid); [ -n "$n" ] && [ "$n" != "$b" ] && { got=1; break; }
+        sleep 1; n=$(bid)
+        [ -n "$n" ] && [ "$n" != "$b" ] && { got=1; break; }
+        # gleiche Boot-ID ueber 60 s: der reboot-Befehl ist nicht angekommen -> erneut senden
+        if [ -n "$n" ] && [ "$n" = "$b" ]; then
+            same=$((same + 1))
+            if [ $same -ge 60 ]; then $S reboot >/dev/null 2>&1; same=0; resent=$((resent + 1)); fi
+        fi
     done
+    [ $resent -gt 0 ] && echo "   (reboot-Befehl ${resent}x nicht angekommen, erneut gesendet)" | tee -a "$OUT/soak.txt"
     d=$(( $(date +%s) - t0 )); dr=$(( $(resets) - r0 ))
     if [ $got = 1 ]; then
         echo "$r $(date +%H:%M:%S) ok ${d}s resets=$dr load=$(cut -d' ' -f1 /proc/loadavg)" | tee -a "$OUT/soak.txt"
