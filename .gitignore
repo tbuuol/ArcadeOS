@@ -14,3 +14,4 @@ meshd/target/
 live/
 test-logs/
 output-tools/
+__pycache__/
