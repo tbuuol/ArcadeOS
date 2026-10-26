@@ -1,1 +1,11 @@
+menu "ArcadeOS"
 
+config BR2_ARCADEOS_RELEASE
+	bool "Release-Build (nur Release-Keys fuer Updates)"
+	help
+	  Release-Build fuer echte Geraete: arcadeos-update akzeptiert nur Pakete, die mit einem
+	  Release-Key (keys/trusted/release/*.pub, Schluessel des Users) signiert sind.
+	  Ohne diese Option (Dev-Build, z.B. fuer QEMU) wird zusaetzlich der Build-Key
+	  (keys/trusted/dev/*.pub) akzeptiert und jedes Paket automatisch damit signiert.
+
+endmenu

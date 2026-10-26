@@ -1,0 +1,196 @@
+#!/usr/bin/lua
+--
+-- agentd – MCP-Server (Model Context Protocol) fuer ArcadeOS, ueber stdin/stdout.
+-- Start durch den Agenten per SSH, z.B. in Claude Code (.mcp.json):
+--   {"mcpServers": {"arcadeos": {"command": "ssh",
+--     "args": ["-i", "~/.ssh/key", "root@geraet", "agentd"]}}}
+--
+-- Werkzeuge lesen den Zustand oder laufen ueber die abgesicherten Befehle (arcadeos-update,
+-- arcadeos-config) mit Frist und Rollback. Alles Weitere geht ueber die normale SSH-Shell.
+--
+
+local json = require("cjson")  -- leere Tabellen werden zu {} (wie MCP es erwartet)
+
+local VERSION = "0.1"
+local PROTOCOL = "2025-06-18"
+
+local function sh(cmd)
+	local p = io.popen(cmd .. " 2>&1")
+	local out = p:read("a")
+	local ok, _, code = p:close()
+	return out, (ok and 0 or code or 1)
+end
+
+local function sh_json(cmd)
+	local out, code = sh(cmd)
+	local ok, v = pcall(json.decode, out)
+	if ok then return v, code end
+	return { error = out:gsub("%s+$", ""), exit = code }, code
+end
+
+local function readfile(path)
+	local f = io.open(path)
+	if not f then return nil end
+	local s = f:read("a"); f:close()
+	return s
+end
+
+local function release()
+	local r = {}
+	for k, v in (readfile("/etc/arcadeos-release") or ""):gmatch("(%w+)=([^\n]*)") do r[k:lower()] = v end
+	return r
+end
+
+local function df(path)
+	local out = sh("df -k " .. path .. " | tail -1")
+	local total, used, avail = out:match("%S+%s+(%d+)%s+(%d+)%s+(%d+)")
+	if not total then return nil end
+	return { total_kb = tonumber(total), used_kb = tonumber(used), free_kb = tonumber(avail) }
+end
+
+local function meminfo()
+	local m = {}
+	for k, v in (readfile("/proc/meminfo") or ""):gmatch("(%w+):%s+(%d+)") do m[k] = tonumber(v) end
+	return { total_kb = m.MemTotal, available_kb = m.MemAvailable }
+end
+
+local function shq(s) return "'" .. tostring(s):gsub("'", "'\\''") .. "'" end
+
+local tools = {
+	{
+		name = "system_status",
+		description = "Gesamtzustand: Version, Uptime, Last, Speicher, Platten, Zustands-Partition, "
+			.. "A/B-Slots (laufend/fest/Probeboot) und Konfiguration (inkl. offener Transaktion).",
+		inputSchema = { type = "object", properties = {} },
+		run = function()
+			local up = (readfile("/proc/uptime") or "0"):match("^(%S+)")
+			local load = (readfile("/proc/loadavg") or ""):match("^(%S+ %S+ %S+)")
+			return {
+				release = release(),
+				hostname = (readfile("/proc/sys/kernel/hostname") or ""):gsub("%s+$", ""),
+				uptime_s = math.floor(tonumber(up) or 0),
+				load = load,
+				memory = meminfo(),
+				disk = { root = df("/"), state = df("/state") },
+				state = sh_json("cat /run/state.json"),
+				update = sh_json("arcadeos-update status"),
+				config = sh_json("arcadeos-config show"),
+			}
+		end,
+	},
+	{
+		name = "logs",
+		description = "Letzte Zeilen aus dem Audit-Log (alle Aenderungen am System, JSON-Zeilen) "
+			.. "oder aus dem Syslog.",
+		inputSchema = {
+			type = "object",
+			properties = {
+				source = { type = "string", enum = { "audit", "syslog" }, description = "Standard: audit" },
+				lines = { type = "integer", minimum = 1, maximum = 500, description = "Standard: 50" },
+			},
+		},
+		run = function(a)
+			local n = math.max(1, math.min(500, math.floor(tonumber(a.lines) or 50)))
+			local file = (a.source == "syslog") and "/var/log/messages" or "/state/log/audit.log"
+			local out = sh("tail -n " .. n .. " " .. file)
+			return { source = a.source or "audit", file = file, lines = out }
+		end,
+	},
+	{
+		name = "update_confirm",
+		description = "Bestaetigt den laufenden Probeboot-Slot nach einem Update (macht ihn fest). "
+			.. "Nur aufrufen, wenn das neue System wie erwartet laeuft.",
+		inputSchema = { type = "object", properties = {} },
+		run = function() return sh_json("arcadeos-update confirm") end,
+	},
+	{
+		name = "update_rollback",
+		description = "Macht den anderen Slot wieder fest (wirksam nach dem naechsten Neustart).",
+		inputSchema = { type = "object", properties = {} },
+		run = function() return sh_json("arcadeos-update rollback") end,
+	},
+	{
+		name = "config_set",
+		description = "Aendert Konfigurationswerte als Transaktion: sofort aktiv, aber ohne config_confirm "
+			.. "innerhalb der Frist (Standard 120 s) automatisch zurueck. Schluessel: hostname, net.mode "
+			.. "(dhcp|static), net.address (IP/Praefix), net.gateway, net.dns, config.confirm_timeout. "
+			.. "Nach Netzwerkaenderungen per neuer Verbindung pruefen, dann bestaetigen.",
+		inputSchema = {
+			type = "object",
+			properties = { values = { type = "object", additionalProperties = { type = "string" },
+				description = "z.B. {\"hostname\": \"pi-wohnzimmer\"}" } },
+			required = { "values" },
+		},
+		run = function(a)
+			local args = {}
+			for k, v in pairs(a.values or {}) do
+				if not tostring(k):match("^[%w%.]+$") then return { error = "ungueltiger Schluessel: " .. k } end
+				args[#args + 1] = shq(k .. "=" .. tostring(v))
+			end
+			if #args == 0 then return { error = "keine Werte" } end
+			return sh_json("arcadeos-config set " .. table.concat(args, " "))
+		end,
+	},
+	{
+		name = "config_confirm",
+		description = "Bestaetigt die offene Konfigurationsaenderung.",
+		inputSchema = { type = "object", properties = {} },
+		run = function() return sh_json("arcadeos-config confirm") end,
+	},
+	{
+		name = "config_rollback",
+		description = "Nimmt die offene Konfigurationsaenderung sofort zurueck.",
+		inputSchema = { type = "object", properties = {} },
+		run = function() return sh_json("arcadeos-config rollback") end,
+	},
+}
+
+local by_name = {}
+for _, t in ipairs(tools) do by_name[t.name] = t end
+
+local function tool_list()
+	local l = {}
+	for _, t in ipairs(tools) do
+		l[#l + 1] = { name = t.name, description = t.description, inputSchema = t.inputSchema }
+	end
+	return l
+end
+
+local function handle(msg)
+	local m = msg.method
+	if m == "initialize" then
+		return { protocolVersion = PROTOCOL, capabilities = { tools = { listChanged = false } },
+			serverInfo = { name = "arcadeos-agentd", version = VERSION } }
+	elseif m == "ping" then
+		return {}
+	elseif m == "tools/list" then
+		return { tools = tool_list() }
+	elseif m == "tools/call" then
+		local p = msg.params or {}
+		local t = by_name[p.name]
+		if not t then return nil, { code = -32602, message = "unbekanntes Werkzeug: " .. tostring(p.name) } end
+		local ok, res = pcall(t.run, p.arguments or {})
+		if not ok then
+			return { content = { { type = "text", text = "Fehler: " .. tostring(res) } }, isError = true }
+		end
+		local is_err = type(res) == "table" and res.error ~= nil
+		return { content = { { type = "text", text = json.encode(res) } }, isError = is_err }
+	end
+	return nil, { code = -32601, message = "unbekannte Methode: " .. tostring(m) }
+end
+
+for line in io.lines() do
+	local ok, msg = pcall(json.decode, line)
+	local reply
+	if not ok or type(msg) ~= "table" then
+		reply = { jsonrpc = "2.0", id = json.null, error = { code = -32700, message = "Parse error" } }
+	elseif msg.id ~= nil then  -- Anfrage (Notifications ohne id bekommen keine Antwort)
+		local result, err = handle(msg)
+		reply = { jsonrpc = "2.0", id = msg.id }
+		if err then reply.error = err else reply.result = result end
+	end
+	if reply then
+		io.write(json.encode(reply), "\n")
+		io.flush()
+	end
+end

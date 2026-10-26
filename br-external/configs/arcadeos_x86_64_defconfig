@@ -27,6 +27,15 @@ BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_18=y
 # SSH
 BR2_PACKAGE_DROPBEAR=y
 
+# Signaturpruefung fuer Update-Pakete (Ed25519), Signieren auf der Build-Maschine
+BR2_PACKAGE_MINISIGN=y
+BR2_PACKAGE_HOST_MINISIGN=y
+
+# agentd (MCP-Server ueber SSH): Lua + JSON
+BR2_PACKAGE_LUA=y
+BR2_PACKAGE_LUA_5_4=y
+BR2_PACKAGE_LUA_CJSON=y
+
 # Root-Dateisystem: read-only squashfs, Zustand auf eigener Partition (S00state)
 BR2_TARGET_ROOTFS_SQUASHFS=y
 BR2_TARGET_ROOTFS_SQUASHFS4_ZSTD=y

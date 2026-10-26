@@ -13,7 +13,9 @@
 # Absturz, Kernel-Panic (panic=10) oder Haenger (Watchdog).
 #
 # Paket (tar): manifest (key=value: version, arch, rootfs_sha256, kernel_sha256),
-#              rootfs.squashfs, bzImage. Paket ueber SSH streamen:
+#              manifest.<name>.minisig (mind. eine gueltige Signatur), rootfs.squashfs, bzImage.
+# Signaturen (minisign/Ed25519) werden gegen /etc/arcadeos/update-keys/*.pub geprueft, bevor
+# irgendetwas geschrieben wird. Paket ueber SSH streamen:
 #   ssh root@host arcadeos-update install - < update.tar
 #
 
@@ -67,6 +69,24 @@ mf() {
 	sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1 | tr -cd 'A-Za-z0-9._:+-'
 }
 
+KEYS=/etc/arcadeos/update-keys
+
+# Prueft, ob irgendeine Signatur im Paket zu irgendeinem vertrauten Key passt; setzt $SIGNER
+verify_signature() {
+	SIGNER=""
+	for sig in "$1"/manifest.*.minisig; do
+		[ -f "$sig" ] || continue
+		for key in "$KEYS"/*.pub; do
+			[ -f "$key" ] || continue
+			if minisign -V -q -p "$key" -m "$1/manifest" -x "$sig" >/dev/null 2>&1; then
+				SIGNER=$(basename "$key" .pub)
+				return 0
+			fi
+		done
+	done
+	return 1
+}
+
 slot_version() {
 	if [ -f "$UPD/slot-$1.manifest" ]; then
 		mf "$UPD/slot-$1.manifest" version
@@ -103,6 +123,7 @@ cmd_install() {
 	for f in manifest rootfs.squashfs bzImage; do [ -f "$work/$f" ] || die "Paket unvollstaendig: $f fehlt"; done
 
 	m=$work/manifest
+	verify_signature "$work" || { audit update-rejected "keine gueltige Signatur"; die "keine gueltige Signatur (vertraute Keys: $(ls "$KEYS" | tr '\n' ' '))"; }
 	ver=$(mf "$m" version); arch=$(mf "$m" arch)
 	[ "$arch" = "$(uname -m)" ] || die "Paket ist fuer '$arch', dieses System ist $(uname -m)"
 	rsha=$(sha256sum < "$work/rootfs.squashfs" | cut -d' ' -f1)
@@ -113,7 +134,7 @@ cmd_install() {
 	psize=$(( $(cat /sys/class/block/$dev/size) * 512 ))
 	[ "$size" -le "$psize" ] || die "rootfs ($size B) passt nicht in rootfs-$t ($psize B)"
 
-	echo "Version $ver -> Slot $tgt (/dev/$dev)" >&2
+	echo "Version $ver (signiert: $SIGNER) -> Slot $tgt (/dev/$dev)" >&2
 	rm -f "$UPD/slot-$tgt.manifest"
 	dd if="$work/rootfs.squashfs" of="/dev/$dev" bs=1M conv=fsync 2>/dev/null
 	[ "$(head -c "$size" "/dev/$dev" | sha256sum | cut -d' ' -f1)" = "$rsha" ] || die "Lesepruefung rootfs-$t fehlgeschlagen"
@@ -128,8 +149,10 @@ cmd_install() {
 	boot_umount
 
 	cp "$m" "$UPD/slot-$tgt.manifest"
+	echo "signer=$SIGNER" >> "$UPD/slot-$tgt.manifest"
 	logger -t arcadeos-update "Version $ver in Slot $tgt installiert, Probeboot gesetzt" 2>/dev/null || true
-	printf '{"installed":"%s","version":"%s","next":"reboot, dann confirm"}\n' "$tgt" "$ver"
+	audit update-install "version=$ver slot=$tgt signer=$SIGNER"
+	printf '{"installed":"%s","version":"%s","signer":"%s","next":"reboot, dann confirm"}\n' "$tgt" "$ver" "$SIGNER"
 	[ "${2:-}" = --reboot ] && reboot
 	return 0
 }
@@ -146,6 +169,7 @@ cmd_confirm() {
 	if [ -f $TIMER_PID ]; then kill "$(cat $TIMER_PID)" 2>/dev/null || true; rm -f $TIMER_PID; fi
 	rm -f $DEADLINE
 	logger -t arcadeos-update "Slot $run bestaetigt" 2>/dev/null || true
+	audit update-confirm "slot=$run"
 	printf '{"confirmed":"%s"}\n' "$run"
 }
 
@@ -160,6 +184,7 @@ cmd_rollback() {
 		[ -f "$BOOT/$t/bzImage" ] || { boot_umount; die "Slot $tgt hat keinen Kernel"; }
 		genv_set slot "$tgt"
 		boot_umount
+		audit update-rollback "slot=$tgt"
 		printf '{"rollback":"%s","next":"reboot"}\n' "$tgt"
 	fi
 	[ "${1:-}" = --reboot ] && reboot

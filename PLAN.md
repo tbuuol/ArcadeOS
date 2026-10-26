@@ -40,7 +40,7 @@ Linux-Kernel + eigenes, minimales Userland (Buildroot). Kein GUI, Zugang nur per
   ohne Kommentare zusammen → busybox-`nslookup` funktioniert, Renew ohne Duplikate
 - Übertragen nach Phase 1: Host-Keys bei jedem neuen Image neu (→ Zustands-Partition)
 
-### Phase 1 – AI-OS-Basis  *(in Arbeit)*
+### Phase 1 – AI-OS-Basis  *(abgeschlossen, 2026-10-26)*
 - ✅ **Root-Dateisystem read-only, Zustand auf eigener Partition** (2026-10-25)
   - `rootfs-a` (squashfs/zstd, 2,0 MB), `rootfs-b` (leer, für A/B), `state` (ext4)
   - Kernel bootet `root=PARTLABEL=rootfs-a ro` – unabhängig vom Gerätenamen
@@ -72,11 +72,54 @@ Linux-Kernel + eigenes, minimales Userland (Buildroot). Kein GUI, Zugang nur per
   - Watchdog (`S01watchdog`, 30 s; Treiber i6300esb/iTCO/sp5100) und `panic=10`: Hänger oder
     Absturz im Probeboot → Neustart → alter Slot
   - Tests: `tests/qemu-update.sh`, 35 Prüfungen (kaputte Pakete, Frist, confirm, Watchdog, rollback)
-  - Noch offen: Pakete sind nur per Prüfsumme gesichert, nicht signiert (→ Signatur mit
-    Projekt-Key, Prüfung vor dem Schreiben); Pi-Weg (tryboot) ungetestet
-- „commit confirmed“ mit Auto-Rollback für Konfigurationsänderungen (braucht zentrale Konfiguration auf `/state`)
-- `agentd`: Systemzustand als JSON / MCP-Server über SSH
-- Audit-Log
+  - Noch offen: Pi-Weg (tryboot) ungetestet
+- ✅ **Signierte Update-Pakete** (2026-10-26) – minisign (Ed25519, libsodium)
+  - Prüfung vor jedem Schreibzugriff gegen `/etc/arcadeos/update-keys/*.pub`; Signatur deckt das
+    Manifest und damit (über die Prüfsummen) System und Kernel ab
+  - Zwei Schlüsselarten: **Release-Key des Users** (`keys/trusted/release/`, privat nur beim User,
+    signiert mit `tools/sign-update.sh`) und **Build-Key** dieser Maschine (`keys/trusted/dev/`,
+    privat in `~/.config/arcadeos/dev.key`, signiert jeden Dev-Build automatisch)
+  - `BR2_ARCADEOS_RELEASE=y`: Gerät vertraut nur Release-Keys; ohne Release-Key bricht der Build ab.
+    Dev-Build (QEMU): zusätzlich Build-Key
+- ✅ **Zentrale Konfiguration + „commit confirmed“** (2026-10-26)
+  - `/state/config/system.conf` (hostname, net.mode dhcp|static, net.address, net.gateway, net.dns,
+    config.confirm_timeout) und `/state/config/authorized_keys`
+  - `arcadeos-config show|set|add-key|remove-key|confirm|rollback`; jede Änderung sofort aktiv, ohne
+    `confirm` nach der Frist (Standard 120 s) zurück – auch nach Neustart während der Frist
+  - Immer zuerst sichere Vorgaben (DHCP, Recovery-SSH-Keys aus dem Image), Konfiguration darüber:
+    eine kaputte Konfiguration sperrt nie aus
+- ✅ **agentd + Audit-Log** (2026-10-26)
+  - `agentd`: MCP-Server (Protokoll 2025-06-18) über SSH-stdio, in Lua 5.4. Werkzeuge:
+    system_status, logs, update_confirm, update_rollback, config_set, config_confirm, config_rollback
+  - Audit-Log `/state/log/audit.log`: eine JSON-Zeile je Änderung (Update, Konfiguration, Bestätigung,
+    Rollback, abgelehnte Pakete) mit Zeit, Slot und SSH-Gegenstelle
+- Tests: `tests/qemu-{state,update,config,agentd}.sh`
+- Größe: Rootfs 2,4 MB (squashfs), Kernel 3,6 MB
+
+### Mesh – Analyse und Vorschlag  *(Entscheidung offen, 2026-10-26)*
+Das Arcade-Mesh (`arcade/mesh/`, ~6.300 Zeilen Python) ist bereits genau das, was ArcadeOS-Instanzen
+untereinander bräuchten:
+- Identität = eigener Ed25519-Mesh-Key, Verbindung X25519-verschlüsselt und per Key authentifiziert
+- Peers kommen aus Ankündigungen **auf der Chain** (Pepecoin testnet), keine URLs/Server/Hubs
+- NAT: dialt raus; IPv6-„Meeting“ (gleichzeitiges Öffnen im 15-s-Takt der Uhr); notfalls WebSocket
+  über einen selbst geöffneten Cloudflare-Tunnel; leitet für andere weiter
+- Darauf: Räume (Echtzeit), geteilte Cores (`coreshare`), Core-zu-Core-Tunnel (`corelink`),
+  Index-Vergleich zwischen Arcades (`indexcheck`), Betreiber-Liste, STUN für WebRTC u.a.
+
+**Vorschlag:** kein eigenes Netz, sondern die Arcade selbst (unverändert, Upstream-Releases) als
+Dienst auf ArcadeOS → jede Instanz ist ein vollwertiger Mesh-Knoten, kompatibel mit allen
+bestehenden Arcades. ArcadeOS liefert, was eine App allein nicht kann:
+- Mesh-Key und Konten auf `/state` (bleiben über A/B-Updates), Daten auf externer Platte
+- **Zeitsynchronisation (NTP)** – fehlt heute; das Mesh braucht sie (IPv6-Takt, 60 s Toleranz)
+- optional Portfreigabe am Router (NAT-PMP/UPnP), IPv6 ab Werk, Firewall
+- Dienstüberwachung, Updates mit Rollback, Status/Mesh-Peers in agentd
+- Laufzeit in Buildroot vorhanden: python3, python-requests, python-pynacl (libsodium ist schon da)
+
+Neue ArcadeOS-Funktionen über das Mesh (z.B. signierte OS-Updates von Peers verteilen) als neue
+Frame-Arten per PR bei Martin, statt eines zweiten Netzes.
+
+**Folge für Phase 2:** Die Arcade hat schon eigene Indizes (SQLite), UTXO-Set (`utxoset.py`) und
+Kotia/MoonBrix-Assets. Statt utxo-db/asset-db neu zu bauen: Arcade-Index nutzen, nur Fehlendes ergänzen.
 
 ### Phase 2 – Node + Indexer
 - Node(s) als Dienst (Arcade-Chain, optional Kotia)

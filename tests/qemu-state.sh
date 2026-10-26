@@ -7,7 +7,7 @@ trap 'pkill -x qemu-system-x86; rm -rf "$SP"' EXIT
 IMG="$(cd "$(dirname "$0")/.." && pwd)/output/images"
 KEY=${1:-$HOME/.ssh/aios_ed25519}
 # timeout + Keepalive: bricht die VM mitten in einer Verbindung weg, haengt ssh sonst minutenlang
-S="timeout 60 ssh -p 2222 -i $KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=3 -o ServerAliveInterval=2 -o ServerAliveCountMax=3 -o BatchMode=yes root@127.0.0.1"
+S="timeout 60 ssh -p 2222 -i $KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=3 -o ServerAliveInterval=5 -o ServerAliveCountMax=6 -o BatchMode=yes root@127.0.0.1"
 PASS=0; FAIL=0
 ok()   { echo "  OK   $*"; PASS=$((PASS+1)); }
 bad()  { echo "  FAIL $*"; FAIL=$((FAIL+1)); }

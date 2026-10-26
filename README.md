@@ -71,17 +71,49 @@ ssh root@host arcadeos-update confirm     # innerhalb von 10 min, sonst zurück 
 `arcadeos-update rollback` macht den anderen Slot wieder fest. Hängt oder stürzt das neue System ab,
 startet der Watchdog bzw. `panic=10` neu und es landet im alten Slot.
 
+Update-Pakete müssen signiert sein (minisign). Dev-Builds signiert die Build-Maschine automatisch;
+für echte Geräte (Release-Build) signierst du mit deinem eigenen Schlüssel – siehe
+[keys/README.md](keys/README.md) und `tools/sign-update.sh`.
+
+## Konfiguration
+
+```sh
+ssh root@host arcadeos-config set hostname=pi-wohnzimmer
+ssh root@host arcadeos-config set net.mode=static net.address=192.168.1.50/24 net.gateway=192.168.1.1 net.dns=1.1.1.1
+ssh root@host arcadeos-config add-key "ssh-ed25519 AAAA... laptop"
+ssh root@host arcadeos-config confirm     # über eine neue Verbindung, sonst nach 120 s zurück
+```
+
+Jede Änderung ist sofort aktiv und wird ohne `confirm` automatisch zurückgenommen – auch wenn die
+Verbindung abreißt oder das Gerät neu startet. Die SSH-Keys aus dem Image (Recovery-Keys) gelten immer.
+
+## Agenten-Zugang (MCP)
+
+`agentd` ist ein MCP-Server über SSH. Für Claude Code (`.mcp.json`):
+
+```json
+{"mcpServers": {"arcadeos": {"command": "ssh",
+  "args": ["-i", "~/.ssh/<key>", "root@<geraet>", "agentd"]}}}
+```
+
+Werkzeuge: `system_status`, `logs` (Audit-Log/Syslog), `update_confirm`, `update_rollback`,
+`config_set`, `config_confirm`, `config_rollback`. Jede Änderung landet im Audit-Log
+(`/state/log/audit.log`).
+
 ## Tests
 
 ```sh
 tests/qemu-state.sh      # UEFI/GRUB, A/B-Probeboot, read-only Rootfs, Persistenz, Fallback
-tests/qemu-update.sh     # A/B-Updates: kaputte Pakete, Frist, confirm, Watchdog, rollback (ca. 6 min)
+tests/qemu-update.sh     # A/B-Updates: Signaturen, kaputte Pakete, Frist, confirm, Watchdog, rollback
+tests/qemu-config.sh     # Konfiguration: confirm, Frist, Neustart, falsche IP, SSH-Keys
+tests/qemu-agentd.sh     # MCP-Server über SSH
 ```
 
 ## Aufbau
 
 - `br-external/` – Buildroot-External-Tree: Defconfig, Kernel-Config, Disk-Layout (genimage),
   Rootfs-Overlay, Post-Build/Post-Image-Skripte
-- `tests/` – Tests in QEMU
+- `tests/` – Tests in QEMU (`lib.sh`: gemeinsame Hilfsfunktionen)
+- `tools/` – `sign-update.sh` (Update-Paket signieren)
 - `keys/` – `authorized_keys` für root (nicht im Repo)
 - `run.sh` – QEMU-Start mit UEFI/OVMF (KVM, falls vorhanden, sonst Emulation)

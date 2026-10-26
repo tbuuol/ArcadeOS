@@ -1,0 +1,75 @@
+#!/bin/sh
+#
+# Wendet /state/config an (aufgerufen von S10config beim Booten und von arcadeos-config live).
+# Schreibt immer zuerst sichere Vorgaben (DHCP, Recovery-SSH-Keys aus dem Image) und legt die
+# Konfiguration darueber – eine kaputte oder fehlende Konfiguration sperrt nie aus.
+#
+#   apply-config boot|live
+#
+
+. /usr/lib/arcadeos/common.sh
+
+CFG=/state/config
+R=/run/arcadeos
+MODE=${1:-live}
+mkdir -p $R
+
+get() { sed -n "s/^$1=//p" "$CFG/system.conf" 2>/dev/null | tail -1; }
+
+# Praefix (24) -> Netzmaske (255.255.255.0)
+pfx2mask() {
+	p=$1; m=""
+	for i in 1 2 3 4; do
+		if [ "$p" -ge 8 ]; then o=255; p=$((p - 8)); else o=$((256 - (1 << (8 - p)))); p=0; fi
+		m="$m${m:+.}$o"
+	done
+	echo "$m"
+}
+
+# Beim Booten: unbestaetigte Aenderung vom letzten Lauf (Neustart waehrend der Frist) zuruecknehmen
+if [ "$MODE" = boot ] && [ -f "$CFG/.pending" ] && [ -d /state/config.prev ]; then
+	rm -rf "$CFG"; mv /state/config.prev "$CFG"; rm -f "$CFG/.pending"; sync
+	audit config-rollback "Neustart waehrend der Frist"
+	echo "Konfiguration: unbestaetigte Aenderung zurueckgenommen"
+fi
+
+# 1. SSH-Keys: Recovery-Keys aus dem Image immer, dann die aus der Konfiguration
+{
+	cat /etc/arcadeos/recovery_keys
+	grep -E '^(ssh-|ecdsa-)' "$CFG/authorized_keys" 2>/dev/null || true
+} > $R/authorized_keys.new
+chmod 600 $R/authorized_keys.new
+mv $R/authorized_keys.new $R/authorized_keys
+
+# 2. Hostname
+h=$(get hostname)
+[ -n "$h" ] && hostname "$h"
+
+# 3. Netzwerk: neue Datei erzeugen; nur wenn sie sich unterscheidet, mit der alten Datei abbauen,
+#    dann die neue aktivieren (eine reine Hostname-Aenderung soll die Verbindung nicht kappen)
+{
+	printf 'auto lo\niface lo inet loopback\n\nauto eth0\n'
+	if [ "$(get net.mode)" = static ] && [ -n "$(get net.address)" ] && [ -n "$(get net.gateway)" ]; then
+		a=$(get net.address)
+		printf 'iface eth0 inet static\n\taddress %s\n\tnetmask %s\n\tgateway %s\n' \
+			"${a%/*}" "$(pfx2mask "${a#*/}")" "$(get net.gateway)"
+		STATIC=1
+	else
+		printf 'iface eth0 inet dhcp\n'
+		STATIC=0
+	fi
+} > $R/interfaces.new
+NETCHANGE=1
+cmp -s $R/interfaces.new $R/interfaces 2>/dev/null && NETCHANGE=0
+[ "$MODE" = live ] && [ "$NETCHANGE" = 1 ] && ifdown -a -f >/dev/null 2>&1
+mv $R/interfaces.new $R/interfaces
+mkdir -p /run/udhcpc
+if [ "$STATIC" = 1 ]; then
+	rm -f /run/udhcpc/*
+	for d in $(get net.dns); do echo "nameserver $d"; done > /run/udhcpc/static
+	cat /run/udhcpc/* > /etc/resolv.conf 2>/dev/null || true
+else
+	rm -f /run/udhcpc/static
+fi
+[ "$MODE" = live ] && [ "$NETCHANGE" = 1 ] && ifup -a >/dev/null 2>&1
+exit 0

@@ -23,3 +23,13 @@ other_slot() {
 uptime_s() {
 	cut -d. -f1 /proc/uptime
 }
+
+# Audit-Log: eine JSON-Zeile pro Aktion, nur anhaengen (/state/log/audit.log)
+# audit <aktion> <detail>
+audit() {
+	[ -d /state/log ] || return 0
+	who=${SSH_CONNECTION%% *}
+	printf '{"t":"%s","uptime":%s,"slot":"%s","who":"%s","action":"%s","detail":"%s"}\n' \
+		"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(uptime_s)" "$(running_slot)" "${who:-local}" \
+		"$(printf %s "$1" | tr -d '"\\\n')" "$(printf %s "$2" | tr -d '"\\\n')" >> /state/log/audit.log
+}

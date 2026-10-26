@@ -1,0 +1,165 @@
+#!/bin/sh
+#
+# arcadeos-config – zentrale Konfiguration mit "commit confirmed"
+#
+#   arcadeos-config show                          Konfiguration + Transaktionsstatus als JSON
+#   arcadeos-config set key=value [...]           Werte aendern (Transaktion)
+#   arcadeos-config add-key "<ssh-public-key>"    SSH-Key hinzufuegen (Transaktion)
+#   arcadeos-config remove-key <kommentar|text>   SSH-Key entfernen (Transaktion)
+#   arcadeos-config confirm                       laufende Transaktion bestaetigen
+#   arcadeos-config rollback                      laufende Transaktion sofort zuruecknehmen
+#
+# Jede Aenderung wird sofort angewendet; danach laeuft eine Frist (config.confirm_timeout,
+# Standard 120 s). Ohne 'confirm' ueber eine (neue) SSH-Verbindung wird die alte Konfiguration
+# wiederhergestellt – auch nach einem Neustart waehrend der Frist.
+#
+# Schluessel: hostname, net.mode (dhcp|static), net.address (IP/Praefix), net.gateway,
+#             net.dns (Leerzeichen-getrennt), config.confirm_timeout (Sekunden)
+# Dateien:    /state/config/system.conf, /state/config/authorized_keys
+#
+
+set -eu
+. /usr/lib/arcadeos/common.sh
+
+CFG=/state/config
+PREV=/state/config.prev
+PENDING=$CFG/.pending
+TIMER_PID=/run/arcadeos-config.timer
+LOCK=/run/arcadeos-config.lock
+
+die() { echo "arcadeos-config: $*" >&2; exit 1; }
+
+get() { sed -n "s/^$1=//p" "$CFG/system.conf" 2>/dev/null | tail -1; }
+
+valid_ip() { echo "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; }
+
+validate() {  # key value
+	case "$1" in
+		hostname) echo "$2" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$' || die "ungueltiger hostname: $2" ;;
+		net.mode) case "$2" in dhcp|static) ;; *) die "net.mode muss dhcp oder static sein" ;; esac ;;
+		net.address) ip=${2%/*}; pfx=${2#*/}
+			valid_ip "$ip" && [ "$pfx" != "$2" ] && [ "$pfx" -ge 1 ] 2>/dev/null && [ "$pfx" -le 32 ] || die "net.address braucht IP/Praefix, z.B. 192.168.1.50/24" ;;
+		net.gateway) valid_ip "$2" || die "ungueltiges net.gateway: $2" ;;
+		net.dns) for d in $2; do valid_ip "$d" || die "ungueltiger DNS-Server: $d"; done ;;
+		config.confirm_timeout) [ "$2" -ge 30 ] 2>/dev/null || die "config.confirm_timeout mindestens 30" ;;
+		*) die "unbekannter Schluessel: $1" ;;
+	esac
+}
+
+check_static() {  # ganze Konfiguration in $1 pruefen
+	if grep -qx 'net.mode=static' "$1"; then
+		grep -q '^net.address=' "$1" || die "net.mode=static braucht net.address"
+		grep -q '^net.gateway=' "$1" || die "net.mode=static braucht net.gateway"
+	fi
+}
+
+json_str() { printf '"%s"' "$(printf %s "$1" | tr -d '"\\')"; }
+
+cmd_show() {
+	pending=false; remaining=null
+	if [ -f "$PENDING" ]; then
+		pending=true; remaining=$(( $(cat "$PENDING") - $(uptime_s) ))
+	fi
+	printf '{"hostname":%s,"net":{"mode":%s,"address":%s,"gateway":%s,"dns":%s},' \
+		"$(json_str "$(get hostname)")" "$(json_str "$(get net.mode)")" "$(json_str "$(get net.address)")" \
+		"$(json_str "$(get net.gateway)")" "$(json_str "$(get net.dns)")"
+	printf '"ssh_keys":{"recovery":%s,"config":%s},"pending":%s,"confirm_remaining_s":%s}\n' \
+		"$(grep -c . /etc/arcadeos/recovery_keys 2>/dev/null || echo 0)" \
+		"$(grep -c . "$CFG/authorized_keys" 2>/dev/null || echo 0)" "$pending" "$remaining"
+}
+
+# Transaktion beginnen: Sicherung anlegen. Danach aendert der Aufrufer Dateien in $CFG.
+begin() {
+	[ -d /state ] && mountpoint -q /state || die "/state nicht verfuegbar"
+	[ ! -f "$PENDING" ] || die "es laeuft schon eine unbestaetigte Aenderung – erst confirm oder rollback"
+	mkdir -p "$CFG"; touch "$CFG/system.conf" "$CFG/authorized_keys"
+	rm -rf "$PREV"; cp -a "$CFG" "$PREV"
+}
+
+# Transaktion anwenden und Frist starten. Der Timer laeuft zuerst los und unabhaengig von der
+# SSH-Sitzung (die bei Netzwerkaenderungen abreisst); fd 9 (Lock) erbt er nicht.
+commit() {
+	t=$(get config.confirm_timeout); t=${t:-120}
+	echo $(( $(uptime_s) + t )) > "$PENDING"
+	sync
+	setsid sh -c "sleep $t; [ -f '$PENDING' ] && exec /usr/sbin/arcadeos-config rollback --timeout" \
+		</dev/null >/dev/null 2>&1 9>&- &
+	echo $! > "$TIMER_PID"
+	audit config-change "$1"
+	printf '{"applied":%s,"pending":true,"confirm_within_s":%s}\n' "$(json_str "$1")" "$t"
+	/usr/lib/arcadeos/apply-config live >/dev/null 2>&1 9>&-
+}
+
+kill_timer() {
+	if [ -f "$TIMER_PID" ]; then kill "$(cat "$TIMER_PID")" 2>/dev/null || true; rm -f "$TIMER_PID"; fi
+}
+
+cmd_set() {
+	[ $# -gt 0 ] || die "Aufruf: arcadeos-config set key=value [...]"
+	for kv in "$@"; do
+		case "$kv" in *=*) ;; *) die "erwartet key=value: $kv" ;; esac
+		validate "${kv%%=*}" "${kv#*=}"
+	done
+	# neue Konfiguration komplett zusammenbauen und pruefen, bevor irgendetwas geaendert wird
+	new=/run/arcadeos-config.new
+	cp "$CFG/system.conf" "$new" 2>/dev/null || : > "$new"
+	for kv in "$@"; do
+		k=${kv%%=*}
+		grep -v "^$k=" "$new" > "$new.tmp" || true
+		echo "$kv" >> "$new.tmp"; mv "$new.tmp" "$new"
+	done
+	check_static "$new"
+	begin
+	mv "$new" "$CFG/system.conf"
+	commit "set $*"
+}
+
+cmd_add_key() {
+	key=${1:-}
+	echo "$key" | grep -qE '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)) [A-Za-z0-9+/=]+( .*)?$' \
+		|| die "kein gueltiger SSH-Public-Key"
+	begin
+	grep -qxF "$key" "$CFG/authorized_keys" || echo "$key" >> "$CFG/authorized_keys"
+	commit "add-key $(echo "$key" | cut -d' ' -f1,3-)"
+}
+
+cmd_remove_key() {
+	pat=${1:-}; [ -n "$pat" ] || die "Aufruf: arcadeos-config remove-key <kommentar|text>"
+	grep -qF -- "$pat" "$CFG/authorized_keys" 2>/dev/null || die "kein passender Key in $CFG/authorized_keys (Recovery-Keys aus dem Image lassen sich nicht entfernen)"
+	begin
+	grep -vF -- "$pat" "$CFG/authorized_keys" > "$CFG/authorized_keys.new" || true
+	mv "$CFG/authorized_keys.new" "$CFG/authorized_keys"
+	commit "remove-key $pat"
+}
+
+cmd_confirm() {
+	[ -f "$PENDING" ] || { echo '{"confirmed":false,"reason":"keine offene Aenderung"}'; return 0; }
+	kill_timer
+	rm -f "$PENDING"; sync
+	audit config-confirm ""
+	echo '{"confirmed":true}'
+}
+
+cmd_rollback() {
+	[ -f "$PENDING" ] || { echo '{"rollback":false,"reason":"keine offene Aenderung"}'; return 0; }
+	[ "${1:-}" = --timeout ] || kill_timer
+	rm -rf "$CFG"; mv "$PREV" "$CFG"; rm -f "$CFG/.pending" "$TIMER_PID"; sync
+	audit config-rollback "${1:-manuell}"
+	logger -t arcadeos-config "Aenderung zurueckgenommen (${1:-manuell})" 2>/dev/null || true
+	/usr/lib/arcadeos/apply-config live
+	echo '{"rollback":true}'
+}
+
+# Netzwerkaenderungen koennen die eigene SSH-Sitzung beenden: weiterlaufen
+trap '' HUP
+exec 9>"$LOCK"
+flock 9
+case "${1:-}" in
+	show)       cmd_show ;;
+	set)        shift; cmd_set "$@" ;;
+	add-key)    shift; cmd_add_key "$@" ;;
+	remove-key) shift; cmd_remove_key "$@" ;;
+	confirm)    cmd_confirm ;;
+	rollback)   shift; cmd_rollback "$@" ;;
+	*) sed -n '3,10s/^# \{0,1\}//p' "$0"; exit 1 ;;
+esac

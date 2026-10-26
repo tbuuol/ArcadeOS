@@ -1,0 +1,14 @@
+#!/bin/sh
+#
+# Wendet die zentrale Konfiguration (/state/config) an: SSH-Keys, Hostname, Netzwerk.
+# Muss vor S40network und S50dropbear laufen.
+#
+
+case "$1" in
+	start|restart|reload)
+		printf "Applying config: "
+		/usr/lib/arcadeos/apply-config boot && echo "OK" || echo "FAIL (Vorgaben aktiv)"
+		;;
+	stop) ;;
+	*) echo "Usage: $0 {start|stop|restart|reload}"; exit 1;;
+esac

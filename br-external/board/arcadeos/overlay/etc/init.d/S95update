@@ -24,6 +24,7 @@ start() {
 	(
 		sleep "$t"
 		logger -t arcadeos-update "Slot $(running_slot) nicht bestaetigt, Neustart zurueck zum festen Slot"
+		audit update-timeout "slot=$(running_slot)"
 		reboot
 	) </dev/null >/dev/null 2>&1 &
 	echo $! > $TIMER_PID
