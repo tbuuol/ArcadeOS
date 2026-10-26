@@ -15,6 +15,12 @@ blake2b_simd = "1"
 rand = "0.8"
 serde_json = "1"
 hex = "0.4"
+# WebSocket-Transport (wss://): TLS in reinem Rust, Zertifikate der Mozilla-Liste
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "0.26"
+sha1 = "0.10"
+base64 = "0.22"
 
 [profile.release]
 opt-level = "s"

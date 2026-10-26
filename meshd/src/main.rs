@@ -1,12 +1,13 @@
 //! meshd – ArcadeOS Mesh-Dienst (Arcade-Mesh-Protokoll v2).
 //!
 //! Stand: Link-Schicht. Befehl:
-//!   meshd probe [--net arcade-main] [--pings N] host:port ...
+//!   meshd probe [--net arcade-main] [--pings N] host:port|wss://host/mesh ...
 //! verbindet sich mit jedem Knoten (frischer Schluessel, lauscht nicht), misst TCP-Aufbau, Handshake
 //! und Ping-Antwortzeiten, sammelt die Adressen, die der Knoten nennt, und gibt je Knoten eine
 //! JSON-Zeile aus.
 
 mod link;
+mod ws;
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
@@ -15,7 +16,6 @@ use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
 use rand::RngCore;
 use serde_json::{json, Value};
-use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 
 use link::{handshake, Body};
@@ -34,12 +34,13 @@ fn round1(x: f64) -> f64 {
 async fn probe(addr: String, net: String, pings: usize, key: SigningKey) -> Value {
     let mut out = json!({"addr": addr});
     let t0 = Instant::now();
-    let stream = match timeout(Duration::from_secs(8), TcpStream::connect(&addr)).await {
+    let stream = match timeout(Duration::from_secs(10), link::connect(&addr)).await {
         Ok(Ok(s)) => s,
-        Ok(Err(e)) => return json!({"addr": addr, "error": format!("tcp: {e}")}),
-        Err(_) => return json!({"addr": addr, "error": "tcp: Zeitlimit"}),
+        Ok(Err(e)) => return json!({"addr": addr, "error": format!("verbinden: {e}")}),
+        Err(_) => return json!({"addr": addr, "error": "verbinden: Zeitlimit"}),
     };
-    out["tcp_ms"] = json!(round1(t0.elapsed().as_secs_f64() * 1000.0));
+    // bei WebSocket inkl. TLS und HTTP-Upgrade
+    out["connect_ms"] = json!(round1(t0.elapsed().as_secs_f64() * 1000.0));
     let t1 = Instant::now();
     let link = match handshake(stream, &key, &net, true, None).await {
         Ok(l) => l,
@@ -133,7 +134,7 @@ async fn probe(addr: String, net: String, pings: usize, key: SigningKey) -> Valu
 }
 
 fn usage() -> ! {
-    eprintln!("Aufruf: meshd probe [--net arcade-main] [--pings N] host:port ...");
+    eprintln!("Aufruf: meshd probe [--net arcade-main] [--pings N] host:port|wss://host/mesh ...");
     std::process::exit(2);
 }
 

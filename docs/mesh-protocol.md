@@ -14,6 +14,21 @@ ArcadeOS; diese Beschreibung ist aus dem öffentlichen Arcade-Code abgelesen (St
 - Identität eines Knotens = sein **Ed25519-Mesh-Key** (32 Byte, hex = Knoten-ID). Die Adresse ist nur,
   wo er gerade erreichbar ist.
 
+## WebSocket-Transport
+
+Für Knoten hinter nicht öffnenbaren Routern (Tunnel, z.B. Cloudflare): `wss://host/mesh`.
+- HTTP/1.1-Upgrade nach RFC 6455 (`Sec-WebSocket-Version: 13`), Client maskiert, binäre Nachrichten
+- Die Nachrichten bilden einen **Bytestrom**: jede trägt die nächsten Bytes der normalen Mesh-Rahmen
+  (inkl. 4-Byte-Länge); der Empfänger setzt sie aneinander. Die Arcades schicken pro Rahmen eine Nachricht.
+- Darin läuft derselbe Handshake; der Tunnel sieht nur Chiffretext.
+- Nachrichten höchstens 128 KB; WebSocket-Pings werden beantwortet.
+
+## Eine Verbindung pro Knoten
+
+Ein Knoten hält zu jedem anderen Knoten (gleiche Knoten-ID) höchstens **eine** Verbindung; eine zweite
+wird nach dem Handshake geschlossen – auch wenn sie über eine andere Adresse kommt (z.B. TCP und Tunnel
+zum selben Knoten).
+
 ## Rahmen auf der Leitung
 
 Jeder Rahmen: 4 Byte Länge (big endian), dann der Körper. Körper höchstens **65.536 Byte**.
@@ -91,6 +106,7 @@ Nutzlast 512 Byte, 5 Nachrichten/s je Mitglied (Burst 10), Weiterleiter erlauben
 | lokale Arcade | – | 1,7 ms | 12 ms | 283 ms |
 | 207.244.232.43 | 107 ms ±2 | 118 ms | 240 ms | 1.027 ms |
 | 104.153.31.40 | – | 123 ms | 364 ms | 1.119 ms |
+| wss://app.dogecoinarcade.com (Cloudflare) | – | 146 ms | 158 ms | 190 ms |
 
 Die Ausreißer entstehen in den Arcade-Prozessen (Python-GIL, Mesh teilt sich den Prozess mit Web und
 Index), nicht im Netz. Ein eigener, nativer Mesh-Dienst vermeidet sie auf ArcadeOS-Knoten.

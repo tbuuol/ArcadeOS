@@ -117,7 +117,7 @@ tests/qemu-net.sh        # Netztuning (BBR, fq, notsent_lowat) und NTP
 - `tests/` – Tests in QEMU (`lib.sh`: gemeinsame Hilfsfunktionen)
 - `tools/` – `sign-update.sh` (Update-Paket signieren)
 - `meshd/` – Mesh-Dienst in Rust (Arcade-Mesh-Protokoll, [docs/mesh-protocol.md](docs/mesh-protocol.md));
-  bisher Link-Schicht und `meshd probe host:port …` (Verbindungstest)
+  bisher Link-Schicht (TCP und WebSocket) und `meshd probe host:port|wss://… …` (Verbindungstest)
 - `docs/` – Spezifikationen
 - `keys/` – `authorized_keys` für root (nicht im Repo)
 - `run.sh` – QEMU-Start mit UEFI/OVMF (KVM, falls vorhanden, sonst Emulation)

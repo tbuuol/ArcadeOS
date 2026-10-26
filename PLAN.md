@@ -118,11 +118,14 @@ Warum ein eigener Dienst – gemessen 2026-10-26 gegen Live-Arcades:
 Meilensteine:
 1. ✅ Link-Schicht: Rahmen, HELLO, Handshake (X25519, BLAKE2b, Ed25519), XChaCha20-Poly1305,
    ping/pong, addrs; `meshd probe` verbindet sich mit allen erreichbaren Live-Arcades
-2. WebSocket-Transport (`wss://…/mesh`; zwei Live-Arcades sind nur so erreichbar)
+2. ✅ WebSocket-Transport (`wss://…/mesh`, eigener Client, TLS mit rustls): alle 5 bekannten
+   Live-Arcades erreichbar (2026-10-26); Regel „eine Verbindung pro Knoten“ festgehalten
 3. Dauerbetrieb: Peer-Verwaltung (6 ausgehend, bis 32 eingehend), Adressbuch auf `/state`,
    Mesh-Key auf `/state`, ping/Timeout, Weiterleitung von `sub`/`pub` (kanonisches JSON wie Python)
 4. Räume für lokale Anwendungen (Schnittstelle über Unix-Socket), Grenzen wie die Arcades
-5. Peers aus Chain-Ankündigungen lesen (braucht Zugriff auf Pepecoin-Daten), eigene Ankündigung
+5. ~~Peers aus Chain-Ankündigungen~~ – **entfällt** (tbuuol 2026-10-26: kein Blockchain-Node, weder
+   auf dem Server noch in der VM). Peers kommen aus einer Startliste (`/state/mesh/seeds`, Vorgabe:
+   bekannte Live-Arcades) und dem Adressaustausch (`addrs`); keine eigene Chain-Ankündigung
 6. IPv6-„Meeting“, Dialback, optional Portfreigabe am Router (NAT-PMP)
 7. Buildroot-Paket, Init-Skript, Watchdog, agentd-Werkzeuge (Peers, Räume, RTT), Tests in QEMU
 

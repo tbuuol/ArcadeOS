@@ -15,6 +15,8 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
+use crate::ws;
+
 pub const MAGIC: &[u8; 4] = b"ARCM";
 pub const VERSION: u8 = 2;
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -85,7 +87,50 @@ impl Hello {
     }
 }
 
-pub async fn read_frame(r: &mut OwnedReadHalf) -> Result<Vec<u8>, LinkError> {
+/// Leseseite einer Verbindung: TCP direkt oder WebSocket (Bytestrom ueber Nachrichten)
+pub enum Rd {
+    Tcp(OwnedReadHalf),
+    Ws(ws::WsReader),
+}
+
+/// Schreibseite; bei WebSocket wird jeder Aufruf eine Nachricht (wie bei den Arcades)
+pub enum Wr {
+    Tcp(OwnedWriteHalf),
+    Ws(ws::WsWriter),
+}
+
+impl Rd {
+    async fn read_exact(&mut self, buf: &mut [u8]) -> std::io::Result<()> {
+        match self {
+            Rd::Tcp(r) => r.read_exact(buf).await.map(|_| ()),
+            Rd::Ws(r) => r.read_exact(buf).await,
+        }
+    }
+}
+
+impl Wr {
+    async fn write_all(&mut self, data: &[u8]) -> std::io::Result<()> {
+        match self {
+            Wr::Tcp(w) => w.write_all(data).await,
+            Wr::Ws(w) => w.write_all(data).await,
+        }
+    }
+}
+
+/// Verbindung aufbauen: "host:port" (TCP) oder "ws://…" / "wss://…" (WebSocket)
+pub async fn connect(addr: &str) -> Result<(Rd, Wr), LinkError> {
+    if addr.starts_with("ws://") || addr.starts_with("wss://") {
+        let url = ws::WsUrl::parse(addr).ok_or_else(|| LinkError::Protocol("ungueltige WebSocket-Adresse".into()))?;
+        let (r, w) = ws::connect(&url).await?;
+        return Ok((Rd::Ws(r), Wr::Ws(w)));
+    }
+    let s = TcpStream::connect(addr).await?;
+    s.set_nodelay(true)?;
+    let (r, w) = s.into_split();
+    Ok((Rd::Tcp(r), Wr::Tcp(w)))
+}
+
+pub async fn read_frame(r: &mut Rd) -> Result<Vec<u8>, LinkError> {
     let mut head = [0u8; 4];
     r.read_exact(&mut head).await?;
     let size = u32::from_be_bytes(head) as usize;
@@ -126,14 +171,14 @@ fn nonce(n: u64) -> XNonce {
 
 /// Senderichtung einer bestehenden Verbindung (Zaehler = Nonce)
 pub struct Sender {
-    w: OwnedWriteHalf,
+    w: Wr,
     cipher: XChaCha20Poly1305,
     n: u64,
 }
 
 /// Empfangsrichtung
 pub struct Receiver {
-    r: OwnedReadHalf,
+    r: Rd,
     cipher: XChaCha20Poly1305,
     n: u64,
 }
@@ -218,14 +263,12 @@ impl Link {
 /// Handshake auf einer frischen TCP-Verbindung. `dialer`: wer die Rolle des Waehlenden hat
 /// (bei gleichzeitigem Oeffnen: die kleinere Knoten-ID).
 pub async fn handshake(
-    stream: TcpStream,
+    (mut r, mut w): (Rd, Wr),
     key: &SigningKey,
     network: &str,
     dialer: bool,
     listen_port: Option<u16>,
 ) -> Result<Link, LinkError> {
-    stream.set_nodelay(true)?;
-    let (mut r, mut w) = stream.into_split();
     let secret = EphemeralSecret::random_from_rng(OsRng);
     let mine = Hello { network: network.to_string(), ephemeral: PublicKey::from(&secret).to_bytes() };
     w.write_all(&frame(&mine.encode())).await?;
@@ -341,9 +384,10 @@ mod tests {
             let kb2 = kb.clone();
             let server = tokio::spawn(async move {
                 let (s, _) = lst.accept().await.unwrap();
-                handshake(s, &kb2, "arcade-main", false, None).await
+                let (r, w) = s.into_split();
+                handshake((Rd::Tcp(r), Wr::Tcp(w)), &kb2, "arcade-main", false, None).await
             });
-            let c = TcpStream::connect(addr).await.unwrap();
+            let c = connect(&addr.to_string()).await.unwrap();
             let mut a = handshake(c, &ka, "arcade-main", true, Some(8421)).await.unwrap();
             let mut b = server.await.unwrap().unwrap();
             assert_eq!(a.peer_key, kb.verifying_key().to_bytes());
