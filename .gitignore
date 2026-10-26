@@ -9,4 +9,4 @@ boot.start
 targets.txt
 # eigene Public Keys pro Installation, nicht ins Repo
 keys/authorized_keys
-build-kernel.log
+build-*.log
