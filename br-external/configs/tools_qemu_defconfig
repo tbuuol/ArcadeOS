@@ -1,0 +1,11 @@
+# Nur Werkzeuge fuer die Entwicklung (Ausgabeordner output-tools/): aktuelles QEMU fuer Tests,
+# unabhaengig vom QEMU der Build-Maschine. Bauen:
+#   make -C buildroot-2026.02.3 O=$PWD/output-tools BR2_EXTERNAL=$PWD/br-external tools_qemu_defconfig
+#   make -C output-tools host-qemu
+BR2_x86_64=y
+BR2_TOOLCHAIN_EXTERNAL=y
+BR2_TOOLCHAIN_EXTERNAL_BOOTLIN=y
+BR2_TOOLCHAIN_EXTERNAL_BOOTLIN_X86_64_MUSL_STABLE=y
+BR2_PACKAGE_HOST_QEMU=y
+BR2_PACKAGE_HOST_QEMU_SYSTEM_MODE=y
+# BR2_TARGET_ROOTFS_TAR is not set

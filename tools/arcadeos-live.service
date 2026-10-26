@@ -1,0 +1,18 @@
+[Unit]
+Description=ArcadeOS Live-VM: meshd nimmt dauerhaft am Arcade-Mesh teil (nur ausgehend)
+After=network-online.target
+
+[Service]
+Environment=DISK=%h/arcadeos/live/disk.img
+Environment=VARS=%h/arcadeos/live/ovmf-vars.fd
+Environment=SSH_PORT=2223
+ExecStart=%h/arcadeos/run.sh -serial file:%h/arcadeos/live/serial.log -monitor none -display none
+Restart=on-failure
+RestartSec=30
+# Vorrang fuer die Arcade und die Nodes auf diesem Server
+Nice=10
+CPUQuota=50%
+MemoryMax=512M
+
+[Install]
+WantedBy=default.target

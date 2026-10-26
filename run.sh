@@ -5,12 +5,28 @@
 IMG="$(dirname "$0")/output/images"
 DISK="${DISK:-$IMG/disk.img}"       # andere Platte: DISK=/pfad/zu/kopie.img ./run.sh
 VARS="${VARS:-$IMG/ovmf-vars.fd}"   # UEFI-Variablen (wie NVRAM eines echten PCs)
+SSH_PORT="${SSH_PORT:-2222}"        # SSH der VM auf localhost:SSH_PORT
+SMP="${SMP:-2}"                     # Zahl der virtuellen CPU-Kerne
 [ -f "$VARS" ] || cp /usr/share/OVMF/OVMF_VARS_4M.fd "$VARS"
 ACCEL=tcg; [ -w /dev/kvm ] && ACCEL=kvm
-exec qemu-system-x86_64 -M pc -accel "$ACCEL" -m 256 -smp 2 \
+QEMU="${QEMU:-qemu-system-x86_64}"  # andere QEMU-Binaerdatei, z.B. output-tools/host/bin/qemu-system-x86_64
+# TCG_THREAD=single: alle virtuellen Kerne in einem Host-Thread (statt einem pro Kern), zur Diagnose
+[ "$ACCEL" = tcg ] && [ -n "${TCG_THREAD:-}" ] && ACCEL="tcg,thread=$TCG_THREAD"
+# Diagnose: DEBUG_DIR=/pfad ./run.sh schreibt dorthin
+#   qemu.log  CPU-Resets (voller Registerstand), Gastfehler, nicht implementierte Funktionen
+#   ovmf.log  Ausgabe der UEFI-Firmware (Debug-Port 0x402)
+#   qmp.sock  Steuerkanal: tools/qmp.py fragt eine laufende/haengende VM ab
+DEBUG_ARGS=""
+if [ -n "${DEBUG_DIR:-}" ]; then
+    mkdir -p "$DEBUG_DIR"
+    DEBUG_ARGS="-d cpu_reset,guest_errors,unimp -D $DEBUG_DIR/qemu.log
+        -chardev file,id=ovmfdbg,path=$DEBUG_DIR/ovmf.log -device isa-debugcon,iobase=0x402,chardev=ovmfdbg
+        -qmp unix:$DEBUG_DIR/qmp.sock,server=on,wait=off"
+fi
+exec "$QEMU" -M pc -accel "$ACCEL" -m 256 -smp "$SMP" \
     -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
     -drive if=pflash,format=raw,file="$VARS" \
     -drive file="$DISK",if=virtio,format=raw \
-    -netdev user,id=n0,hostfwd=tcp:127.0.0.1:2222-:22 -device virtio-net-pci,netdev=n0 \
+    -netdev user,id=n0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22 -device virtio-net-pci,netdev=n0 \
     -device i6300esb -action watchdog=reset \
-    -nographic "$@"
+    $DEBUG_ARGS -nographic "$@"

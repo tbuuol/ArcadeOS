@@ -2,7 +2,16 @@
 # Erwartet: $ROOT (Repo), optional $1 des Aufrufers als SSH-Key.
 
 SP=$(mktemp -d)
-trap 'pkill -x qemu-system-x86; rm -rf "$SP"' EXIT
+VM_PID=""
+# nur die eigene VM beenden (eine dauerhaft laufende Live-VM bleibt unberuehrt)
+# Bei Fehlschlag: Logs (seriell, QEMU, Firmware, Haenger-Abfragen) nach test-logs/ sichern
+keep_logs() {
+    [ "$FAIL" -gt 0 ] 2>/dev/null || return 0
+    D="$ROOT/test-logs/$(basename "$0" .sh)-$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$D" && cp -r "$SP"/*.log "$SP"/debug "$D"/ 2>/dev/null
+    echo "  Logs gesichert: $D"
+}
+trap 'keep_logs; [ -n "$VM_PID" ] && kill "$VM_PID" 2>/dev/null; rm -rf "$SP"' EXIT
 IMG="$ROOT/output/images"
 KEY=${KEY:-$HOME/.ssh/aios_ed25519}
 SSHOPTS="-p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=3 -o ServerAliveInterval=5 -o ServerAliveCountMax=6 -o BatchMode=yes"
@@ -18,12 +27,13 @@ bad() { echo "  FAIL $*"; FAIL=$((FAIL+1)); }
 
 start_vm() {  # Kopie von disk.img in $SP
     [ -f $SP/disk.img ] || cp "$IMG/disk.img" $SP/disk.img
-    DISK=$SP/disk.img VARS=$SP/vars.fd "$ROOT/run.sh" -serial file:$SP/serial.log -monitor none -display none >/dev/null 2>&1 &
+    DEBUG_DIR=$SP/debug DISK=$SP/disk.img VARS=$SP/vars.fd SSH_PORT=2222 "$ROOT/run.sh" -serial file:$SP/serial.log -monitor none -display none >/dev/null 2>&1 &
+    VM_PID=$!   # run.sh ersetzt sich per exec durch qemu: gleiche PID
 }
 bootid() { $S cat /proc/sys/kernel/random/boot_id 2>/dev/null; }
 # Grosszuegige Zeitlimits: ohne KVM wird die Emulation auf einem geteilten Host zeitweise 10x langsamer
 # (gemessen: Neustart bis 6 min). Langsam ist kein Fehler, nicht wiederkommen schon.
-wait_ssh() { for i in $(seq 1 600); do $S true 2>/dev/null && return 0; sleep 1; done; return 1; }
+wait_ssh() { for i in $(seq 1 600); do $S true 2>/dev/null && return 0; sleep 1; done; hang_dump "wait_ssh"; return 1; }
 # wartet, bis das System mit einer neuen boot_id wieder per SSH erreichbar ist
 wait_reboot() {
     T0=$(date +%s)
@@ -31,7 +41,14 @@ wait_reboot() {
         b=$(bootid); [ -n "$b" ] && [ "$b" != "$1" ] && { WAITED=$(( $(date +%s) - T0 )); return 0; }
         sleep 1
     done
+    hang_dump "wait_reboot"
     return 1
+}
+# Kommt die VM nicht zurueck: solange sie noch haengt, ueber QMP abfragen (Register, Befehlszeiger)
+hang_dump() {
+    [ -S "$SP/debug/qmp.sock" ] || return 0
+    echo "  VM antwortet nicht ($1) – Abfrage ueber QMP nach debug/hang-$1.txt"
+    python3 -I "$ROOT/tools/qmp.py" "$SP/debug/qmp.sock" dump 10 > "$SP/debug/hang-$1.txt" 2>&1
 }
 reboot_vm() { b=$(bootid); $S reboot >/dev/null 2>&1; wait_reboot "$b"; }
 # Wert eines (eindeutigen) Schluessels aus einer JSON-Zeile

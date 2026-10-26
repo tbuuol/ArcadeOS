@@ -83,21 +83,30 @@ local tools = {
 	},
 	{
 		name = "logs",
-		description = "Letzte Zeilen aus dem Audit-Log (alle Aenderungen am System, JSON-Zeilen) "
-			.. "oder aus dem Syslog.",
+		description = "Letzte Zeilen aus dem Audit-Log (alle Aenderungen am System, JSON-Zeilen), "
+			.. "dem Syslog oder dem Debug-Log des Mesh-Dienstes.",
 		inputSchema = {
 			type = "object",
 			properties = {
-				source = { type = "string", enum = { "audit", "syslog" }, description = "Standard: audit" },
+				source = { type = "string", enum = { "audit", "syslog", "mesh" },
+					description = "Standard: audit; mesh = Debug-Log des Mesh-Dienstes (JSON-Zeilen)" },
 				lines = { type = "integer", minimum = 1, maximum = 500, description = "Standard: 50" },
 			},
 		},
 		run = function(a)
 			local n = math.max(1, math.min(500, math.floor(tonumber(a.lines) or 50)))
-			local file = (a.source == "syslog") and "/var/log/messages" or "/state/log/audit.log"
+			local files = { syslog = "/var/log/messages", mesh = "/state/mesh/debug.log" }
+			local file = files[a.source] or "/state/log/audit.log"
 			local out = sh("tail -n " .. n .. " " .. file)
 			return { source = a.source or "audit", file = file, lines = out }
 		end,
+	},
+	{
+		name = "mesh_status",
+		description = "Mesh-Dienst (meshd): eigene Knoten-ID, Verbindungen zu anderen Arcades/ArcadeOS-Knoten "
+			.. "mit Adresse, Transport (tcp/websocket), Antwortzeit und Nachrichtenzaehlern, bekannte Adressen.",
+		inputSchema = { type = "object", properties = {} },
+		run = function() return sh_json("meshd status") end,
 	},
 	{
 		name = "update_confirm",

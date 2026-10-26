@@ -100,6 +100,18 @@ Werkzeuge: `system_status`, `logs` (Audit-Log/Syslog), `update_confirm`, `update
 `config_set`, `config_confirm`, `config_rollback`. Jede Änderung landet im Audit-Log
 (`/state/log/audit.log`).
 
+## Mesh
+
+Im Image läuft `meshd` und verbindet sich mit den Live-Arcades (nur ausgehend, keine Chain-Ankündigung).
+
+```sh
+ssh root@host meshd status                       # Verbindungen, Antwortzeiten (JSON)
+ssh root@host tail -f /state/mesh/debug.log      # Debug-Log, eine JSON-Zeile pro Ereignis
+```
+
+Startliste anpassen: `/state/mesh/seeds` (eine Adresse pro Zeile, `host:port` oder `wss://…`).
+Abschalten: `touch /state/mesh/disabled`. Dauerhaft laufende VM auf diesem Server: `tools/live-vm.sh`.
+
 ## Tests
 
 ```sh
@@ -108,6 +120,7 @@ tests/qemu-update.sh     # A/B-Updates: Signaturen, kaputte Pakete, Frist, confi
 tests/qemu-config.sh     # Konfiguration: confirm, Frist, Neustart, falsche IP, SSH-Keys
 tests/qemu-agentd.sh     # MCP-Server über SSH
 tests/qemu-net.sh        # Netztuning (BBR, fq, notsent_lowat) und NTP
+tests/qemu-mesh.sh       # meshd: Live-Verbindungen, Key bleibt, Neustart nach Absturz (braucht Internet)
 ```
 
 ## Aufbau
@@ -115,9 +128,9 @@ tests/qemu-net.sh        # Netztuning (BBR, fq, notsent_lowat) und NTP
 - `br-external/` – Buildroot-External-Tree: Defconfig, Kernel-Config, Disk-Layout (genimage),
   Rootfs-Overlay, Post-Build/Post-Image-Skripte
 - `tests/` – Tests in QEMU (`lib.sh`: gemeinsame Hilfsfunktionen)
-- `tools/` – `sign-update.sh` (Update-Paket signieren)
-- `meshd/` – Mesh-Dienst in Rust (Arcade-Mesh-Protokoll, [docs/mesh-protocol.md](docs/mesh-protocol.md));
-  bisher Link-Schicht (TCP und WebSocket) und `meshd probe host:port|wss://… …` (Verbindungstest)
+- `tools/` – `sign-update.sh` (Update-Paket signieren), `live-vm.sh` (dauerhafte Live-VM)
+- `meshd/` – Mesh-Dienst in Rust (Arcade-Mesh-Protokoll, [docs/mesh-protocol.md](docs/mesh-protocol.md)):
+  `meshd run` (Dauerbetrieb, im Image als Dienst `S60meshd`), `meshd status`, `meshd probe host:port|wss://… …`
 - `docs/` – Spezifikationen
 - `keys/` – `authorized_keys` für root (nicht im Repo)
 - `run.sh` – QEMU-Start mit UEFI/OVMF (KVM, falls vorhanden, sonst Emulation)

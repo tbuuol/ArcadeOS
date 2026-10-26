@@ -120,8 +120,17 @@ Meilensteine:
    ping/pong, addrs; `meshd probe` verbindet sich mit allen erreichbaren Live-Arcades
 2. ✅ WebSocket-Transport (`wss://…/mesh`, eigener Client, TLS mit rustls): alle 5 bekannten
    Live-Arcades erreichbar (2026-10-26); Regel „eine Verbindung pro Knoten“ festgehalten
-3. Dauerbetrieb: Peer-Verwaltung (6 ausgehend, bis 32 eingehend), Adressbuch auf `/state`,
-   Mesh-Key auf `/state`, ping/Timeout, Weiterleitung von `sub`/`pub` (kanonisches JSON wie Python)
+3. ✅ **Dauerbetrieb als Blatt-Knoten** (2026-10-26; tbuuol: „live mitlaufen“): `meshd run` mit
+   Mesh-Key auf `/state/mesh/key`, Startliste (`/state/mesh/seeds`, Vorgabe: bekannte Live-Arcades),
+   Adressbuch `peers.json`, 6 ausgehende Verbindungen (direkt vor Tunnel), eine pro Knoten, ping 15 s /
+   tot nach 45 s, Rückzug 5 s…10 min, Adressaustausch wie die Arcades; Status `/run/meshd.json`
+   (`meshd status`, agentd `mesh_status`); **Debug-Log** `/state/mesh/debug.log` (JSON-Zeilen:
+   Verbindungen, Fehlschläge mit Grund, neue Adressen, erste Nachricht je Art, Minutenstatistik;
+   rotiert bei 2 MB). Init `S60meshd` mit Neustart nach Absturz. Test `tests/qemu-mesh.sh` (15 Prüfungen,
+   4 Live-Verbindungen). Live-VM auf diesem Server: `tools/live-vm.sh install` (systemd-User-Dienst,
+   SSH-Port 2223, eigene Platte `~/arcadeos/live/`) – Einrichtung bestätigt der User selbst
+3b. Weiterleiten von `sub`/`pub` (kanonisches JSON wie Python, Signaturprüfung, Duplikat-Cache,
+   Grenzen) – erst dann ist ArcadeOS mehr als ein Blatt
 4. Räume für lokale Anwendungen (Schnittstelle über Unix-Socket), Grenzen wie die Arcades
 5. ~~Peers aus Chain-Ankündigungen~~ – **entfällt** (tbuuol 2026-10-26: kein Blockchain-Node, weder
    auf dem Server noch in der VM). Peers kommen aus einer Startliste (`/state/mesh/seeds`, Vorgabe:

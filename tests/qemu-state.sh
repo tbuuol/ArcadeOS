@@ -1,9 +1,10 @@
 #!/bin/sh
 # Testet read-only Rootfs + Zustands-Partition in QEMU. Arbeitet auf Kopien von disk.img.
 # Aufruf: tests/qemu-state.sh [ssh-private-key]   (Standard: ~/.ssh/aios_ed25519)
-# Braucht Port 2222 frei; stoppt am Ende alle qemu-system-x86-Prozesse des Users.
+# Braucht Port 2222 frei; stoppt am Ende nur die eigene VM.
 SP=$(mktemp -d)
-trap 'pkill -x qemu-system-x86; rm -rf "$SP"' EXIT
+VM_PID=""
+trap '[ -n "$VM_PID" ] && kill "$VM_PID" 2>/dev/null; rm -rf "$SP"' EXIT
 IMG="$(cd "$(dirname "$0")/.." && pwd)/output/images"
 KEY=${1:-$HOME/.ssh/aios_ed25519}
 # timeout + Keepalive: bricht die VM mitten in einer Verbindung weg, haengt ssh sonst minutenlang
@@ -15,7 +16,8 @@ bad()  { echo "  FAIL $*"; FAIL=$((FAIL+1)); }
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 boot() {  # $1 = disk image
     T0=$(date +%s.%N)
-    DISK="$1" VARS="$SP/vars.fd" "$ROOT/run.sh" -serial file:$SP/serial.log -monitor none -display none >/dev/null 2>&1 &
+    DISK="$1" VARS="$SP/vars.fd" SSH_PORT=2222 "$ROOT/run.sh" -serial file:$SP/serial.log -monitor none -display none >/dev/null 2>&1 &
+    VM_PID=$!
     for i in $(seq 1 180); do
         $S true 2>/dev/null && { BOOT=$(echo "$(date +%s.%N) - $T0" | bc | cut -c1-5); return 0; }
         sleep 0.5
@@ -40,7 +42,7 @@ if new:
 print(d[i:i+1024].split(b"\n#")[0].decode().replace("# GRUB Environment Block\n", "").replace("\n", " "))
 PY
 }
-halt_vm() { $S 'sync; /etc/init.d/S00state stop' >/dev/null 2>&1; pkill -x qemu-system-x86; sleep 1; }
+halt_vm() { $S 'sync; /etc/init.d/S00state stop' >/dev/null 2>&1; [ -n "$VM_PID" ] && kill "$VM_PID" 2>/dev/null; VM_PID=""; sleep 1; }
 hostkey() { ssh-keyscan -p 2222 -t ed25519 127.0.0.1 2>/dev/null | awk '{print $3}' | sha256sum | cut -c1-16; }
 
 cp "$IMG/disk.img" $SP/disk-test.img

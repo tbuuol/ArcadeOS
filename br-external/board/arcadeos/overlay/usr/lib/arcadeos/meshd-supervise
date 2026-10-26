@@ -1,0 +1,21 @@
+#!/bin/sh
+# Haelt meshd am Laufen: nach einem Absturz Neustart nach 5 s. Kurze Meldungen (stderr) gehen ins
+# Syslog, ausfuehrlich schreibt meshd selbst nach /state/mesh/debug.log.
+# SIGTERM (vom Init-Skript): meshd sauber beenden (speichert sein Adressbuch), dann selbst enden.
+
+child=""
+trap '[ -n "$child" ] && kill -TERM "$child" 2>/dev/null; wait "$child" 2>/dev/null; exit 0' TERM INT
+FIFO=/run/meshd.log
+while :; do
+	[ -p $FIFO ] || { rm -f $FIFO; mkfifo -m 600 $FIFO; }
+	logger -t meshd < $FIFO &
+	/usr/sbin/meshd run > /dev/null 2> $FIFO &
+	child=$!
+	echo "$child" > /run/meshd.pid
+	wait "$child"
+	rc=$?
+	child=""
+	[ -f /run/meshd.stop ] && exit 0
+	logger -t meshd "meshd beendet (Code $rc), Neustart in 5 s"
+	sleep 5
+done

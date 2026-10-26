@@ -62,11 +62,17 @@ $S 'ip -4 addr show eth0' | grep -q '10.0.2.15/24' && ok "statische IP nach Neus
 $S 'pidof udhcpc' >/dev/null && bad "udhcpc laeuft trotz static" || ok "kein DHCP-Client"
 
 echo "== Statische IP (falsch): SSH bricht ab, System nimmt es selbst zurueck"
-$SQ 'arcadeos-config set net.address=10.9.9.9/24 net.gateway=10.9.9.1' >/dev/null 2>&1
-GONE=0; for i in $(seq 1 60); do $S true 2>/dev/null || { GONE=1; break; }; sleep 1; done
-[ $GONE = 1 ] && ok "SSH weg" || bad "SSH geht noch (Test ungueltig?)"
+# im Hintergrund: der Befehl laeuft sicher an, der Test haengt nicht an der abreissenden Verbindung
+$S 'arcadeos-config set net.address=10.9.9.9/24 net.gateway=10.9.9.1' >/dev/null 2>&1 &
+SETPID=$!
+GONE=0; for i in $(seq 1 120); do sleep 1; $SQ true 2>/dev/null || { GONE=1; break; }; done
+[ $GONE = 1 ] && ok "SSH weg" || bad "SSH geht noch (Aenderung nicht angekommen?)"
 T0=$(date +%s)
 wait_ssh && ok "SSH nach $(( $(date +%s) - T0 ))s wieder da" || bad "SSH kommt nicht zurueck"
+wait "$SETPID" 2>/dev/null   # nur dieses ssh, nicht die VM
+A=$($S 'cat /state/log/audit.log')
+echo "$A" | grep -q 'set net.address=10.9.9.9/24' && ok "Audit: falsche IP wurde gesetzt" || bad "Audit: falsche IP nie gesetzt"
+echo "$A" | grep -q '"detail":"--timeout"' && ok "Audit: nach Frist zurueckgenommen" || bad "Audit: kein Rollback nach Frist"
 $S 'ip -4 addr show eth0' | grep -q '10.0.2.15/24' && ok "alte statische IP wiederhergestellt" || bad "IP nicht wiederhergestellt"
 check "$(cfg pending)" "false" "keine offene Aenderung"
 

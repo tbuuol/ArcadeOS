@@ -46,7 +46,7 @@ q() { python3 -I -c "import json,sys; d=json.loads(sys.argv[1]); print(eval(sys.
 check "$(q 'd["init"]["result"]["serverInfo"]["name"]')" "arcadeos-agentd" "initialize: Server meldet sich"
 check "$(q 'd["init"]["result"]["protocolVersion"]')" "2025-06-18" "Protokollversion"
 check "$(q 'd["ping"]["result"]')" "{}" "ping"
-check "$(q 'len(d["list"]["result"]["tools"])')" "7" "tools/list: 7 Werkzeuge"
+check "$(q 'len(d["list"]["result"]["tools"])')" "8" "tools/list: 8 Werkzeuge"
 check "$(q 'd["list"]["result"]["tools"][0]["inputSchema"]["properties"]')" "{}" "leeres Schema ist ein Objekt"
 check "$(q 'd["status"][1]["release"]["channel"]')" "dev" "system_status: Kanal"
 check "$(q 'd["status"][1]["update"]["running"]')" "A" "system_status: laufender Slot"

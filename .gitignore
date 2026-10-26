@@ -11,3 +11,6 @@ targets.txt
 keys/authorized_keys
 build-*.log
 meshd/target/
+live/
+test-logs/
+output-tools/

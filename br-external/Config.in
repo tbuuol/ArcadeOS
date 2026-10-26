@@ -8,4 +8,7 @@ config BR2_ARCADEOS_RELEASE
 	  Ohne diese Option (Dev-Build, z.B. fuer QEMU) wird zusaetzlich der Build-Key
 	  (keys/trusted/dev/*.pub) akzeptiert und jedes Paket automatisch damit signiert.
 
+
+source "$BR2_EXTERNAL_ARCADEOS_PATH/package/meshd/Config.in"
+
 endmenu

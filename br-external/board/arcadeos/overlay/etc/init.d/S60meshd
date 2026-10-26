@@ -1,0 +1,27 @@
+#!/bin/sh
+#
+# Mesh-Dienst. Abschalten: Datei /state/mesh/disabled anlegen.
+# Zustand: meshd status (/run/meshd.json); Debug-Log: /state/mesh/debug.log
+#
+
+start() {
+	printf "Starting meshd: "
+	if [ -f /state/mesh/disabled ]; then echo "abgeschaltet (/state/mesh/disabled)"; return 0; fi
+	rm -f /run/meshd.stop
+	start-stop-daemon -S -b -m -p /run/meshd-supervise.pid -x /usr/lib/arcadeos/meshd-supervise && echo "OK" || echo "FAIL"
+}
+
+stop() {
+	printf "Stopping meshd: "
+	touch /run/meshd.stop
+	start-stop-daemon -K -q -p /run/meshd-supervise.pid
+	killall -TERM meshd 2>/dev/null
+	for i in 1 2 3 4 5; do pidof meshd >/dev/null || break; sleep 1; done
+	echo "OK"
+}
+
+case "$1" in
+	start|stop) "$1";;
+	restart|reload) stop; start;;
+	*) echo "Usage: $0 {start|stop|restart|reload}"; exit 1;;
+esac

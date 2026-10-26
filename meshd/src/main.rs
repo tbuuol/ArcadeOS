@@ -1,12 +1,18 @@
 //! meshd – ArcadeOS Mesh-Dienst (Arcade-Mesh-Protokoll v2).
 //!
-//! Stand: Link-Schicht. Befehl:
+//! Befehle:
+//!   meshd run [--net arcade-main] [--state DIR] [--status DATEI] [--outbound N]
+//!       Dauerbetrieb (node.rs). DIR (Standard /state/mesh): key, peers.json, seeds (optional),
+//!       debug.log (JSON-Zeilen, rotiert bei 2 MB)
+//!   meshd status [--status DATEI]      Zustand des laufenden Dienstes (JSON)
 //!   meshd probe [--net arcade-main] [--pings N] host:port|wss://host/mesh ...
 //! verbindet sich mit jedem Knoten (frischer Schluessel, lauscht nicht), misst TCP-Aufbau, Handshake
 //! und Ping-Antwortzeiten, sammelt die Adressen, die der Knoten nennt, und gibt je Knoten eine
 //! JSON-Zeile aus.
 
+mod dlog;
 mod link;
+mod node;
 mod ws;
 
 use std::collections::{BTreeMap, HashMap};
@@ -134,14 +140,81 @@ async fn probe(addr: String, net: String, pings: usize, key: SigningKey) -> Valu
 }
 
 fn usage() -> ! {
-    eprintln!("Aufruf: meshd probe [--net arcade-main] [--pings N] host:port|wss://host/mesh ...");
+    eprintln!("Aufruf: meshd run [--net arcade-main] [--state /state/mesh] [--status /run/meshd.json] [--outbound 6]");
+    eprintln!("       meshd status [--status /run/meshd.json]");
+    eprintln!("       meshd probe [--net arcade-main] [--pings N] host:port|wss://host/mesh ...");
     std::process::exit(2);
+}
+
+fn cmd_run(args: Vec<String>) {
+    let mut net = "arcade-main".to_string();
+    let mut state = std::path::PathBuf::from("/state/mesh");
+    let mut status = std::path::PathBuf::from("/run/meshd.json");
+    let mut outbound = node::OUTBOUND_TARGET;
+    let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--net" => net = it.next().unwrap_or_else(|| usage()),
+            "--state" => state = it.next().unwrap_or_else(|| usage()).into(),
+            "--status" => status = it.next().unwrap_or_else(|| usage()).into(),
+            "--outbound" => outbound = it.next().and_then(|s| s.parse().ok()).unwrap_or_else(|| usage()),
+            _ => usage(),
+        }
+    }
+    dlog::init(state.join("debug.log"));
+    let cfg = node::Config {
+        net,
+        key_file: state.join("key"),
+        peers_file: state.join("peers.json"),
+        seeds_file: state.join("seeds"),
+        status_file: status,
+        outbound,
+    };
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+    rt.block_on(async {
+        let n = match node::Node::new(cfg) {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("meshd: Start fehlgeschlagen: {e}");
+                std::process::exit(1);
+            }
+        };
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM");
+        let runner = n.clone();
+        tokio::select! {
+            _ = runner.run() => {}
+            _ = term.recv() => eprintln!("meshd: SIGTERM, beende"),
+            _ = tokio::signal::ctrl_c() => eprintln!("meshd: SIGINT, beende"),
+        }
+        n.shutdown();
+    });
+}
+
+fn cmd_status(args: Vec<String>) {
+    let mut status = "/run/meshd.json".to_string();
+    let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--status" => status = it.next().unwrap_or_else(|| usage()),
+            _ => usage(),
+        }
+    }
+    match std::fs::read_to_string(&status) {
+        Ok(s) => print!("{s}"),
+        Err(_) => {
+            println!("{}", json!({"running": false}));
+            std::process::exit(1);
+        }
+    }
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) != Some("probe") {
-        usage();
+    match args.first().map(String::as_str) {
+        Some("run") => return cmd_run(args[1..].to_vec()),
+        Some("status") => return cmd_status(args[1..].to_vec()),
+        Some("probe") => {}
+        _ => usage(),
     }
     let mut net = "arcade-main".to_string();
     let mut pings = 20usize;
