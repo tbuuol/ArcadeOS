@@ -207,6 +207,12 @@ USB-LAN + Realtek-Firmware, VM-Treiber (VirtualBox/VMware/Hyper-V), Statusseite 
 (efifb bzw. VGA-Text), DHCP auf allen Kabel-Karten, SSH-Key vom Stick (`boot/authorized_keys`).
 Getestet mit `tests/qemu-hw.sh`. Offen: WLAN, Installer auf interne Platte, mDNS, Test auf echtem Gerät.
 
+**Stand 2026-10-28 – WLAN** (für Martins ThinkPad E570: QCA9377 oder Intel 8265): Treiber als Module
+(ath10k, iwlwifi, dazu mac80211_hwsim für den Test), Firmware + regulatory.db, wpa_supplicant (WPA2,
+AP-Modus für Test und späteren Einrichtungs-Hotspot), `wifi.txt` auf dem Stick oder `wifi.*` über
+arcadeos-config, Statusseite mit Netzname/Signal. Getestet mit `tests/qemu-wifi.sh` (simulierte
+Funkkarten); echte Karte erst auf dem Gerät. Offen: Installer auf interne Platte, mDNS, WPA3-only.
+
 - **Universal-Stick:** eine FAT-Bootpartition kann gleichzeitig die Pi-Firmware (`config.txt`,
   arm64-Kernel) und `EFI/BOOT/BOOTX64.EFI` (x86-Kernel) enthalten – derselbe Stick bootet auf
   Pi und PC, jeder zieht sich seinen Teil. (Zu prüfen: Pi 5 / Pi 4 USB-Boot, UEFI mit MBR.)

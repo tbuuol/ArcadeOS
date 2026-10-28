@@ -16,7 +16,9 @@
 # Schluessel: hostname, net.mode (dhcp|static), net.address (IP/Praefix), net.gateway,
 #             net.interface (Karte fuer static, Standard: die erste),
 #             net.dns (Leerzeichen-getrennt), ntp.servers (Leerzeichen-getrennt),
-#             config.confirm_timeout (Sekunden)
+#             config.confirm_timeout (Sekunden),
+#             wifi.ssid, wifi.psk (WLAN-Passwort, leer = offenes Netz), wifi.country (z.B. DE),
+#             wifi.interface (nur diese WLAN-Karte, Standard: alle)
 # Dateien:    /state/config/system.conf, /state/config/authorized_keys
 #
 
@@ -45,6 +47,12 @@ validate() {  # key value
 		net.interface) echo "$2" | grep -qE '^[a-zA-Z0-9_.-]{1,15}$' || die "ungueltiges net.interface: $2" ;;
 		net.dns) for d in $2; do valid_ip "$d" || die "ungueltiger DNS-Server: $d"; done ;;
 		config.confirm_timeout) [ "$2" -ge 30 ] 2>/dev/null || die "config.confirm_timeout mindestens 30" ;;
+		wifi.ssid) [ "$(printf %s "$2" | wc -c)" -le 32 ] || die "wifi.ssid: hoechstens 32 Zeichen (leer = kein WLAN aus der Konfiguration)" ;;
+		wifi.psk) n=$(printf %s "$2" | wc -c)
+			[ "$n" -eq 0 ] || { [ "$n" -ge 8 ] && [ "$n" -le 63 ]; } || printf %s "$2" | grep -qE '^[0-9a-fA-F]{64}$' \
+				|| die "wifi.psk: 8 bis 63 Zeichen (oder leer fuer ein offenes Netz)" ;;
+		wifi.interface) echo "$2" | grep -qE '^[a-zA-Z0-9_.-]{0,15}$' || die "ungueltiges wifi.interface: $2" ;;
+		wifi.country) echo "$2" | grep -qE '^[A-Z]{2}$' || die "wifi.country: zwei Grossbuchstaben, z.B. DE" ;;
 		ntp.servers) for n in $2; do echo "$n" | grep -qE '^[A-Za-z0-9.-]{1,253}$' || die "ungueltiger NTP-Server: $n"; done ;;
 		*) die "unbekannter Schluessel: $1" ;;
 	esac
@@ -68,6 +76,10 @@ cmd_show() {
 		"$(json_str "$(get hostname)")" "$(json_str "$(get net.mode)")" "$(json_str "$(get net.address)")" \
 		"$(json_str "$(get net.gateway)")" "$(json_str "$(get net.dns)")"
 	printf '"ntp_servers":%s,' "$(json_str "$(get ntp.servers)")"
+	# das WLAN-Passwort wird nie ausgegeben, nur ob eins gesetzt ist
+	psk=false; grep -q '^wifi.psk=.' "$CFG/system.conf" 2>/dev/null && psk=true
+	printf '"wifi":{"ssid":%s,"psk_set":%s,"country":%s},' \
+		"$(json_str "$(get wifi.ssid)")" "$psk" "$(json_str "$(get wifi.country)")"
 	printf '"ssh_keys":{"recovery":%s,"config":%s},"pending":%s,"confirm_remaining_s":%s}\n' \
 		"$(grep -c . /etc/arcadeos/recovery_keys 2>/dev/null || echo 0)" \
 		"$(grep -c . "$CFG/authorized_keys" 2>/dev/null || echo 0)" "$pending" "$remaining"
@@ -115,8 +127,10 @@ cmd_set() {
 	done
 	check_static "$new"
 	begin
+	chmod 600 "$new"   # enthaelt ggf. das WLAN-Passwort
 	mv "$new" "$CFG/system.conf"
-	commit "set $*"
+	# WLAN-Passwort nicht ins Audit-Log
+	commit "set $(for kv in "$@"; do case "$kv" in wifi.psk=*) printf 'wifi.psk=*** ' ;; *) printf '%s ' "$kv" ;; esac; done)"
 }
 
 cmd_add_key() {
@@ -151,7 +165,9 @@ cmd_rollback() {
 	rm -rf "$CFG"; mv "$PREV" "$CFG"; rm -f "$CFG/.pending" "$TIMER_PID"; sync
 	audit config-rollback "${1:-manuell}"
 	logger -t arcadeos-config "Aenderung zurueckgenommen (${1:-manuell})" 2>/dev/null || true
-	/usr/lib/arcadeos/apply-config live
+	# fd 9 (Lock) nicht vererben: sonst halten die dabei gestarteten Dienste (udhcpc, wpa_supplicant)
+	# die Sperre fuer immer und jeder weitere arcadeos-config-Aufruf haengt
+	/usr/lib/arcadeos/apply-config live 9>&-
 	echo '{"rollback":true}'
 }
 

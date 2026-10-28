@@ -1,0 +1,26 @@
+#!/bin/sh
+#
+# Laedt die Treiber-Module fuer die vorhandene Hardware (nur WLAN ist als Modul gebaut, siehe
+# linux-fragment.config): je PCI-/USB-Geraet das passende Modul ueber seinen modalias. Laeuft vor
+# S10config, damit die WLAN-Karte beim Erzeugen der Netzwerk-Konfiguration schon da ist.
+#
+
+case "$1" in
+	start)
+		printf "Loading modules: "
+		for a in /sys/bus/pci/devices/*/modalias /sys/bus/usb/devices/*/modalias; do
+			[ -r "$a" ] && modprobe -q -b "$(cat "$a")" 2>/dev/null
+		done
+		m=$(cut -d' ' -f1 /proc/modules | tr '\n' ' ')
+		echo "${m:-keine}"
+		# Firmware laedt asynchron: kurz warten, bis die WLAN-Karte als Netzwerkgeraet erscheint
+		if [ -n "$m" ]; then
+			for i in 1 2 3 4 5 6 7 8 9 10; do
+				ls /sys/class/net/*/phy80211 >/dev/null 2>&1 && break
+				sleep 0.5
+			done
+		fi
+		;;
+	stop) ;;
+	*) echo "Usage: $0 {start|stop}"; exit 1;;
+esac

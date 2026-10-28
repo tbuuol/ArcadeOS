@@ -49,20 +49,25 @@ Ein Image für alle x86_64-PCs, Laptops und Mini-PCs – mit UEFI und mit altem 
 1. `output/images/disk.img` mit **balenaEtcher**, **Rufus** (DD-Modus) oder `dd` auf den Stick schreiben.
 2. Eigenen SSH-Public-Key als `authorized_keys` (oder `authorized_keys.txt`) in die FAT-Partition
    des Sticks legen (unter Windows als Laufwerk „BOOT“ sichtbar, siehe `LIESMICH.txt` dort).
+   Für WLAN zusätzlich `wifi.txt` mit `ssid=…`, `password=…`, `country=DE` (mehrere Netze: weitere
+   Paare darunter).
 3. Vom Stick starten (UEFI: Secure Boot aus). Der Bildschirm zeigt IP, SSH-Befehl und den
    Fingerabdruck des Host-Keys – beim ersten `ssh root@<IP>` vergleichen.
 
 Eingebaut: USB (auch UAS), SATA (HDD/SSD), NVMe, SD/eMMC; Netzwerk per Kabel: Intel
 (e1000/e1000e/igb/igc), Realtek r8169/r8125 (mit Firmware), Broadcom tg3, Atheros, USB-LAN-Adapter;
 VMs: virtio, VirtualBox, VMware, Hyper-V. Bildschirm: UEFI-Grafik (VGA/DVI/HDMI/DisplayPort, ohne
-Grafiktreiber) bzw. VGA-Textmodus beim BIOS-Start. Noch nicht: WLAN, Raspberry Pi (eigenes Image).
-DHCP läuft auf jeder Kabel-Netzwerkkarte.
+Grafiktreiber) bzw. VGA-Textmodus beim BIOS-Start. WLAN: Intel (7260 bis AX210, Firmware für 8000C/
+8265/9xxx) und Qualcomm QCA9377/QCA6174 (ath10k), WPA2 und offene Netze (kein reines WPA3).
+Noch nicht: Raspberry Pi (eigenes Image). DHCP läuft auf jeder Kabel-Netzwerkkarte und im WLAN.
 
 ## Kernel
 
 Eigene, schlanke Config: `make tinyconfig` plus
 [linux-fragment.config](br-external/board/arcadeos/linux-fragment.config) (PC-Treiber für Platten,
-Netzwerk und Bildschirm, virtio, serielle Konsole, ext4, IPv4/IPv6, keine Module). Nach einer Änderung am Fragment neu erzeugen:
+Netzwerk und Bildschirm, virtio, serielle Konsole, ext4, IPv4/IPv6). Fest eingebaut bis auf WLAN:
+dessen Treiber laden ihre Firmware schon beim Erkennen der Karte, also vor dem Root-Dateisystem –
+darum Module, geladen von `S05modules` über den modalias der Geräte. Nach einer Änderung am Fragment neu erzeugen:
 
 ```sh
 tar xf buildroot-2026.02.3/dl/linux/linux-6.18.7.tar.xz -C /tmp
@@ -115,11 +120,14 @@ für echte Geräte (Release-Build) signierst du mit deinem eigenen Schlüssel �
 ssh root@host arcadeos-config set hostname=pi-wohnzimmer
 ssh root@host arcadeos-config set net.mode=static net.address=192.168.1.50/24 net.gateway=192.168.1.1 net.dns=1.1.1.1
 ssh root@host arcadeos-config add-key "ssh-ed25519 AAAA... laptop"
+ssh root@host arcadeos-config set "wifi.ssid=Mein WLAN" "wifi.psk=geheim123" wifi.country=DE
 ssh root@host arcadeos-config confirm     # über eine neue Verbindung, sonst nach 120 s zurück
 ```
 
 Jede Änderung ist sofort aktiv und wird ohne `confirm` automatisch zurückgenommen – auch wenn die
 Verbindung abreißt oder das Gerät neu startet. Die SSH-Keys aus dem Image (Recovery-Keys) gelten immer.
+Das WLAN-Passwort steht nur in `/state/config/system.conf` (nur root); `show`, Audit-Log und die
+wpa_supplicant-Datei enthalten es nicht. `wifi.ssid=` (leer) schaltet das WLAN aus der Konfiguration ab.
 
 ## Agenten-Zugang (MCP)
 
@@ -157,6 +165,7 @@ tests/qemu-net.sh        # Netztuning (BBR, fq, notsent_lowat) und NTP
 tests/qemu-mesh.sh       # meshd: Live-Verbindungen, Key bleibt, Neustart nach Absturz (braucht Internet)
 tests/qemu-hw.sh         # echte Hardware: UEFI/BIOS × USB/UAS/SATA/NVMe/SCSI × Netzwerkkarten,
                          # Statusseite + Bildschirmfotos, SSH-Key vom Stick
+tests/qemu-wifi.sh       # WLAN mit simulierten Funkkarten: wifi.txt, arcadeos-config, Rollback
 tests/reboot-soak.sh     # Neustart-Dauerlauf mit Diagnose (QMP-Abfrage bei Hänger)
 ```
 

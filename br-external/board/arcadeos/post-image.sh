@@ -8,6 +8,7 @@ EFI="$1/efi-part/EFI/BOOT"
 install -m 0644 "$BOARD/grub.cfg" "$EFI/grub.cfg"
 # Hinweis fuer den User auf der FAT-Partition (SSH-Key ablegen)
 install -m 0644 "$BOARD/LIESMICH.txt" "$1/LIESMICH.txt"
+install -m 0644 "$BOARD/README.txt" "$1/README.txt"
 
 # grubenv: 1024-Byte-Block, mit '#' aufgefuellt (Format von grub-editenv)
 { printf '# GRUB Environment Block\nslot=A\n'; head -c 1024 /dev/zero | tr '\0' '#'; } | head -c 1024 > "$EFI/grubenv"

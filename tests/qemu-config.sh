@@ -81,6 +81,12 @@ $SQ 'arcadeos-config set net.mode=dhcp' >/dev/null 2>&1; sleep 3; wait_ssh
 $S arcadeos-config confirm >/dev/null && ok "DHCP bestaetigt" || bad "confirm"
 $S 'pidof udhcpc' >/dev/null && ok "DHCP-Client laeuft" || bad "kein DHCP-Client"
 
+echo "== Nach einem Rollback bleibt arcadeos-config benutzbar"
+# Rollback startet Dienste neu (hier ntpd); erben die die Sperre, haengt jeder weitere Aufruf
+$S 'arcadeos-config set ntp.servers=pool.ntp.org' >/dev/null && $S 'arcadeos-config rollback' | grep -q '"rollback":true' \
+    && ok "set + rollback" || bad "set + rollback"
+$SQ 'arcadeos-config show' | grep -q '"pending":false' && ok "show antwortet nach Rollback" || bad "arcadeos-config haengt nach Rollback"
+
 echo "== SSH-Keys"
 ssh-keygen -q -t ed25519 -N '' -C 'test@arcadeos' -f $SP/k2
 S2="timeout 60 ssh -i $SP/k2 $SSHOPTS root@127.0.0.1"

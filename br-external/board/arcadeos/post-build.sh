@@ -54,3 +54,14 @@ ln -s /state/dropbear "$TARGET_DIR/etc/dropbear"
 
 # Nicht gebraucht auf dem Geraet (agentd laeuft mit dem Lua-Interpreter)
 rm -f "$TARGET_DIR/usr/bin/luac" "$TARGET_DIR/usr/bin/lua2json" "$TARGET_DIR/usr/bin/json2lua"
+
+# Intel-WLAN-Firmware: linux-firmware liefert je Chip mehrere API-Versionen (je ~2,4 MB), der Kernel
+# laedt die hoechste, die er kennt - aeltere weg, danach verwaiste Links entfernen
+FW="$TARGET_DIR/lib/firmware"
+if [ -d "$FW/intel/iwlwifi" ]; then
+    for chip in $(ls "$FW/intel/iwlwifi" | sed -n 's/^\(iwlwifi-.*\)-[0-9]*\.ucode$/\1/p' | sort -u); do
+        ls "$FW/intel/iwlwifi/$chip"-*.ucode | sed -n "s/.*-\([0-9]*\)\.ucode$/\1/p" | sort -n | head -n -1 | \
+            while read -r v; do rm -f "$FW/intel/iwlwifi/$chip-$v.ucode"; done
+    done
+    find "$FW" -xtype l -delete
+fi

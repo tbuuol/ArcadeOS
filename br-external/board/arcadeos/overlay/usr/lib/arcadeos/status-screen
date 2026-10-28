@@ -23,7 +23,21 @@ render() {
 	for d in /sys/class/net/*; do
 		n=${d##*/}
 		[ -e "$d/device" ] || continue   # nur echte Karten (kein lo/sit0/tun)
-		if [ "$(cat "$d/carrier" 2>/dev/null)" = 1 ]; then
+		if [ -e "$d/phy80211" ]; then
+			# WLAN: Netzname, Zustand und Signal von wpa_supplicant
+			st=$(wpa_cli -p /run/wpa_supplicant -i "$n" status 2>/dev/null)
+			ws=$(echo "$st" | sed -n 's/^wpa_state=//p')
+			if [ "$ws" = COMPLETED ]; then
+				rssi=$(wpa_cli -p /run/wpa_supplicant -i "$n" signal_poll 2>/dev/null | sed -n 's/^RSSI=//p')
+				# wpa_cli schreibt Sonderzeichen als \" und \xHH, printf %b macht daraus wieder Text
+				ssid=$(printf '%b' "$(echo "$st" | sed -n 's/^ssid=//p' | sed 's/\\"/"/g')")
+				link="WLAN \"$ssid\"${rssi:+ Signal $rssi dBm}"
+			elif [ -n "$ws" ]; then
+				link="WLAN sucht ($ws)"
+			else
+				link="WLAN aus - kein Netz eingetragen (wifi.txt auf dem Stick)"
+			fi
+		elif [ "$(cat "$d/carrier" 2>/dev/null)" = 1 ]; then
 			sp=$(cat "$d/speed" 2>/dev/null)
 			link="verbunden${sp:+ ${sp} Mbit/s}"
 		else

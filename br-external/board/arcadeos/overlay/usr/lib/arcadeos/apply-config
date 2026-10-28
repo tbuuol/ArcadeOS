@@ -16,6 +16,25 @@ mkdir -p $R
 
 get() { sed -n "s/^$1=//p" "$CFG/system.conf" 2>/dev/null | tail -1; }
 
+# Ein WLAN-Netz als wpa_supplicant-Block: wifi_net <ssid> <passwort|64-hex|leer> <prioritaet>
+# SSID als Hex (beliebige Zeichen ohne Quoting-Probleme). Das Passwort steht in Anfuehrungszeichen
+# drin (wpa_supplicant liest bis zum letzten ", innere " sind also kein Problem); die Datei liegt
+# nur im RAM und ist nur fuer root lesbar - wie /state/config/system.conf.
+wifi_net() {
+	printf 'network={\n\tssid=%s\n\tscan_ssid=1\n\tpriority=%s\n' \
+		"$(printf %s "$1" | od -An -tx1 -v | tr -d ' \n')" "$3"
+	if [ -z "$2" ]; then
+		printf '\tkey_mgmt=NONE\n'
+	else
+		n=$(printf %s "$2" | wc -c)
+		if printf %s "$2" | grep -qE '^[0-9a-fA-F]{64}$'; then k=$2
+		elif [ "$n" -ge 8 ] && [ "$n" -le 63 ]; then k="\"$2\""
+		else echo "WLAN: Passwort fuer '$1' ungueltig (8 bis 63 Zeichen)" >&2; printf '\tdisabled=1\n}\n'; return; fi
+		printf '\tkey_mgmt=WPA-PSK WPA-PSK-SHA256\n\tieee80211w=1\n\tpsk=%s\n' "$k"
+	fi
+	printf '}\n'
+}
+
 # Praefix (24) -> Netzmaske (255.255.255.0)
 pfx2mask() {
 	p=$1; m=""
@@ -47,6 +66,24 @@ if [ "$MODE" = boot ]; then
 			for f in authorized_keys authorized_keys.txt; do
 				[ -f "$R/bootfs/$f" ] && tr -d '\r' < "$R/bootfs/$f" | sed "1s/^$bom//" >> $R/boot_keys
 			done
+			# WLAN-Zugangsdaten: wifi.txt mit Zeilen ssid=..., password=..., optional country=DE;
+			# mehrere Netze: einfach weitere ssid=/password=-Paare darunter
+			: > $R/boot_wifi; chmod 600 $R/boot_wifi; : > $R/boot_wifi_country
+			if [ -f "$R/bootfs/wifi.txt" ]; then
+				ssid=""; pw=""; nw=0
+				while IFS= read -r line || [ -n "$line" ]; do
+					case "$line" in
+						ssid=*) [ -n "$ssid" ] && { wifi_net "$ssid" "$pw" 1 >> $R/boot_wifi; nw=$((nw + 1)); }
+							ssid=${line#ssid=}; pw="" ;;
+						password=*|psk=*) pw=${line#*=} ;;
+						country=*) echo "${line#country=}" | grep -E '^[A-Z]{2}$' > $R/boot_wifi_country ;;
+					esac
+				done <<-EOF
+				$(tr -d '\r' < "$R/bootfs/wifi.txt" | sed "1s/^$bom//")
+				EOF
+				[ -n "$ssid" ] && { wifi_net "$ssid" "$pw" 1 >> $R/boot_wifi; nw=$((nw + 1)); }
+				[ "$nw" -gt 0 ] && { echo "WLAN-Netze vom Stick: $nw"; audit boot-wifi "$nw Netz(e) aus boot/wifi.txt"; }
+			fi
 			umount $R/bootfs
 		fi
 	fi
@@ -67,11 +104,36 @@ h=$(get hostname)
 
 # 3. Netzwerk: neue Datei erzeugen; nur wenn sie sich unterscheidet, mit der alten Datei abbauen,
 #    dann die neue aktivieren (eine reine Hostname-Aenderung soll die Verbindung nicht kappen)
-# Kabel-Netzwerkkarten (mit Geraet dahinter: kein lo/sit/tun); keine gefunden -> eth0
+# Netzwerkkarten mit Geraet dahinter (kein lo/sit/tun): Kabel und WLAN getrennt; keine -> eth0
 nics() {
 	n=""
-	for d in /sys/class/net/*; do [ -e "$d/device" ] && n="$n ${d##*/}"; done
+	for d in /sys/class/net/*; do [ -e "$d/device" ] && [ ! -e "$d/phy80211" ] && n="$n ${d##*/}"; done
 	echo "${n:- eth0}"
+}
+# WLAN-Karten: alle, oder nur wifi.interface (z.B. USB-WLAN-Stick statt eingebauter Karte)
+wlans() {
+	w=$(get wifi.interface)
+	for d in /sys/class/net/*; do
+		[ -e "$d/phy80211" ] && { [ -z "$w" ] || [ "$w" = "${d##*/}" ]; } && echo "${d##*/}"
+	done
+}
+
+# WLAN-Konfiguration: Netz aus der Konfiguration (Vorrang), dann die vom Stick
+{
+	printf 'ctrl_interface=/run/wpa_supplicant\nupdate_config=0\n'
+	c=$(get wifi.country); [ -n "$c" ] || c=$(cat $R/boot_wifi_country 2>/dev/null)
+	[ -n "$c" ] && printf 'country=%s\n' "$c"
+	[ -n "$(get wifi.ssid)" ] && wifi_net "$(get wifi.ssid)" "$(get wifi.psk)" 2
+	cat $R/boot_wifi 2>/dev/null
+} > $R/wpa_supplicant.conf.new
+chmod 600 $R/wpa_supplicant.conf.new
+WIFI=0; grep -q '^network=' $R/wpa_supplicant.conf.new && WIFI=1
+# ifupdown-Zeilen, die vor/nach einer WLAN-Karte wpa_supplicant starten/beenden
+wifi_hooks() {
+	[ "$WIFI" = 1 ] || return 0
+	[ -e "/sys/class/net/$1/phy80211" ] || return 0
+	printf '\tpre-up rfkill unblock wlan; wpa_supplicant -B -s -i %s -c %s/wpa_supplicant.conf -P /run/wpa_supplicant.%s.pid\n' "$1" "$R" "$1"
+	printf '\tpost-down kill $(cat /run/wpa_supplicant.%s.pid) 2>/dev/null; rm -f /run/wpa_supplicant.%s.pid\n' "$1" "$1"
 }
 {
 	printf 'auto lo\niface lo inet loopback\n'
@@ -82,17 +144,22 @@ nics() {
 		a=$(get net.address)
 		printf '\nauto %s\niface %s inet static\n\taddress %s\n\tnetmask %s\n\tgateway %s\n' \
 			"$i" "$i" "${a%/*}" "$(pfx2mask "${a#*/}")" "$(get net.gateway)"
+		wifi_hooks "$i"
 		STATIC=1
 	else
 		# DHCP auf jeder Karte: auf einem echten PC weiss niemand vorher, welche Buchse belegt ist
 		for i in $(nics); do printf '\nauto %s\niface %s inet dhcp\n' "$i" "$i"; done
+		# WLAN nur, wenn ein Netz eingetragen ist
+		[ "$WIFI" = 1 ] && for i in $(wlans); do printf '\nauto %s\niface %s inet dhcp\n' "$i" "$i"; wifi_hooks "$i"; done
 		STATIC=0
 	fi
 } > $R/interfaces.new
 NETCHANGE=1
-cmp -s $R/interfaces.new $R/interfaces 2>/dev/null && NETCHANGE=0
+cmp -s $R/interfaces.new $R/interfaces 2>/dev/null && cmp -s $R/wpa_supplicant.conf.new $R/wpa_supplicant.conf 2>/dev/null \
+	&& NETCHANGE=0
 [ "$MODE" = live ] && [ "$NETCHANGE" = 1 ] && ifdown -a -f >/dev/null 2>&1
 mv $R/interfaces.new $R/interfaces
+mv $R/wpa_supplicant.conf.new $R/wpa_supplicant.conf
 mkdir -p /run/udhcpc
 if [ "$STATIC" = 1 ]; then
 	rm -f /run/udhcpc/*
