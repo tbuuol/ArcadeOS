@@ -33,9 +33,29 @@ if [ "$MODE" = boot ] && [ -f "$CFG/.pending" ] && [ -d /state/config.prev ]; th
 	echo "Konfiguration: unbestaetigte Aenderung zurueckgenommen"
 fi
 
-# 1. SSH-Keys: Recovery-Keys aus dem Image immer, dann die aus der Konfiguration
+# 1. SSH-Keys: Recovery-Keys aus dem Image immer, dann die vom Stick, dann die aus der Konfiguration.
+#    Stick: Datei authorized_keys (oder authorized_keys.txt) in der FAT-Partition "boot" - die laesst
+#    sich an jedem Windows-/Mac-/Linux-Rechner oeffnen. Wer den Stick in der Hand hat, besitzt das
+#    Geraet ohnehin. Gelesen nur beim Booten (Windows-Zeilenenden und BOM werden entfernt).
+if [ "$MODE" = boot ]; then
+	: > $R/boot_keys
+	dev=$(find_part boot)
+	if [ -n "$dev" ]; then
+		mkdir -p $R/bootfs
+		if mount -t vfat -o ro,nodev,nosuid,noexec "/dev/$dev" $R/bootfs 2>/dev/null; then
+			bom=$(printf '\357\273\277')
+			for f in authorized_keys authorized_keys.txt; do
+				[ -f "$R/bootfs/$f" ] && tr -d '\r' < "$R/bootfs/$f" | sed "1s/^$bom//" >> $R/boot_keys
+			done
+			umount $R/bootfs
+		fi
+	fi
+	n=$(grep -cE '^(ssh-|ecdsa-|sk-)' $R/boot_keys)
+	[ "$n" -gt 0 ] && { echo "SSH-Keys vom Stick: $n"; audit boot-keys "$n Key(s) aus boot/authorized_keys"; }
+fi
 {
 	cat /etc/arcadeos/recovery_keys
+	grep -E '^(ssh-|ecdsa-|sk-)' $R/boot_keys 2>/dev/null || true
 	grep -E '^(ssh-|ecdsa-)' "$CFG/authorized_keys" 2>/dev/null || true
 } > $R/authorized_keys.new
 chmod 600 $R/authorized_keys.new
@@ -47,15 +67,25 @@ h=$(get hostname)
 
 # 3. Netzwerk: neue Datei erzeugen; nur wenn sie sich unterscheidet, mit der alten Datei abbauen,
 #    dann die neue aktivieren (eine reine Hostname-Aenderung soll die Verbindung nicht kappen)
+# Kabel-Netzwerkkarten (mit Geraet dahinter: kein lo/sit/tun); keine gefunden -> eth0
+nics() {
+	n=""
+	for d in /sys/class/net/*; do [ -e "$d/device" ] && n="$n ${d##*/}"; done
+	echo "${n:- eth0}"
+}
 {
-	printf 'auto lo\niface lo inet loopback\n\nauto eth0\n'
+	printf 'auto lo\niface lo inet loopback\n'
 	if [ "$(get net.mode)" = static ] && [ -n "$(get net.address)" ] && [ -n "$(get net.gateway)" ]; then
+		# feste Adresse auf einer Karte (net.interface, sonst die erste)
+		i=$(get net.interface)
+		[ -n "$i" ] || { set -- $(nics); i=$1; }
 		a=$(get net.address)
-		printf 'iface eth0 inet static\n\taddress %s\n\tnetmask %s\n\tgateway %s\n' \
-			"${a%/*}" "$(pfx2mask "${a#*/}")" "$(get net.gateway)"
+		printf '\nauto %s\niface %s inet static\n\taddress %s\n\tnetmask %s\n\tgateway %s\n' \
+			"$i" "$i" "${a%/*}" "$(pfx2mask "${a#*/}")" "$(get net.gateway)"
 		STATIC=1
 	else
-		printf 'iface eth0 inet dhcp\n'
+		# DHCP auf jeder Karte: auf einem echten PC weiss niemand vorher, welche Buchse belegt ist
+		for i in $(nics); do printf '\nauto %s\niface %s inet dhcp\n' "$i" "$i"; done
 		STATIC=0
 	fi
 } > $R/interfaces.new

@@ -1,0 +1,17 @@
+ArcadeOS - SSH-Zugang
+=====================
+
+Eigenen SSH-Public-Key hier ablegen, damit du dich einloggen kannst:
+
+  1. Datei "authorized_keys" (oder authorized_keys.txt) in diesem Ordner anlegen.
+  2. Den Public Key hineinkopieren, eine Zeile pro Key, z.B.:
+       ssh-ed25519 AAAAC3Nza... name@rechner
+     (Inhalt von ~/.ssh/id_ed25519.pub - NIE den privaten Key!)
+  3. Stick sicher auswerfen, Geraet davon starten.
+
+Nach dem Start zeigt der Bildschirm IP-Adresse, SSH-Befehl und den
+Fingerabdruck des Geraete-Keys (beim ersten Verbinden vergleichen):
+
+  ssh root@<IP>
+
+Nichts sonst in dieser Partition aendern (EFI, a/, b/ = Startdateien).

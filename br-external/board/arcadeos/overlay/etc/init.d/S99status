@@ -1,0 +1,17 @@
+#!/bin/sh
+#
+# Statusseite auf dem Bildschirm (tty1): IP, SSH-Befehl, Host-Key-Fingerabdruck, Mesh, Zeit.
+#
+
+case "$1" in
+	start)
+		printf "Starting status screen: "
+		start-stop-daemon -S -b -m -p /run/status-screen.pid -x /usr/lib/arcadeos/status-screen && echo "OK" || echo "FAIL"
+		;;
+	stop)
+		printf "Stopping status screen: "
+		start-stop-daemon -K -q -p /run/status-screen.pid; echo "OK"
+		;;
+	restart|reload) "$0" stop; "$0" start ;;
+	*) echo "Usage: $0 {start|stop|restart|reload}"; exit 1 ;;
+esac

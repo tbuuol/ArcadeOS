@@ -6,9 +6,31 @@ EFI="$1/efi-part/EFI/BOOT"
 
 # Eigene GRUB-Konfiguration statt der Buildroot-Vorlage
 install -m 0644 "$BOARD/grub.cfg" "$EFI/grub.cfg"
+# Hinweis fuer den User auf der FAT-Partition (SSH-Key ablegen)
+install -m 0644 "$BOARD/LIESMICH.txt" "$1/LIESMICH.txt"
 
 # grubenv: 1024-Byte-Block, mit '#' aufgefuellt (Format von grub-editenv)
 { printf '# GRUB Environment Block\nslot=A\n'; head -c 1024 /dev/zero | tr '\0' '#'; } | head -c 1024 > "$EFI/grubenv"
+
+# BIOS-Start (alte PCs ohne UEFI): der GRUB-Kern (grub.img) liegt in der Partition bios-boot ab
+# 1 MiB (LBA 2048), der Startcode (boot.img) im ersten Sektor der Platte. Beide enthalten die
+# Sektornummer des naechsten Teils - das macht sonst grub-install, hier passend zu genimage.cfg.
+BOOTIMG=$(ls "$BUILD_DIR"/grub2-*/build-i386-pc/grub-core/boot.img | head -n1)
+python3 - "$BOOTIMG" "$1/grub.img" "$1/boot-mbr.img" 2048 <<'PY'
+import struct, sys
+boot = bytearray(open(sys.argv[1], "rb").read())
+core = bytearray(open(sys.argv[2], "rb").read())
+lba = int(sys.argv[4])
+assert len(boot) == 512 and len(core) <= 1024 * 1024, "boot.img/grub.img unerwartet gross"
+# boot.img: 64-Bit-Sektornummer von core.img bei 0x5c (Vorgabe 1 = direkt hinter dem MBR)
+assert struct.unpack_from("<Q", boot, 0x5C)[0] in (1, lba)
+struct.pack_into("<Q", boot, 0x5C, lba)
+# diskboot (erster Sektor von core.img): Blockliste am Sektorende, Start des Rests (Vorgabe 2)
+assert struct.unpack_from("<Q", core, 0x1F4)[0] in (2, lba + 1)
+struct.pack_into("<Q", core, 0x1F4, lba + 1)
+open(sys.argv[3], "wb").write(boot)
+open(sys.argv[2], "wb").write(core)
+PY
 
 support/scripts/genimage.sh -c "$BOARD/genimage.cfg"
 

@@ -201,6 +201,12 @@ Ziel: Test auf Raspberry Pi, Betrieb auch auf beliebigen x86_64-Geräten.
 | `rpi_arm64`     | aarch64 | Pi-Firmware (Pi 4/5, USB/SD) | Pi-Kernel + Device Tree                  |
 | `vps_x86_64`    | x86_64  | UEFI/BIOS von Platte         | wie QEMU + Bootloader                    |
 
+**Stand 2026-10-28 – `pc_x86_64` Teil 1 fertig** (im selben Image wie QEMU, keine Module):
+UEFI + BIOS-Start (Hybrid-GPT mit bios-boot), USB/UAS/SATA/NVMe/SD, Intel/Realtek/Broadcom/Atheros/
+USB-LAN + Realtek-Firmware, VM-Treiber (VirtualBox/VMware/Hyper-V), Statusseite auf dem Bildschirm
+(efifb bzw. VGA-Text), DHCP auf allen Kabel-Karten, SSH-Key vom Stick (`boot/authorized_keys`).
+Getestet mit `tests/qemu-hw.sh`. Offen: WLAN, Installer auf interne Platte, mDNS, Test auf echtem Gerät.
+
 - **Universal-Stick:** eine FAT-Bootpartition kann gleichzeitig die Pi-Firmware (`config.txt`,
   arm64-Kernel) und `EFI/BOOT/BOOTX64.EFI` (x86-Kernel) enthalten – derselbe Stick bootet auf
   Pi und PC, jeder zieht sich seinen Teil. (Zu prüfen: Pi 5 / Pi 4 USB-Boot, UEFI mit MBR.)

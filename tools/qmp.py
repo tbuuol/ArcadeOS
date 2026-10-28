@@ -3,14 +3,18 @@
 
     tools/qmp.py <qmp.sock> dump [stichproben]   Status, CPUs, Register aller Kerne, Befehlszeiger-Stichproben
     tools/qmp.py <qmp.sock> hmp "<befehl>"       beliebiger Monitor-Befehl, z.B. "info registers -a"
+    tools/qmp.py <qmp.sock> screen <datei.png>   Bildschirmfoto (was ein angeschlossener Monitor zeigt)
 
 Nur Standardbibliothek.
 """
 import json
+import os
 import re
 import socket
+import struct
 import sys
 import time
+import zlib
 
 
 class QMP:
@@ -74,6 +78,30 @@ def identify(q, rip, workdir="/tmp"):
     return {"image_base": None}
 
 
+def ppm_to_png(src, dst):
+    """P6-PPM (QEMU-screendump) -> PNG, nur Standardbibliothek"""
+    data = open(src, "rb").read()
+    tok, pos = [], 0
+    while len(tok) < 4:                      # Kopf: P6 breite hoehe maxwert
+        while data[pos:pos + 1].isspace():
+            pos += 1
+        end = pos
+        while not data[end:end + 1].isspace():
+            end += 1
+        tok.append(data[pos:end]); pos = end
+    pos += 1
+    w, h = int(tok[1]), int(tok[2])
+    px = data[pos:pos + w * h * 3]
+    raw = b"".join(b"\0" + px[y * w * 3:(y + 1) * w * 3] for y in range(h))
+
+    def chunk(kind, body):
+        c = kind + body
+        return struct.pack(">I", len(body)) + c + struct.pack(">I", zlib.crc32(c) & 0xFFFFFFFF)
+    with open(dst, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
+
+
 def main():
     if len(sys.argv) < 3:
         print(__doc__)
@@ -81,6 +109,15 @@ def main():
     q = QMP(sys.argv[1])
     if sys.argv[2] == "hmp":
         print(q.hmp(sys.argv[3]))
+        return
+    if sys.argv[2] == "screen":
+        # QEMU ohne libpng kann nur PPM; das Umwandeln in PNG geht auch ohne Zusatzpakete
+        ppm = sys.argv[3] + ".ppm"
+        r = q.cmd("screendump", filename=ppm)
+        if "error" in r:
+            print(r["error"].get("desc")); sys.exit(1)
+        ppm_to_png(ppm, sys.argv[3])
+        os.remove(ppm)
         return
     if sys.argv[2] == "dump":
         n = int(sys.argv[3]) if len(sys.argv) > 3 else 10

@@ -14,6 +14,7 @@
 # wiederhergestellt – auch nach einem Neustart waehrend der Frist.
 #
 # Schluessel: hostname, net.mode (dhcp|static), net.address (IP/Praefix), net.gateway,
+#             net.interface (Karte fuer static, Standard: die erste),
 #             net.dns (Leerzeichen-getrennt), ntp.servers (Leerzeichen-getrennt),
 #             config.confirm_timeout (Sekunden)
 # Dateien:    /state/config/system.conf, /state/config/authorized_keys
@@ -41,6 +42,7 @@ validate() {  # key value
 		net.address) ip=${2%/*}; pfx=${2#*/}
 			valid_ip "$ip" && [ "$pfx" != "$2" ] && [ "$pfx" -ge 1 ] 2>/dev/null && [ "$pfx" -le 32 ] || die "net.address braucht IP/Praefix, z.B. 192.168.1.50/24" ;;
 		net.gateway) valid_ip "$2" || die "ungueltiges net.gateway: $2" ;;
+		net.interface) echo "$2" | grep -qE '^[a-zA-Z0-9_.-]{1,15}$' || die "ungueltiges net.interface: $2" ;;
 		net.dns) for d in $2; do valid_ip "$d" || die "ungueltiger DNS-Server: $d"; done ;;
 		config.confirm_timeout) [ "$2" -ge 30 ] 2>/dev/null || die "config.confirm_timeout mindestens 30" ;;
 		ntp.servers) for n in $2; do echo "$n" | grep -qE '^[A-Za-z0-9.-]{1,253}$' || die "ungueltiger NTP-Server: $n"; done ;;

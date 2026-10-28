@@ -1,0 +1,83 @@
+#!/bin/sh
+# Statusseite auf dem Bildschirm (tty1): Verbindungsdaten, damit man sich per SSH verbinden kann.
+# Nur Anzeige, kein Login. Wird alle 5 s neu geschrieben. Auch als Text: status-screen --once
+. /usr/lib/arcadeos/common.sh
+
+TTY=/dev/tty1
+HOSTKEY=/etc/dropbear/dropbear_ed25519_host_key
+
+# Feld aus einer flachen JSON-Datei: jget <datei> <feld>
+jget() {
+	sed -n "s/.*\"$2\":\"\{0,1\}\([^\",}]*\).*/\1/p" "$1" 2>/dev/null | head -n1
+}
+
+fingerprint() {
+	dropbearkey -y -f "$HOSTKEY" 2>/dev/null | sed -n 's/^Fingerprint: *//p'
+}
+
+render() {
+	. /etc/arcadeos-release 2>/dev/null
+	echo "ArcadeOS ${VERSION:-?}   Slot $(running_slot)   $(hostname)"
+	echo "------------------------------------------------------------"
+	ips=""
+	for d in /sys/class/net/*; do
+		n=${d##*/}
+		[ -e "$d/device" ] || continue   # nur echte Karten (kein lo/sit0/tun)
+		if [ "$(cat "$d/carrier" 2>/dev/null)" = 1 ]; then
+			sp=$(cat "$d/speed" 2>/dev/null)
+			link="verbunden${sp:+ ${sp} Mbit/s}"
+		else
+			link="kein Kabel/keine Verbindung"
+		fi
+		echo "Netz:  $n  $(cat "$d/address")  $link"
+		for a in $(ip -o -4 addr show dev "$n" scope global 2>/dev/null | awk '{print $4}'); do
+			echo "       IPv4 $a"; ips="$ips ${a%/*}"
+		done
+		for a in $(ip -o -6 addr show dev "$n" scope global 2>/dev/null | awk '{print $4}'); do
+			echo "       IPv6 $a"
+		done
+	done
+	gw=$(ip -4 route show default 2>/dev/null | awk '{print $3; exit}')
+	echo "Router: ${gw:-keiner (kein DHCP?)}"
+	echo
+	if [ -n "$ips" ]; then
+		for ip in $ips; do echo "SSH:   ssh root@$ip"; done
+	else
+		echo "SSH:   noch keine IP-Adresse"
+	fi
+	fp=$(fingerprint)
+	echo "Key:   ${fp:-wird erzeugt ...}"
+	echo
+	sm=$(jget /run/state.json mode)
+	case "$sm" in
+		persistent) echo "Daten: $(jget /run/state.json device) (bleibt erhalten)" ;;
+		*)    echo "Daten: NUR IM RAM - geht beim Neustart verloren ($(jget /run/state.json reason))" ;;
+	esac
+	if [ -f /run/meshd.json ]; then
+		nl=$(grep -o '"transport"' /run/meshd.json | wc -l)
+		echo "Mesh:  $nl Verbindungen   Knoten $(jget /run/meshd.json node_id | cut -c1-16)"
+	else
+		echo "Mesh:  aus"
+	fi
+	if [ "$(jget /run/ntp.json synced)" = true ]; then t="gestellt"; else t="noch nicht gestellt"; fi
+	echo "Zeit:  $(date -u '+%Y-%m-%d %H:%M UTC') ($t)   laeuft seit $(( $(uptime_s) / 60 )) min"
+}
+
+if [ "$1" = --once ]; then render; exit 0; fi
+
+# Host-Key gleich erzeugen (sonst erst bei der ersten SSH-Verbindung), damit der Fingerabdruck
+# schon vor dem ersten Login auf dem Bildschirm steht und abgeglichen werden kann.
+if [ ! -f "$HOSTKEY" ] && [ -d "${HOSTKEY%/*}" ]; then
+	dropbearkey -t ed25519 -f "$HOSTKEY.new" >/dev/null 2>&1 && mv "$HOSTKEY.new" "$HOSTKEY"
+fi
+
+[ -c "$TTY" ] || exit 0
+ESC=$(printf '\033')
+# Bildschirm nicht abschalten, Cursor aus
+printf '\033[9;0]\033[?25l' > "$TTY"
+while :; do
+	out=$(render 2>/dev/null)
+	# Cursor nach oben, Seite schreiben, Rest loeschen (kein Flackern durch komplettes Leeren)
+	printf '\033[H%s\033[J' "$(printf '%s\n' "$out" | sed "s/\$/${ESC}[K/")" > "$TTY"
+	sleep 5
+done

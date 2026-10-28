@@ -34,11 +34,35 @@ und `date +%s > build.start`).
 ssh -p 2222 -i ~/.ssh/<dein-key> root@127.0.0.1
 ```
 
+`run.sh` kann auch echte PC-Hardware nachstellen:
+
+```sh
+FIRMWARE=bios ./run.sh                     # alter PC ohne UEFI (SeaBIOS) statt OVMF
+DISK_BUS=usb ./run.sh                      # Platte als USB-Stick (auch: uas, ahci, nvme, scsi, virtio)
+NIC=e1000e ./run.sh                        # Netzwerkkarte (auch: e1000, igb, vmxnet3, usb, virtio-net-pci)
+```
+
+## Echte Hardware (USB-Stick)
+
+Ein Image für alle x86_64-PCs, Laptops und Mini-PCs – mit UEFI und mit altem BIOS:
+
+1. `output/images/disk.img` mit **balenaEtcher**, **Rufus** (DD-Modus) oder `dd` auf den Stick schreiben.
+2. Eigenen SSH-Public-Key als `authorized_keys` (oder `authorized_keys.txt`) in die FAT-Partition
+   des Sticks legen (unter Windows als Laufwerk „BOOT“ sichtbar, siehe `LIESMICH.txt` dort).
+3. Vom Stick starten (UEFI: Secure Boot aus). Der Bildschirm zeigt IP, SSH-Befehl und den
+   Fingerabdruck des Host-Keys – beim ersten `ssh root@<IP>` vergleichen.
+
+Eingebaut: USB (auch UAS), SATA (HDD/SSD), NVMe, SD/eMMC; Netzwerk per Kabel: Intel
+(e1000/e1000e/igb/igc), Realtek r8169/r8125 (mit Firmware), Broadcom tg3, Atheros, USB-LAN-Adapter;
+VMs: virtio, VirtualBox, VMware, Hyper-V. Bildschirm: UEFI-Grafik (VGA/DVI/HDMI/DisplayPort, ohne
+Grafiktreiber) bzw. VGA-Textmodus beim BIOS-Start. Noch nicht: WLAN, Raspberry Pi (eigenes Image).
+DHCP läuft auf jeder Kabel-Netzwerkkarte.
+
 ## Kernel
 
 Eigene, schlanke Config: `make tinyconfig` plus
-[linux-fragment.config](br-external/board/arcadeos/linux-fragment.config) (nur virtio, serielle
-Konsole, ext4, IPv4/IPv6, keine Module). Nach einer Änderung am Fragment neu erzeugen:
+[linux-fragment.config](br-external/board/arcadeos/linux-fragment.config) (PC-Treiber für Platten,
+Netzwerk und Bildschirm, virtio, serielle Konsole, ext4, IPv4/IPv6, keine Module). Nach einer Änderung am Fragment neu erzeugen:
 
 ```sh
 tar xf buildroot-2026.02.3/dl/linux/linux-6.18.7.tar.xz -C /tmp
@@ -50,10 +74,12 @@ fallen sonst still weg), und schreibt `linux.config`.
 
 ## Disk-Layout
 
-`output/images/disk.img` (GPT), gemeinsam für x86_64 (UEFI) und Raspberry Pi 4/5:
+`output/images/disk.img` (GPT, auf 1 MB ausgerichtet), x86_64 mit UEFI und BIOS, später Raspberry Pi 4/5:
 
 | Partition  | Inhalt                                   |
 |------------|------------------------------------------|
+| (Sektor 0) | GRUB-Startcode für BIOS-PCs              |
+| `bios-boot`| GRUB-Kern für BIOS-PCs (1 MB, ohne Dateisystem) |
 | `boot`     | FAT32/EFI: GRUB, `grub.cfg`, `grubenv` (A/B-Auswahl), Kernel pro Slot in `a/` und `b/` |
 | `rootfs-a` | System A, squashfs, read-only            |
 | `rootfs-b` | System B für Updates, anfangs leer       |
@@ -129,6 +155,8 @@ tests/qemu-config.sh     # Konfiguration: confirm, Frist, Neustart, falsche IP, 
 tests/qemu-agentd.sh     # MCP-Server über SSH
 tests/qemu-net.sh        # Netztuning (BBR, fq, notsent_lowat) und NTP
 tests/qemu-mesh.sh       # meshd: Live-Verbindungen, Key bleibt, Neustart nach Absturz (braucht Internet)
+tests/qemu-hw.sh         # echte Hardware: UEFI/BIOS × USB/UAS/SATA/NVMe/SCSI × Netzwerkkarten,
+                         # Statusseite + Bildschirmfotos, SSH-Key vom Stick
 tests/reboot-soak.sh     # Neustart-Dauerlauf mit Diagnose (QMP-Abfrage bei Hänger)
 ```
 

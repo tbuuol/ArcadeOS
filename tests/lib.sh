@@ -27,17 +27,22 @@ bad() { echo "  FAIL $*"; FAIL=$((FAIL+1)); }
 
 start_vm() {  # Kopie von disk.img in $SP
     [ -f $SP/disk.img ] || cp "$IMG/disk.img" $SP/disk.img
-    DEBUG_DIR=$SP/debug DISK=$SP/disk.img VARS=$SP/vars.fd SSH_PORT=2222 "$ROOT/run.sh" -serial file:$SP/serial.log -monitor none -display none >/dev/null 2>&1 &
+    DEBUG_DIR=$SP/debug DISK=$SP/disk.img VARS=$SP/vars.fd SSH_PORT=2222 "$ROOT/run.sh" -serial file:$SP/serial.log -monitor none -display none "$@" >/dev/null 2>&1 &
     VM_PID=$!   # run.sh ersetzt sich per exec durch qemu: gleiche PID
 }
 bootid() { $S cat /proc/sys/kernel/random/boot_id 2>/dev/null; }
 # Grosszuegige Zeitlimits: ohne KVM wird die Emulation auf einem geteilten Host zeitweise 10x langsamer
 # (gemessen: Neustart bis 6 min). Langsam ist kein Fehler, nicht wiederkommen schon.
-wait_ssh() { for i in $(seq 1 600); do $S true 2>/dev/null && return 0; sleep 1; done; hang_dump "wait_ssh"; return 1; }
+# Zeitgrenze nach Uhr, nicht nach Versuchen (ein Versuch kann bis zu ConnectTimeout dauern)
+wait_ssh() {
+    T_END=$(( $(date +%s) + ${1:-600} ))
+    while [ "$(date +%s)" -lt $T_END ]; do $S true 2>/dev/null && return 0; sleep 1; done
+    hang_dump "wait_ssh"; return 1
+}
 # wartet, bis das System mit einer neuen boot_id wieder per SSH erreichbar ist
 wait_reboot() {
     T0=$(date +%s)
-    for i in $(seq 1 "${2:-600}"); do
+    while [ $(( $(date +%s) - T0 )) -lt "${2:-600}" ]; do
         b=$(bootid); [ -n "$b" ] && [ "$b" != "$1" ] && { WAITED=$(( $(date +%s) - T0 )); return 0; }
         sleep 1
     done
