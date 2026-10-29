@@ -23,4 +23,6 @@ host key fingerprint (compare it on first connect):
 
   ssh root@<IP>
 
+Live status in the browser (read-only): http://<IP>/
+
 Do not change anything else on this drive (EFI, a/, b/ = boot files).

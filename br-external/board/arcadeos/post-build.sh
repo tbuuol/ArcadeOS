@@ -65,3 +65,11 @@ if [ -d "$FW/intel/iwlwifi" ]; then
     done
     find "$FW" -xtype l -delete
 fi
+
+# Monitoring-Seite: status.json schreibt monitor-collect nach /run (tmpfs), httpd liefert index.html.gz
+# an Browser, die gzip koennen
+M="$TARGET_DIR/usr/share/arcadeos/monitor"
+if [ -f "$M/index.html" ]; then
+    gzip -9 -n -c "$M/index.html" > "$M/index.html.gz"
+    ln -sfn /run/monitor/status.json "$M/status.json"
+fi

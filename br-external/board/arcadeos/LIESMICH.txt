@@ -23,4 +23,6 @@ des Geraete-Keys (beim ersten Verbinden vergleichen):
 
   ssh root@<IP>
 
+Live-Status im Browser (nur lesen): http://<IP>/
+
 Nichts sonst in dieser Partition aendern (EFI, a/, b/ = Startdateien).

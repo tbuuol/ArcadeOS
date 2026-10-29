@@ -213,6 +213,12 @@ AP-Modus für Test und späteren Einrichtungs-Hotspot), `wifi.txt` auf dem Stick
 arcadeos-config, Statusseite mit Netzname/Signal. Getestet mit `tests/qemu-wifi.sh` (simulierte
 Funkkarten); echte Karte erst auf dem Gerät. Offen: Installer auf interne Platte, mDNS, WPA3-only.
 
+**Stand 2026-10-29 – Monitoring-Seite:** `http://<IP>/` zeigt live CPU, RAM, Belegung, Laufwerke,
+Temperatur, Akku, Netz, Dienste, Mesh und Audit-Log im Syfy-UI. Öffentlich lesbar, nur lesen: Sammler
+(root) schreibt `/run/monitor/status.json`, busybox httpd als nobody liefert nur statische Dateien (kein
+CGI). Keine Geheimnisse, kein WLAN-Name, keine Client-/Peer-Adressen. `monitor.port` (0 = aus). Kernel:
+ACPI-Akku/Thermal + coretemp. Getestet mit `tests/qemu-monitor.sh` (55 Prüfungen).
+
 - **Universal-Stick:** eine FAT-Bootpartition kann gleichzeitig die Pi-Firmware (`config.txt`,
   arm64-Kernel) und `EFI/BOOT/BOOTX64.EFI` (x86-Kernel) enthalten – derselbe Stick bootet auf
   Pi und PC, jeder zieht sich seinen Teil. (Zu prüfen: Pi 5 / Pi 4 USB-Boot, UEFI mit MBR.)

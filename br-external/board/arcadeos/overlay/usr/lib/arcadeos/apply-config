@@ -178,4 +178,13 @@ if ! cmp -s $R/ntp.servers.new $R/ntp.servers 2>/dev/null; then
 else
 	rm -f $R/ntp.servers.new
 fi
+
+# 5. Monitoring-Seite: Port (leer = 80, 0 = aus); live nur bei Aenderung neu starten
+p=$(get monitor.port); echo "${p:-80}" > $R/monitor.port.new
+if ! cmp -s $R/monitor.port.new $R/monitor.port 2>/dev/null; then
+	mv $R/monitor.port.new $R/monitor.port
+	[ "$MODE" = live ] && /etc/init.d/S70monitor restart >/dev/null 2>&1
+else
+	rm -f $R/monitor.port.new
+fi
 exit 0

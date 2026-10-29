@@ -8,3 +8,11 @@ CONFIG_FEATURE_TC_INGRESS=n
 # WLAN ein-/ausschalten (rfkill) und DHCP-Server (QEMU-WLAN-Test, spaeter Einrichtungs-Hotspot)
 CONFIG_RFKILL=y
 CONFIG_UDHCPD=y
+# Monitoring-Seite: nur statische Dateien (kein CGI, keine Auth, kein Proxy), Rechte abgeben (-u)
+CONFIG_HTTPD=y
+CONFIG_FEATURE_HTTPD_PORT_DEFAULT=80
+CONFIG_FEATURE_HTTPD_SETUID=y
+CONFIG_FEATURE_HTTPD_GZIP=y
+CONFIG_FEATURE_HTTPD_CGI=n
+CONFIG_FEATURE_HTTPD_BASIC_AUTH=n
+CONFIG_FEATURE_HTTPD_PROXY=n

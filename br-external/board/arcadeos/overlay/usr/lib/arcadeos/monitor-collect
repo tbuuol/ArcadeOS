@@ -1,0 +1,284 @@
+#!/usr/bin/lua
+--
+-- Sammler fuer die Monitoring-Seite: schreibt alle 2 s /run/monitor/status.json (oeffentlich lesbar).
+-- Laeuft als root (wpa_cli, Audit-Log), der Webserver (httpd als nobody) liefert nur die fertige Datei aus.
+-- Nur Lesen, nie Steuern. Nichts Geheimes: keine Passwoerter/Keys, kein WLAN-Name, keine Adressen von
+-- SSH-Clients oder Mesh-Gegenstellen.
+--   monitor-collect          Dauerlauf
+--   monitor-collect --once   einmal schreiben (Test)
+--
+
+local json = require("cjson")
+
+local OUT = "/run/monitor/status.json"
+local EVERY = 2
+local HIST = 90                       -- Verlauf: 90 Werte = 3 min
+
+local function read(path)
+	local f = io.open(path, "r")
+	if not f then return nil end
+	local s = f:read("a"); f:close()
+	return s
+end
+
+local function line(path)
+	local s = read(path)
+	return s and s:gsub("%s+$", "") or nil
+end
+
+local function num(path) return tonumber(line(path) or "") end
+
+local function sh(cmd)
+	local p = io.popen(cmd .. " 2>/dev/null")
+	local s = p:read("a"); p:close()
+	return s
+end
+
+local function push(t, v)
+	t[#t + 1] = v
+	if #t > HIST then table.remove(t, 1) end
+end
+
+local function round(x, n) local m = 10 ^ (n or 0); return math.floor(x * m + 0.5) / m end
+
+-- Feste Angaben (aendern sich bis zum Neustart nicht)
+local release = {}
+for k, v in (read("/etc/arcadeos-release") or ""):gmatch("(%w+)=([^\n]*)") do release[k] = v end
+local slot = (read("/proc/cmdline") or ""):match("arcadeos%.slot=([AB])")
+local cpu_model = (read("/proc/cpuinfo") or ""):match("model name%s*:%s*([^\n]+)")
+local cores = 0
+for _ in (read("/proc/cpuinfo") or ""):gmatch("\nprocessor") do cores = cores + 1 end
+if (read("/proc/cpuinfo") or ""):match("^processor") then cores = cores + 1 end
+
+local prev_cpu, prev_net, prev_t = nil, {}, nil
+local hist = { cpu = {}, mem = {}, rx = {}, tx = {}, temp = {} }
+
+local function cpu_times()
+	local u, n, s, i, w, q, sq, st = (read("/proc/stat") or ""):match("^cpu%s+(%d+)%s+(%d+)%s+(%d+)%s+(%d+)%s+(%d+)%s+(%d+)%s+(%d+)%s+(%d+)")
+	if not u then return nil end
+	local idle = tonumber(i) + tonumber(w)
+	return { idle = idle, total = idle + tonumber(u) + tonumber(n) + tonumber(s) + tonumber(q) + tonumber(sq) + tonumber(st) }
+end
+
+local function meminfo()
+	local m = {}
+	for k, v in (read("/proc/meminfo") or ""):gmatch("(%w+):%s+(%d+)") do m[k] = tonumber(v) end
+	local total, avail = m.MemTotal or 0, m.MemAvailable or m.MemFree or 0
+	return { total_kb = total, used_kb = total - avail }
+end
+
+-- Batterie/Netzteil (Laptop), nur wenn vorhanden
+local function power()
+	local out = {}
+	for _, n in ipairs({ "BAT0", "BAT1" }) do
+		local d = "/sys/class/power_supply/" .. n
+		local cap = num(d .. "/capacity")
+		if cap then
+			out.battery = { pct = cap, status = line(d .. "/status") }
+			break
+		end
+	end
+	for _, n in ipairs({ "AC", "AC0", "ADP0", "ADP1" }) do
+		local v = num("/sys/class/power_supply/" .. n .. "/online")
+		if v then out.ac = (v == 1); break end
+	end
+	return out
+end
+
+-- Ausgabe eines Shell-Aufrufs in Abschnitte "@name" zerlegen (ein Prozess fuer alles)
+local function snapshot()
+	local s = sh([[
+echo @net; for d in /sys/class/net/*; do [ -e "$d/device" ] || continue; n=${d##*/}; w=0; [ -e "$d/phy80211" ] && w=1
+  echo "$n $w $(cat $d/carrier 2>/dev/null || echo 0) $(cat $d/speed 2>/dev/null || echo -1) $(cat $d/statistics/rx_bytes) $(cat $d/statistics/tx_bytes) $(cat $d/address)"; done
+echo @ip; ip -o -4 addr show scope global
+echo @df; df -k / /state 2>/dev/null
+echo @temp; cat /sys/class/hwmon/hwmon*/temp*_input /sys/class/thermal/thermal_zone*/temp 2>/dev/null
+echo @disk; for b in /sys/block/*; do case ${b##*/} in loop*|ram*|zram*) continue;; esac; echo "${b##*/} $(cat $b/size) $(cat $b/removable)"; done
+echo @comm; cat /proc/[0-9]*/comm
+echo @end]])
+	local sec, cur = {}, nil
+	for l in s:gmatch("[^\n]+") do
+		local name = l:match("^@(%w+)$")
+		if name then cur = name; sec[cur] = {} elseif cur then table.insert(sec[cur], l) end
+	end
+	return sec
+end
+
+local function wifi(ifname)
+	local st = sh("wpa_cli -p /run/wpa_supplicant -i " .. ifname .. " status")
+	local state = st:match("wpa_state=(%S+)")
+	local w = { state = state or "off" }
+	if state == "COMPLETED" then
+		w.signal_dbm = tonumber(sh("wpa_cli -p /run/wpa_supplicant -i " .. ifname .. " signal_poll"):match("RSSI=(%-?%d+)") or "")
+		w.freq_mhz = tonumber(st:match("freq=(%d+)") or "")
+	end
+	return w
+end
+
+local function gateway()
+	for l in (read("/proc/net/route") or ""):gmatch("[^\n]+") do
+		local dev, dst, gw = l:match("^(%S+)%s+(%x+)%s+(%x+)")
+		if dst == "00000000" and gw then
+			local a, b, c, d = gw:match("(%x%x)(%x%x)(%x%x)(%x%x)")
+			return string.format("%d.%d.%d.%d", tonumber(d, 16), tonumber(c, 16), tonumber(b, 16), tonumber(a, 16)), dev
+		end
+	end
+end
+
+-- Audit-Log: die letzten Eintraege, ohne Herkunft (who) und ohne WLAN-Namen/-Passwort
+local function sanitize(d)
+	d = d:gsub("wifi%.psk=%S*", "wifi.psk=***")
+	-- der WLAN-Name kann Leerzeichen enthalten: bis zum naechsten "schluessel=" oder Zeilenende
+	d = d:gsub("wifi%.ssid=.-( [%w_]+%.?[%w_]*=)", "wifi.ssid=***%1")
+	d = d:gsub("wifi%.ssid=[^=]*$", "wifi.ssid=***")
+	return (d:gsub("[%c]", " "))
+end
+
+local function audit(n)
+	local f = io.open("/state/log/audit.log", "r")
+	if not f then return {} end
+	local size = f:seek("end")
+	f:seek("set", math.max(0, size - 16384))
+	local s = f:read("a"); f:close()
+	local lines = {}
+	for l in s:gmatch("[^\n]+") do lines[#lines + 1] = l end
+	local out = {}
+	for i = math.max(1, #lines - n + 1), #lines do
+		local ok, e = pcall(json.decode, lines[i])
+		if ok and type(e) == "table" and e.action then
+			out[#out + 1] = { t = e.t, action = tostring(e.action), detail = sanitize(tostring(e.detail or "")) }
+		end
+	end
+	return out
+end
+
+local function mesh()
+	local s = read("/run/meshd.json")
+	local ok, m = pcall(json.decode, s or "")
+	if not ok or type(m) ~= "table" then return { running = false } end
+	local links = {}
+	for _, l in ipairs(m.links or {}) do
+		links[#links + 1] = { id = tostring(l.id or ""):sub(1, 8), transport = l.transport,
+			rtt_ms = l.rtt_ms ~= json.null and l.rtt_ms or nil, up_s = l.up_s, frames = l.frames }
+	end
+	return { running = true, node_id = tostring(m.node_id or ""):sub(1, 16), uptime_s = m.uptime_s,
+		links = links, dialing = m.dialing, addrs_known = m.addrs_known, addrs_reached = m.addrs_reached }
+end
+
+local SERVICES = {
+	{ "SSH", "dropbear" }, { "Mesh", "meshd" }, { "Zeit (NTP)", "ntpd" }, { "WLAN", "wpa_supplicant" },
+	{ "Watchdog", "watchdog" }, { "Syslog", "syslogd" }, { "Cron", "crond" }, { "Webserver", "httpd" },
+}
+
+local function collect()
+	local now = os.time()
+	local sec = snapshot()
+	local dt = prev_t and (now - prev_t) or 0
+
+	local cpu_pct
+	local ct = cpu_times()
+	if ct and prev_cpu and ct.total > prev_cpu.total then
+		cpu_pct = round(100 * (1 - (ct.idle - prev_cpu.idle) / (ct.total - prev_cpu.total)), 1)
+	end
+	prev_cpu = ct
+
+	local mem = meminfo()
+
+	local ipv4 = {}
+	for _, l in ipairs(sec.ip or {}) do
+		local dev, a = l:match("^%d+:%s+(%S+)%s+inet%s+(%S+)")
+		if dev then ipv4[dev] = ipv4[dev] or {}; table.insert(ipv4[dev], a) end
+	end
+	local gw, gwdev = gateway()
+
+	local net, rx_rate, tx_rate = {}, 0, 0
+	for _, l in ipairs(sec.net or {}) do
+		local n, w, car, spd, rx, tx, mac = l:match("^(%S+) (%d) (%d+) (%-?%d+) (%d+) (%d+) (%S+)")
+		if n then
+			rx, tx = tonumber(rx), tonumber(tx)
+			local p = prev_net[n]
+			local r, t = 0, 0
+			if p and dt > 0 then r = math.max(0, (rx - p.rx) / dt); t = math.max(0, (tx - p.tx) / dt) end
+			prev_net[n] = { rx = rx, tx = tx }
+			rx_rate, tx_rate = rx_rate + r, tx_rate + t
+			local e = { name = n, type = w == "1" and "wifi" or "ethernet", mac = mac, ipv4 = ipv4[n] or {},
+				rx_bytes = rx, tx_bytes = tx, rx_bps = round(r), tx_bps = round(t), default_route = (gwdev == n) }
+			if w == "1" then
+				e.wifi = wifi(n); e.up = e.wifi.state == "COMPLETED"
+			else
+				e.up = car == "1"; local sp = tonumber(spd); e.speed_mbit = (sp and sp > 0) and sp or nil
+			end
+			net[#net + 1] = e
+		end
+	end
+
+	local disks = {}
+	for _, l in ipairs(sec.df or {}) do
+		local size, used, mnt = l:match("^%S+%s+(%d+)%s+(%d+)%s+%d+%s+%d+%%%s+(%S+)")
+		if size and (mnt == "/" or mnt == "/state") then
+			disks[#disks + 1] = { name = mnt == "/" and "System" or "Daten", mount = mnt,
+				total_kb = tonumber(size), used_kb = tonumber(used) }
+		end
+	end
+	local drives = {}
+	for _, l in ipairs(sec.disk or {}) do
+		local n, sz, rm = l:match("^(%S+) (%d+) (%d)")
+		if n and tonumber(sz) > 0 then drives[#drives + 1] = { name = n, size_gb = round(tonumber(sz) * 512 / 1e9, 1), removable = rm == "1" } end
+	end
+	local st = read("/run/state.json") or ""
+	local state_mode = st:match('"mode":"(%w+)"')
+
+	local temp
+	for _, l in ipairs(sec.temp or {}) do
+		local v = tonumber(l)
+		if v and v > 0 and v < 150000 then temp = math.max(temp or 0, v / 1000) end
+	end
+
+	local running = {}
+	for _, c in ipairs(sec.comm or {}) do running[c] = true end
+	local services = {}
+	for _, s in ipairs(SERVICES) do services[#services + 1] = { name = s[1], proc = s[2], up = running[s[2]] == true } end
+
+	local procs = #(sec.comm or {})
+	local la1, la5, la15 = (read("/proc/loadavg") or ""):match("^(%S+) (%S+) (%S+)")
+
+	if cpu_pct then push(hist.cpu, cpu_pct) end
+	push(hist.mem, mem.total_kb > 0 and round(100 * mem.used_kb / mem.total_kb, 1) or 0)
+	if dt > 0 then push(hist.rx, round(rx_rate)); push(hist.tx, round(tx_rate)) end
+	if temp then push(hist.temp, round(temp, 1)) end
+	prev_t = now
+
+	local ntp = read("/run/ntp.json") or ""
+	return {
+		t = now, interval_s = EVERY,
+		host = line("/proc/sys/kernel/hostname"), version = release.VERSION, channel = release.CHANNEL,
+		arch = release.ARCH, slot = slot, kernel = (line("/proc/sys/kernel/osrelease")),
+		uptime_s = math.floor(tonumber((read("/proc/uptime") or "0"):match("^(%S+)")) or 0),
+		time_synced = ntp:match('"synced":true') ~= nil,
+		config_pending = io.open("/state/config/.pending", "r") ~= nil,
+		cpu = { pct = cpu_pct, cores = cores, model = cpu_model, load = { tonumber(la1), tonumber(la5), tonumber(la15) }, procs = procs },
+		mem = mem, disks = disks, drives = drives, state_mode = state_mode or "?",
+		temp_c = temp and round(temp, 1) or nil, power = power(),
+		net = net, gateway = gw, rx_bps = round(rx_rate), tx_bps = round(tx_rate),
+		services = services, mesh = mesh(), audit = audit(14), hist = hist,
+	}
+end
+
+local function write(data)
+	local tmp = OUT .. ".new"
+	local f = io.open(tmp, "w")
+	if not f then return end
+	f:write(json.encode(data), "\n"); f:close()
+	os.rename(tmp, OUT)
+end
+
+os.execute("mkdir -p /run/monitor && chmod 755 /run/monitor")
+if arg[1] == "--once" then
+	collect(); os.execute("sleep 1"); write(collect())  -- zweiter Durchlauf: CPU-Last braucht einen Vergleichswert
+	return
+end
+while true do
+	local ok, data = pcall(collect)
+	if ok then write(data) else io.stderr:write("monitor-collect: ", tostring(data), "\n") end
+	os.execute("sleep " .. EVERY)
+end

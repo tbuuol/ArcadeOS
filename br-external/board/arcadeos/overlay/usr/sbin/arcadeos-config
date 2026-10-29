@@ -18,7 +18,8 @@
 #             net.dns (Leerzeichen-getrennt), ntp.servers (Leerzeichen-getrennt),
 #             config.confirm_timeout (Sekunden),
 #             wifi.ssid, wifi.psk (WLAN-Passwort, leer = offenes Netz), wifi.country (z.B. DE),
-#             wifi.interface (nur diese WLAN-Karte, Standard: alle)
+#             wifi.interface (nur diese WLAN-Karte, Standard: alle),
+#             monitor.port (Monitoring-Seite, nur lesen; Standard 80, 0 = aus)
 # Dateien:    /state/config/system.conf, /state/config/authorized_keys
 #
 
@@ -53,6 +54,8 @@ validate() {  # key value
 				|| die "wifi.psk: 8 bis 63 Zeichen (oder leer fuer ein offenes Netz)" ;;
 		wifi.interface) echo "$2" | grep -qE '^[a-zA-Z0-9_.-]{0,15}$' || die "ungueltiges wifi.interface: $2" ;;
 		wifi.country) echo "$2" | grep -qE '^[A-Z]{2}$' || die "wifi.country: zwei Grossbuchstaben, z.B. DE" ;;
+		monitor.port) [ -z "$2" ] || { [ "$2" -ge 0 ] 2>/dev/null && [ "$2" -le 65535 ] && [ "$2" != 22 ]; } \
+			|| die "monitor.port: 0 (aus) bis 65535, nicht 22 (leer = Standard 80)" ;;
 		ntp.servers) for n in $2; do echo "$n" | grep -qE '^[A-Za-z0-9.-]{1,253}$' || die "ungueltiger NTP-Server: $n"; done ;;
 		*) die "unbekannter Schluessel: $1" ;;
 	esac
@@ -80,6 +83,7 @@ cmd_show() {
 	psk=false; grep -q '^wifi.psk=.' "$CFG/system.conf" 2>/dev/null && psk=true
 	printf '"wifi":{"ssid":%s,"psk_set":%s,"country":%s},' \
 		"$(json_str "$(get wifi.ssid)")" "$psk" "$(json_str "$(get wifi.country)")"
+	printf '"monitor_port":%s,' "$(json_str "$(get monitor.port)")"
 	printf '"ssh_keys":{"recovery":%s,"config":%s},"pending":%s,"confirm_remaining_s":%s}\n' \
 		"$(grep -c . /etc/arcadeos/recovery_keys 2>/dev/null || echo 0)" \
 		"$(grep -c . "$CFG/authorized_keys" 2>/dev/null || echo 0)" "$pending" "$remaining"

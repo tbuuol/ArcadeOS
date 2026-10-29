@@ -6,6 +6,7 @@ IMG="$(dirname "$0")/output/images"
 DISK="${DISK:-$IMG/disk.img}"       # andere Platte: DISK=/pfad/zu/kopie.img ./run.sh
 VARS="${VARS:-$IMG/ovmf-vars.fd}"   # UEFI-Variablen (wie NVRAM eines echten PCs)
 SSH_PORT="${SSH_PORT:-2222}"        # SSH der VM auf localhost:SSH_PORT
+HTTP_PORT="${HTTP_PORT:-}"          # Monitoring-Seite (Port 80 der VM) auf localhost:HTTP_PORT, leer = nicht weiterleiten
 SMP="${SMP:-2}"                     # Zahl der virtuellen CPU-Kerne
 # Wie haengt die Platte am Rechner? virtio (Standard) | usb (Stick an xHCI) | uas | ahci (SATA) | nvme | scsi
 DISK_BUS="${DISK_BUS:-virtio}"
@@ -55,6 +56,6 @@ fi
 exec "$QEMU" -M pc -accel "$ACCEL" -m 256 -smp "$SMP" \
     $FW_ARGS \
     $DISK_ARGS \
-    -netdev user,id=n0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22 $NIC_DEV \
+    -netdev user,id=n0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22${HTTP_PORT:+,hostfwd=tcp:127.0.0.1:$HTTP_PORT-:80} $NIC_DEV \
     -device i6300esb -action watchdog=reset \
     $DEBUG_ARGS -nographic "$@"

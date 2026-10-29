@@ -56,6 +56,11 @@ render() {
 	echo
 	if [ -n "$ips" ]; then
 		for ip in $ips; do echo "SSH:   ssh root@$ip"; done
+		mp=$(cat /run/arcadeos/monitor.port 2>/dev/null); mp=${mp:-80}
+		if [ "$mp" != 0 ]; then
+			[ "$mp" = 80 ] && mp="" || mp=":$mp"
+			for ip in $ips; do echo "Web:   http://$ip$mp/  (Monitoring, nur lesen)"; done
+		fi
 	else
 		echo "SSH:   noch keine IP-Adresse"
 	fi

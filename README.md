@@ -129,6 +129,22 @@ Verbindung abreißt oder das Gerät neu startet. Die SSH-Keys aus dem Image (Rec
 Das WLAN-Passwort steht nur in `/state/config/system.conf` (nur root); `show`, Audit-Log und die
 wpa_supplicant-Datei enthalten es nicht. `wifi.ssid=` (leer) schaltet das WLAN aus der Konfiguration ab.
 
+## Monitoring-Seite
+
+Jedes Gerät zeigt unter `http://<IP>/` live, was los ist (Syfy-UI, Themes Atlantis/OASIS):
+CPU, RAM, Belegung von System- und Datenpartition, Laufwerke, Temperatur, Akku/Netzteil,
+Netzwerk (Kabel/WLAN-Signal, Verkehr), Dienste, Mesh-Verbindungen und das Audit-Log.
+
+- **Nur lesen:** `monitor-collect` (root) schreibt alle 2 s `/run/monitor/status.json`; busybox
+  `httpd` läuft als `nobody` und liefert nur `index.html(.gz)` und diese Datei aus – kein CGI, kein
+  POST, keine Anmeldung, keine Steuerung.
+- **Öffentlich lesbar:** ohne Passwort. Deshalb enthält sie keine Passwörter/Keys, keinen WLAN-Namen
+  (auch im Protokoll maskiert), keine Adressen von SSH-Clients oder Mesh-Gegenstellen.
+- **Von außen:** Portfreigabe im Router auf Port 80 des Geräts (wie für SSH).
+- **Port:** `arcadeos-config set monitor.port=8080`, `monitor.port=0` schaltet sie ab.
+- Quelle der Seite: `br-external/board/arcadeos/overlay/usr/share/arcadeos/monitor/index.html`,
+  erzeugt aus dem Repo [Syfy-UI](https://github.com/tbuuol/Syfy-UI) mit `tools/build-monitor-page.py`.
+
 ## Agenten-Zugang (MCP)
 
 `agentd` ist ein MCP-Server über SSH. Für Claude Code (`.mcp.json`):
@@ -166,6 +182,7 @@ tests/qemu-mesh.sh       # meshd: Live-Verbindungen, Key bleibt, Neustart nach A
 tests/qemu-hw.sh         # echte Hardware: UEFI/BIOS × USB/UAS/SATA/NVMe/SCSI × Netzwerkkarten,
                          # Statusseite + Bildschirmfotos, SSH-Key vom Stick
 tests/qemu-wifi.sh       # WLAN mit simulierten Funkkarten: wifi.txt, arcadeos-config, Rollback
+tests/qemu-monitor.sh    # Monitoring-Seite: nur lesen, Werte, nichts Geheimes, monitor.port
 tests/reboot-soak.sh     # Neustart-Dauerlauf mit Diagnose (QMP-Abfrage bei Hänger)
 ```
 

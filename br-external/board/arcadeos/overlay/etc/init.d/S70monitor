@@ -1,0 +1,36 @@
+#!/bin/sh
+#
+# Monitoring-Seite (nur lesen): monitor-collect schreibt /run/monitor/status.json, busybox httpd
+# liefert als nobody nur statische Dateien aus /usr/share/arcadeos/monitor aus (kein CGI).
+# Port: arcadeos-config monitor.port (Standard 80, 0 = aus) -> /run/arcadeos/monitor.port
+#
+
+port() {
+	p=$(cat /run/arcadeos/monitor.port 2>/dev/null)
+	echo "${p:-80}"
+}
+
+start() {
+	printf "Starting monitor: "
+	P=$(port)
+	if [ "$P" = 0 ]; then echo "aus (monitor.port=0)"; return 0; fi
+	# status.json muss fuer httpd (nobody) lesbar sein; aus einer SSH-Sitzung kaeme umask 077 mit
+	umask 022
+	start-stop-daemon -S -b -m -p /run/monitor-collect.pid -x /usr/lib/arcadeos/monitor-collect
+	start-stop-daemon -S -q -m -b -p /run/monitor-httpd.pid -x /usr/sbin/httpd -- \
+		-f -p "$P" -u nobody:nobody -h /usr/share/arcadeos/monitor && echo "OK (Port $P)" || echo "FAIL"
+}
+
+stop() {
+	printf "Stopping monitor: "
+	start-stop-daemon -K -q -p /run/monitor-httpd.pid
+	start-stop-daemon -K -q -p /run/monitor-collect.pid
+	rm -f /run/monitor-httpd.pid /run/monitor-collect.pid
+	echo "OK"
+}
+
+case "$1" in
+	start|stop) "$1";;
+	restart|reload) stop; sleep 1; start;;
+	*) echo "Usage: $0 {start|stop|restart|reload}"; exit 1;;
+esac
