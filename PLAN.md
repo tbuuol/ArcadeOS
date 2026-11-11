@@ -219,6 +219,15 @@ Temperatur, Akku, Netz, Dienste, Mesh und Audit-Log im Syfy-UI. Öffentlich lesb
 CGI). Keine Geheimnisse, kein WLAN-Name, keine Client-/Peer-Adressen. `monitor.port` (0 = aus). Kernel:
 ACPI-Akku/Thermal + coretemp. Getestet mit `tests/qemu-monitor.sh` (55 Prüfungen).
 
+**Stand 2026-11-11 – Installer:** Der Stick ist zum Installieren (SSH bleibt, damit der Operator nur
+einsteckt): `arcadeos-install list` / `to <platte> --wipe <platte>` kopiert Startcode, boot, System A/B
+und /state auf die Platte, neue GPT-IDs (sgdisk), state über den Rest (ext4, e2fsprogs), UEFI-Eintrag
+(efibootmgr). GRUB startet per PARTUUID der eigenen Platte, `find_part` sucht nur auf der Startplatte
+→ Stick + Platte gleichzeitig sind unproblematisch. Getestet mit `tests/qemu-install.sh`.
+Nächste Schritte (Entscheidung tbuuol): vollwertige Arcade auf OS-Ebene, eigener Code; pepecoind im
+Image aber aus, bis der Besitzer eine Chain hinzufügt; standardmäßig nur der Basis-Node, Zusatz-Indizes
+optional; immer Self-Custody. Test-Hardware: tbuuols Server zu Hause.
+
 - **Universal-Stick:** eine FAT-Bootpartition kann gleichzeitig die Pi-Firmware (`config.txt`,
   arm64-Kernel) und `EFI/BOOT/BOOTX64.EFI` (x86-Kernel) enthalten – derselbe Stick bootet auf
   Pi und PC, jeder zieht sich seinen Teil. (Zu prüfen: Pi 5 / Pi 4 USB-Boot, UEFI mit MBR.)

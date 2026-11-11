@@ -25,4 +25,9 @@ des Geraete-Keys (beim ersten Verbinden vergleichen):
 
 Live-Status im Browser (nur lesen): http://<IP>/
 
+Der Stick ist zum Installieren auf eine Platte (die Platte wird geloescht):
+  arcadeos-install list
+  arcadeos-install to <platte> --wipe <platte>
+Danach Stick abziehen und neu starten.
+
 Nichts sonst in dieser Partition aendern (EFI, a/, b/ = Startdateien).

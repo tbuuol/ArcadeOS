@@ -1,0 +1,172 @@
+#!/bin/sh
+#
+# arcadeos-install – ArcadeOS vom Stick auf eine (interne) Platte installieren
+#
+#   arcadeos-install list                          Platten als JSON (die Startplatte ist nicht dabei)
+#   arcadeos-install to <platte> --wipe <platte>   installieren, z.B. "to nvme0n1 --wipe nvme0n1".
+#                                                  Die Platte wird GELOESCHT; ihr Name muss zur
+#                                                  Bestaetigung zweimal dastehen.
+#
+# Kopiert die Startplatte bis zum Ende von rootfs-b: Startcode, bios-boot, boot (Kernel, grubenv,
+# authorized_keys, wifi.txt), System A und B. Danach eine eigene Partitionstabelle mit neuen IDs
+# (sgdisk -R, -G), die Datenpartition "state" ueber den ganzen Rest (ext4) und /state vom Stick
+# (Host-Key, Konfiguration, Mesh-Schluessel): das Geraet bleibt dasselbe, nur ohne Stick.
+# Fortschritt als JSON-Zeilen auf stdout, Ergebnis im Audit-Log.
+#
+
+set -eu
+. /usr/lib/arcadeos/common.sh
+
+MIN_STATE_MB=1024
+LOCK=/run/arcadeos-install.lock
+MNT=/run/arcadeos-install
+
+die() { printf '{"error":"%s"}\n' "$(printf %s "$*" | tr -d '"\\')"; echo "arcadeos-install: $*" >&2; exit 1; }
+step() { printf '{"step":"%s","pct":%s}\n' "$1" "$2"; }
+clean() { printf %s "$1" | tr -d '"\\' | tr -s ' ' | sed 's/^ //; s/ $//'; }
+
+# Platten, die als Ziel in Frage kommen (keine Schleifen-, RAM- und optischen Laufwerke)
+disks() {
+	for b in /sys/block/*; do
+		n=${b##*/}
+		case "$n" in loop*|ram*|zram*|sr*|fd*|dm-*|md*) continue ;; esac
+		[ "$(cat "$b/size")" -gt 0 ] || continue
+		echo "$n"
+	done
+}
+
+# Partition Nummer $2 der Platte $1 (sda -> sda5, nvme0n1 -> nvme0n1p5)
+part_of() {
+	for p in /sys/block/"$1"/"$1"*; do
+		[ "$(cat "$p/partition" 2>/dev/null)" = "$2" ] && { echo "${p##*/}"; return 0; }
+	done
+	return 1
+}
+
+cmd_list() {
+	src=$(boot_disk) || src=""
+	printf '{"boot_disk":"%s","disks":[' "$src"
+	first=1
+	for n in $(disks); do
+		[ "$n" = "$src" ] && continue
+		b=/sys/block/$n
+		model=$(clean "$(cat "$b/device/model" 2>/dev/null || true)")
+		serial=$(clean "$(cat "$b/device/serial" 2>/dev/null || true)")
+		bus=other
+		case "$(readlink -f "$b")" in */usb*) bus=usb ;; */nvme*) bus=nvme ;; */ata*) bus=sata ;; */virtio*) bus=virtio ;; esac
+		parts=""
+		for p in "$b"/"$n"*; do
+			[ -e "$p/partition" ] || continue
+			pn=$(sed -n 's/^PARTNAME=//p' "$p/uevent")
+			parts="$parts${parts:+,}{\"name\":\"${p##*/}\",\"label\":\"$(clean "$pn")\",\"size_mb\":$(( $(cat "$p/size") / 2048 ))}"
+		done
+		mounted=false; grep -q "^/dev/$n" /proc/mounts && mounted=true
+		[ $first = 1 ] || printf ','
+		first=0
+		printf '{"name":"%s","size_gb":%s,"model":"%s","serial":"%s","bus":"%s","removable":%s,"mounted":%s,"partitions":[%s]}' \
+			"$n" "$(( $(cat "$b/size") / 2097152 ))" "$model" "$serial" "$bus" \
+			"$([ "$(cat "$b/removable")" = 1 ] && echo true || echo false)" "$mounted" "$parts"
+	done
+	printf ']}\n'
+}
+
+cmd_to() {
+	[ $# -eq 3 ] && [ "$2" = --wipe ] || die "Aufruf: arcadeos-install to <platte> --wipe <platte>"
+	T=${1#/dev/}
+	[ "$3" = "$T" ] || [ "$3" = "/dev/$T" ] || die "Bestaetigung passt nicht: --wipe $3, Ziel ist $T"
+	[ "$(id -u)" = 0 ] || die "nur als root"
+	exec 9>"$LOCK"
+	flock -n 9 || die "es laeuft schon eine Installation"
+
+	SRC=$(boot_disk) || die "Startplatte nicht gefunden"
+	[ -d "/sys/block/$T" ] || die "Platte $T gibt es nicht (arcadeos-install list)"
+	[ "$T" != "$SRC" ] || die "$T ist die Platte, von der ArcadeOS gerade laeuft"
+	disks | grep -qx "$T" || die "$T ist keine Platte"
+	! grep -q "^/dev/$T" /proc/mounts || die "auf $T ist etwas eingebunden"
+
+	# Ende von rootfs-b auf der Startplatte = alles, was kopiert wird (genimage richtet auf 1 MiB aus)
+	rb=$(find_part rootfs-b) || die "rootfs-b nicht gefunden"
+	st=$(find_part state) || die "state nicht gefunden"
+	END=$(( $(cat "/sys/block/$SRC/$rb/start") + $(cat "/sys/block/$SRC/$rb/size") ))
+	[ $(( END % 2048 )) = 0 ] || die "rootfs-b endet nicht auf einer MiB-Grenze"
+	MB=$(( END / 2048 ))
+	SN=$(cat "/sys/block/$SRC/$st/partition")
+	TSIZE=$(cat "/sys/block/$T/size")
+	[ $(( TSIZE / 2048 - MB )) -ge $MIN_STATE_MB ] \
+		|| die "$T ist zu klein: $(( TSIZE / 2048 )) MB, gebraucht mindestens $(( MB + MIN_STATE_MB )) MB"
+
+	audit install-start "von $SRC auf $T ($(( TSIZE / 2097152 )) GB)"
+	step "alte Partitionstabelle von $T loeschen" 2
+	sgdisk --zap-all "/dev/$T" >/dev/null 2>&1 || die "sgdisk --zap-all $T fehlgeschlagen"
+
+	# System kopieren, in Stuecken von 64 MiB (Fortschritt)
+	done_mb=0
+	while [ $done_mb -lt $MB ]; do
+		n=$(( MB - done_mb )); [ $n -gt 64 ] && n=64
+		dd if="/dev/$SRC" of="/dev/$T" bs=1M skip=$done_mb seek=$done_mb count=$n conv=notrunc 2>/dev/null \
+			|| die "Kopieren nach $T fehlgeschlagen (bei $done_mb MB)"
+		done_mb=$(( done_mb + n ))
+		step "System kopieren ($done_mb/$MB MB)" $(( 5 + 70 * done_mb / MB ))
+	done
+	sync
+
+	# Eigene Partitionstabelle: Kopie der Startplatte, neue IDs, Ersatz-Kopfsatz ans Ende,
+	# state ueber den Rest. Der Startcode im ersten Sektor (Bytes 0-439) bleibt der vom Stick.
+	step "Partitionstabelle schreiben" 78
+	sgdisk -R "/dev/$T" "/dev/$SRC" >/dev/null 2>&1 || die "sgdisk -R fehlgeschlagen"
+	sgdisk -e -G -d "$SN" -n "$SN:0:0" -t "$SN:8300" -c "$SN:state" "/dev/$T" >/dev/null 2>&1 \
+		|| die "sgdisk (state anlegen) fehlgeschlagen"
+	dd if="/dev/$SRC" of="/dev/$T" bs=440 count=1 conv=notrunc 2>/dev/null || die "Startcode kopieren fehlgeschlagen"
+	sync
+	partprobe "/dev/$T" 2>/dev/null || true
+	TS=""
+	for i in 1 2 3 4 5 6 7 8 9 10; do TS=$(part_of "$T" "$SN") && [ -b "/dev/$TS" ] && break; sleep 1; done
+	[ -n "$TS" ] && [ -b "/dev/$TS" ] || die "Partition $SN auf $T erscheint nicht"
+	sgdisk -v "/dev/$T" 2>&1 | grep -q 'No problems found' || die "Partitionstabelle auf $T fehlerhaft: $(sgdisk -v "/dev/$T" 2>&1 | tr '\n' ' ')"
+
+	step "Datenpartition anlegen (ext4)" 82
+	mke2fs -q -F -t ext4 -L state "/dev/$TS" || die "mke2fs fehlgeschlagen"
+
+	step "Zustand uebernehmen (Host-Key, Konfiguration, Mesh)" 90
+	mkdir -p "$MNT"
+	mount -t ext4 "/dev/$TS" "$MNT" || die "neue Datenpartition laesst sich nicht einbinden"
+	cp -a /state/. "$MNT"/ || { umount "$MNT"; die "Kopieren von /state fehlgeschlagen"; }
+	# update/slot-*.manifest beschreiben System A und B, die 1:1 mitkommen: bleiben. Nur ein halb
+	# angenommenes Update (update/incoming) nicht.
+	rm -rf "$MNT/update/incoming"
+	. /etc/arcadeos-release
+	printf '{"installed":"%s","from":"%s","version":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SRC" "${VERSION:-?}" > "$MNT/installed.json"
+	sync; umount "$MNT"
+
+	# Pruefen: boot, System A und B Byte fuer Byte gleich wie auf dem Stick
+	step "Pruefen" 94
+	for name in boot rootfs-a rootfs-b; do
+		sp=$(find_part "$name"); pn=$(cat "/sys/block/$SRC/$sp/partition")
+		tp=$(part_of "$T" "$pn") || die "Partition $pn ($name) fehlt auf $T"
+		[ "$(sed -n 's/^PARTNAME=//p' "/sys/block/$T/$tp/uevent")" = "$name" ] || die "$tp heisst nicht $name"
+		[ "$(sha256sum < "/dev/$sp")" = "$(sha256sum < "/dev/$tp")" ] || die "$name auf $T weicht vom Stick ab"
+	done
+
+	# UEFI: Starteintrag "ArcadeOS" fuer die Platte an die erste Stelle. Ohne ihn probiert eine
+	# Firmware mit alten Eintraegen (vorheriges System, Netzwerk) diese oft nicht.
+	if [ -d /sys/firmware/efi ]; then
+		step "UEFI-Starteintrag anlegen" 97
+		mountpoint -q /sys/firmware/efi/efivars || mount -t efivarfs efivarfs /sys/firmware/efi/efivars \
+			|| die "efivarfs nicht verfuegbar"
+		for b in $(efibootmgr | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\)\*\{0,1\} ArcadeOS.*/\1/p'); do
+			efibootmgr -q -b "$b" -B || true
+		done
+		bp=$(cat "/sys/block/$SRC/$(find_part boot)/partition")
+		efibootmgr -q -c -d "/dev/$T" -p "$bp" -L "ArcadeOS" -l '\EFI\BOOT\BOOTX64.EFI' \
+			|| die "efibootmgr: Starteintrag fehlgeschlagen"
+	fi
+
+	audit install-done "von $SRC auf $T, state $(( ($(cat "/sys/block/$T/$TS/size")) / 2097152 )) GB"
+	step "fertig: Stick abziehen und neu starten (reboot)" 100
+}
+
+case "${1:-}" in
+	list) cmd_list ;;
+	to) shift; cmd_to "$@" ;;
+	*) sed -n '3,9p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

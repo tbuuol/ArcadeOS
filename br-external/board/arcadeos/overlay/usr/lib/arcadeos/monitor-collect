@@ -256,6 +256,7 @@ local function collect()
 		uptime_s = math.floor(tonumber((read("/proc/uptime") or "0"):match("^(%S+)")) or 0),
 		time_synced = ntp:match('"synced":true') ~= nil,
 		config_pending = io.open("/state/config/.pending", "r") ~= nil,
+		installed = io.open("/state/installed.json", "r") ~= nil,
 		cpu = { pct = cpu_pct, cores = cores, model = cpu_model, load = { tonumber(la1), tonumber(la5), tonumber(la15) }, procs = procs },
 		mem = mem, disks = disks, drives = drives, state_mode = state_mode or "?",
 		temp_c = temp and round(temp, 1) or nil, power = power(),

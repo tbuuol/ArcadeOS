@@ -72,6 +72,11 @@ render() {
 		persistent) echo "Daten: $(jget /run/state.json device) (bleibt erhalten)" ;;
 		*)    echo "Daten: NUR IM RAM - geht beim Neustart verloren ($(jget /run/state.json reason))" ;;
 	esac
+	if [ -f /state/installed.json ]; then
+		echo "Platte: /dev/$(boot_disk) (installiert)"
+	else
+		echo "Stick:  zum Installieren auf eine Platte: arcadeos-install list"
+	fi
 	if [ -f /run/meshd.json ]; then
 		nl=$(grep -o '"transport"' /run/meshd.json | wc -l)
 		echo "Mesh:  $nl Verbindungen   Knoten $(jget /run/meshd.json node_id | cut -c1-16)"

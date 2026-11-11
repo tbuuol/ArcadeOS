@@ -54,6 +54,23 @@ Ein Image für alle x86_64-PCs, Laptops und Mini-PCs – mit UEFI und mit altem 
 3. Vom Stick starten (UEFI: Secure Boot aus). Der Bildschirm zeigt IP, SSH-Befehl und den
    Fingerabdruck des Host-Keys – beim ersten `ssh root@<IP>` vergleichen.
 
+### Auf die Platte installieren
+
+Der Stick ist zum Installieren da: vom Stick gestartet ist das Gerät per SSH erreichbar, die
+Installation läuft dann aus der Ferne. Die Zielplatte wird dabei **gelöscht**:
+
+```sh
+ssh root@<IP> arcadeos-install list                        # Platten (ohne den Stick), als JSON
+ssh root@<IP> arcadeos-install to nvme0n1 --wipe nvme0n1   # Name zweimal = Bestätigung
+```
+
+Kopiert werden Startcode, Boot-Partition (Kernel, SSH-Keys, `wifi.txt`), System A und B und `/state`
+(Host-Key, Konfiguration, Mesh-Identität) – das Gerät bleibt dasselbe. Die Datenpartition bekommt den
+ganzen Rest der Platte (ext4). Unter UEFI legt der Installer den Starteintrag „ArcadeOS“ an die erste
+Stelle. Danach Stick abziehen und neu starten. Steckt der Stick weiter, startet trotzdem jedes Medium
+nur sein eigenes System und seinen eigenen Zustand (GRUB startet per Partitions-UUID der eigenen
+Platte, `/state` wird nur auf der Startplatte gesucht).
+
 Eingebaut: USB (auch UAS), SATA (HDD/SSD), NVMe, SD/eMMC; Netzwerk per Kabel: Intel
 (e1000/e1000e/igb/igc), Realtek r8169/r8125 (mit Firmware), Broadcom tg3, Atheros, USB-LAN-Adapter;
 VMs: virtio, VirtualBox, VMware, Hyper-V. Bildschirm: UEFI-Grafik (VGA/DVI/HDMI/DisplayPort, ohne
@@ -183,6 +200,7 @@ tests/qemu-hw.sh         # echte Hardware: UEFI/BIOS × USB/UAS/SATA/NVMe/SCSI �
                          # Statusseite + Bildschirmfotos, SSH-Key vom Stick
 tests/qemu-wifi.sh       # WLAN mit simulierten Funkkarten: wifi.txt, arcadeos-config, Rollback
 tests/qemu-monitor.sh    # Monitoring-Seite: nur lesen, Werte, nichts Geheimes, monitor.port
+tests/qemu-install.sh    # Installer: Stick -> NVMe, Start von der Platte (UEFI/BIOS), Stick + Platte
 tests/reboot-soak.sh     # Neustart-Dauerlauf mit Diagnose (QMP-Abfrage bei Hänger)
 ```
 

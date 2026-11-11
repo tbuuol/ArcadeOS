@@ -10,6 +10,8 @@ HTTP_PORT="${HTTP_PORT:-}"          # Monitoring-Seite (Port 80 der VM) auf loca
 SMP="${SMP:-2}"                     # Zahl der virtuellen CPU-Kerne
 # Wie haengt die Platte am Rechner? virtio (Standard) | usb (Stick an xHCI) | uas | ahci (SATA) | nvme | scsi
 DISK_BUS="${DISK_BUS:-virtio}"
+# Startreihenfolge mit weiteren Platten (z.B. Installer-Test): BOOTINDEX=0 = diese Platte zuerst (nicht bei virtio)
+BI="${BOOTINDEX:+,bootindex=$BOOTINDEX}"
 # Firmware: uefi (OVMF, Standard) | bios (SeaBIOS, wie ein alter PC ohne UEFI)
 FIRMWARE="${FIRMWARE:-uefi}"
 # Netzwerkkarte: virtio-net-pci (Standard) | e1000 | e1000e | igb | vmxnet3 | usb (CDC-Ethernet-Adapter)
@@ -36,11 +38,11 @@ if [ -n "${DEBUG_DIR:-}" ]; then
 fi
 case "$DISK_BUS" in
     virtio) DISK_ARGS="-drive file=$DISK,if=virtio,format=raw" ;;
-    usb)    DISK_ARGS="-device qemu-xhci,id=xhci -drive file=$DISK,if=none,id=d0,format=raw -device usb-storage,bus=xhci.0,drive=d0" ;;
-    uas)    DISK_ARGS="-device qemu-xhci,id=xhci -device usb-uas,id=uas,bus=xhci.0 -drive file=$DISK,if=none,id=d0,format=raw -device scsi-hd,bus=uas.0,scsi-id=0,lun=0,drive=d0" ;;
-    ahci)   DISK_ARGS="-device ich9-ahci,id=ahci -drive file=$DISK,if=none,id=d0,format=raw -device ide-hd,bus=ahci.0,drive=d0" ;;
-    nvme)   DISK_ARGS="-drive file=$DISK,if=none,id=d0,format=raw -device nvme,drive=d0,serial=arcadeos0" ;;
-    scsi)   DISK_ARGS="-device virtio-scsi-pci,id=scsi -drive file=$DISK,if=none,id=d0,format=raw -device scsi-hd,bus=scsi.0,drive=d0" ;;
+    usb)    DISK_ARGS="-device qemu-xhci,id=xhci -drive file=$DISK,if=none,id=d0,format=raw -device usb-storage,bus=xhci.0,drive=d0$BI" ;;
+    uas)    DISK_ARGS="-device qemu-xhci,id=xhci -device usb-uas,id=uas,bus=xhci.0 -drive file=$DISK,if=none,id=d0,format=raw -device scsi-hd,bus=uas.0,scsi-id=0,lun=0,drive=d0$BI" ;;
+    ahci)   DISK_ARGS="-device ich9-ahci,id=ahci -drive file=$DISK,if=none,id=d0,format=raw -device ide-hd,bus=ahci.0,drive=d0$BI" ;;
+    nvme)   DISK_ARGS="-drive file=$DISK,if=none,id=d0,format=raw -device nvme,drive=d0,serial=arcadeos0$BI" ;;
+    scsi)   DISK_ARGS="-device virtio-scsi-pci,id=scsi -drive file=$DISK,if=none,id=d0,format=raw -device scsi-hd,bus=scsi.0,drive=d0$BI" ;;
     *) echo "DISK_BUS=$DISK_BUS unbekannt" >&2; exit 2 ;;
 esac
 case "$NIC" in

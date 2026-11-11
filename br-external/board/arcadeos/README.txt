@@ -25,4 +25,9 @@ host key fingerprint (compare it on first connect):
 
 Live status in the browser (read-only): http://<IP>/
 
+The stick is for installing onto a disk (the disk gets erased):
+  arcadeos-install list
+  arcadeos-install to <disk> --wipe <disk>
+Then remove the stick and reboot.
+
 Do not change anything else on this drive (EFI, a/, b/ = boot files).
