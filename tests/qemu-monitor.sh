@@ -33,6 +33,11 @@ G=$($CURL -H 'Accept-Encoding: gzip' "$URL/" | gzip -dc 2>/dev/null | wc -c)
 [ "$G" -gt 60000 ] && ok "gepackte Seite entpackt vollstaendig ($G Bytes)" || bad "gepackte Seite: $G Bytes"
 
 echo "== status.json"
+# erster Messwert ohne CPU-Last (braucht zwei Stichproben), meshd schreibt seinen Zustand erst nach ein paar s
+for i in $(seq 1 60); do
+    $CURL "$URL/status.json" | jq_ 'd["cpu"].get("pct") is not None and d["mesh"]["running"]' | grep -qx True && break
+    sleep 1
+done
 J=$($CURL "$URL/status.json")
 echo "$J" > $SP/status1.json
 [ -n "$(echo "$J" | jq_ 'd["host"]')" ] && ok "gueltiges JSON" || bad "kein JSON: $(echo "$J" | head -c 300)"
