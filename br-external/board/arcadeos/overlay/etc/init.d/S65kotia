@@ -2,27 +2,28 @@
 #
 # Kotia Core (kotiad) als Dienst, sofern eingerichtet: /state/kotia/kotiad (Startskript des Geraets:
 # Programm, Datenverzeichnis, Nutzer; startet kotiad im Vordergrund und gibt 3 zurueck, wenn die Daten fehlen).
-# Abschalten: Datei /state/kotia/disabled anlegen. Ueberwachung und Neustart: /usr/lib/arcadeos/kotia-supervise.
+# Abschalten: Datei /state/kotia/disabled anlegen. Ueberwachung und Neustart: /usr/lib/arcadeos/node-supervise.
 # Beim Herunterfahren wird kotiad sauber beendet, bevor die Platten ausgehaengt werden (rcK stoppt rueckwaerts).
 #
 
-STOP_WAIT=120   # Sekunden, die kotiad zum Schliessen seiner Datenbanken bekommt
+NAME=kotia PROC=kotiad START=/state/kotia/kotiad
+STOP_WAIT=120   # Sekunden, die der Knoten zum Schliessen seiner Datenbanken bekommt
 
 start() {
-	printf "Starting kotia: "
-	if [ ! -x /state/kotia/kotiad ]; then echo "nicht eingerichtet (/state/kotia/kotiad)"; return 0; fi
-	if [ -f /state/kotia/disabled ]; then echo "abgeschaltet (/state/kotia/disabled)"; return 0; fi
-	rm -f /run/kotia.stop
-	start-stop-daemon -S -b -m -p /run/kotia-supervise.pid -x /usr/lib/arcadeos/kotia-supervise && echo "OK" || echo "FAIL"
+	printf "Starting %s: " $NAME
+	if [ ! -x $START ]; then echo "nicht eingerichtet ($START)"; return 0; fi
+	if [ -f /state/$NAME/disabled ]; then echo "abgeschaltet (/state/$NAME/disabled)"; return 0; fi
+	rm -f /run/$NAME.stop
+	start-stop-daemon -S -b -m -p /run/$NAME-supervise.pid -x /usr/lib/arcadeos/node-supervise -- $NAME $START && echo "OK" || echo "FAIL"
 }
 
 stop() {
-	printf "Stopping kotia: "
-	touch /run/kotia.stop
-	start-stop-daemon -K -q -p /run/kotia-supervise.pid
+	printf "Stopping %s: " $NAME
+	touch /run/$NAME.stop
+	start-stop-daemon -K -q -p /run/$NAME-supervise.pid
 	i=0
-	while pidof kotiad >/dev/null && [ $i -lt $STOP_WAIT ]; do sleep 1; i=$((i + 1)); done
-	if pidof kotiad >/dev/null; then killall -KILL kotiad 2>/dev/null; echo "nach ${STOP_WAIT}s hart beendet"; else echo "OK (${i}s)"; fi
+	while pidof $PROC >/dev/null && [ $i -lt $STOP_WAIT ]; do sleep 1; i=$((i + 1)); done
+	if pidof $PROC >/dev/null; then killall -KILL $PROC 2>/dev/null; echo "nach ${STOP_WAIT}s hart beendet"; else echo "OK (${i}s)"; fi
 }
 
 case "$1" in

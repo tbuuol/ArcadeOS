@@ -181,16 +181,23 @@ UUID finden: `blkid`. Sofort einbinden ohne Neustart: `/etc/init.d/S12mounts res
 System normal weiter; Grund im Audit-Log (`disk-mount-failed`), Zustand in `/run/mounts.json`. Formatiert wird nie.
 Die Monitoring-Seite zeigt eingebundene Platten mit Belegung an.
 
-## Kotia Core (optional)
+## Chain-Knoten (optional): Kotia, Pepecoin
 
-`S65kotia` betreibt Kotia Core (`kotiad`) als Dienst, wenn das Gerät ein Startskript `/state/kotia/kotiad` hat
-(startet kotiad im Vordergrund; Code 3 = Daten fehlen, z.B. Platte nicht eingebunden). `kotia-supervise` wartet beim
-Booten aufs Netz (sonst scheitert schon das RPC-Binden an 127.0.0.1), startet kotiad nach einem Absturz neu und beendet
-ihn beim Herunterfahren sauber per SIGTERM, bevor die Platten ausgehängt werden. Abschalten: `touch /state/kotia/disabled`.
-Die Monitoring-Seite zeigt den Dienst „Kotia“, sobald er eingerichtet ist.
+| Dienst | Startskript des Geräts | Knoten |
+|---|---|---|
+| `S65kotia` | `/state/kotia/kotiad` | Kotia Core |
+| `S66pepecoin` | `/state/pepecoin/pepecoind` | Pepecoin Core, z.B. Testnet für Messenger und @names der Arcade |
 
-Die veröffentlichten Kotia-Programme sind für glibc gebaut, ArcadeOS nutzt musl: das Startskript ruft sie über einen
-glibc-Lader aus `/state/glibc` auf (libc6, libstdc++6, libgcc-s1 aus Debian), als Nutzer der Daten statt als root.
+Ein Dienst läuft nur, wenn das Gerät sein Startskript hat (startet den Knoten im Vordergrund; Code 3 = Daten fehlen,
+z.B. Platte nicht eingebunden). `node-supervise <name> <startskript>` wartet beim Booten aufs Netz (sonst scheitert
+schon das RPC-Binden an 127.0.0.1), startet den Knoten nach einem Absturz neu und beendet ihn beim Herunterfahren
+sauber per SIGTERM, bevor die Platten ausgehängt werden. Abschalten: `touch /state/<name>/disabled`. Die
+Monitoring-Seite zeigt die eingerichteten Knoten als Dienste.
+
+Die veröffentlichten Programme sind für glibc gebaut, ArcadeOS nutzt musl: die Startskripte rufen sie über einen
+glibc-Lader aus `/state/glibc` auf (libc6, libstdc++6, libgcc-s1 aus Debian), als eigener Nutzer statt als root.
+Für Pepecoin dieselbe Version, Prüfsumme, Signatur und Konfiguration wie der Arcade-Installer
+(`dogecoin-arcade/installer/install.py`: v1.1.0, `testnet=1`, `txindex=1`, RPC lokal mit Cookie, ZMQ 28432…).
 
 ## Monitoring-Seite
 

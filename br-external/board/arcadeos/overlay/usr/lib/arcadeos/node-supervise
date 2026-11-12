@@ -1,0 +1,45 @@
+#!/bin/sh
+# Haelt einen Chain-Knoten am Laufen:  node-supervise <name> <startskript>
+# Das Startskript (geraetespezifisch, z.B. /state/kotia/kotiad) startet den Knoten im Vordergrund und gibt 3 zurueck,
+# wenn seine Daten fehlen (z.B. Platte nicht eingebunden). Nach einem Absturz Neustart nach 30 s, bei Code 3 alle 60 s.
+# SIGTERM (vom Init-Skript): Knoten sauber beenden (schliesst seine Datenbanken), darauf warten, dann enden.
+# Kurze Meldungen gehen ins Syslog (logger -t <name>) und ins Audit-Log; der Knoten schreibt selbst sein debug.log.
+# Benutzt von S65kotia und S66pepecoin.
+
+. /usr/lib/arcadeos/common.sh
+
+NAME=${1:?Aufruf: node-supervise <name> <startskript>}
+START=${2:?Aufruf: node-supervise <name> <startskript>}
+child=""
+stop() {
+	[ -n "$child" ] && kill -TERM "$child" 2>/dev/null
+	# der Knoten braucht beim Beenden je nach Datenmenge einige Sekunden; das Init-Skript wartet ebenfalls
+	[ -n "$child" ] && wait "$child" 2>/dev/null
+	exit 0
+}
+trap stop TERM INT
+# Beim Booten erst aufs Netz warten (hoechstens 60 s): ohne nicht-lokale Adresse laesst glibc (AI_ADDRCONFIG) selbst
+# das Binden von RPC an 127.0.0.1 scheitern, der Knoten beendet sich dann sofort.
+i=0
+while ! ip route 2>/dev/null | grep -q '^default' && [ $i -lt 60 ]; do sleep 1; i=$((i + 1)); done
+last=""
+while :; do
+	"$START" -printtoconsole=0 </dev/null >/dev/null 2>&1 &
+	child=$!
+	echo "$child" > "/run/$NAME-node.pid"
+	wait "$child"
+	rc=$?
+	child=""
+	rm -f "/run/$NAME-node.pid"
+	[ -f "/run/$NAME.stop" ] && exit 0
+	if [ $rc = 3 ]; then
+		[ "$last" = 3 ] || { logger -t "$NAME" "Daten fehlen (Platte nicht eingebunden?), neuer Versuch alle 60 s"; audit "$NAME-wait" "Daten fehlen"; }
+		last=3
+		sleep 60
+	else
+		logger -t "$NAME" "Knoten beendet (Code $rc), Neustart in 30 s"
+		audit "$NAME-restart" "Code $rc"
+		last=$rc
+		sleep 30
+	fi
+done

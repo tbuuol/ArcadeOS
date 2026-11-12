@@ -169,8 +169,10 @@ local SERVICES = {
 	{ "SSH", "dropbear" }, { "Mesh", "meshd" }, { "Zeit (NTP)", "ntpd" }, { "WLAN", "wpa_supplicant" },
 	{ "Watchdog", "watchdog" }, { "Syslog", "syslogd" }, { "Cron", "crond" }, { "Webserver", "httpd" },
 }
--- Kotia Core nur, wenn auf diesem Geraet eingerichtet (/etc/init.d/S65kotia)
-do local f = io.open("/state/kotia/kotiad") if f then f:close(); SERVICES[#SERVICES + 1] = { "Kotia", "kotiad" } end end
+-- Chain-Knoten nur, wenn auf diesem Geraet eingerichtet (/etc/init.d/S65kotia, S66pepecoin)
+for _, n in ipairs({ { "Kotia", "kotiad", "/state/kotia/kotiad" }, { "Pepecoin", "pepecoind", "/state/pepecoin/pepecoind" } }) do
+	local f = io.open(n[3]) if f then f:close(); SERVICES[#SERVICES + 1] = { n[1], n[2] } end
+end
 
 local function collect()
 	local now = os.time()
