@@ -28,23 +28,25 @@ function steps(now) {
 function msg(el, text, cls = 'err') { const m = el.querySelector('.msg') || el.appendChild(document.createElement('p')); m.className = `msg ${cls}`; m.textContent = text; }
 
 // ------------------------------------------------------------------ Woerter verschluesselt in diesem Browser
-async function vaultKey(password, salt) {
-  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
-  return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 310000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
-}
+// (crypto.js: PBKDF2 + AES-GCM ohne WebCrypto, das es ueber http im LAN nicht gibt)
 async function seal(words, password, address) {
-  const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await vaultKey(password, salt), new TextEncoder().encode(words));
-  const b = (u) => C.bytesToHex(new Uint8Array(u));
-  localStorage.setItem(VAULT, JSON.stringify({ v: 1, address, salt: b(salt), iv: b(iv), ct: b(ct) }));
+  const sealed = await C.sealWords(words, password);
+  localStorage.setItem(VAULT, JSON.stringify({ ...sealed, address }));
+  // gleich wieder oeffnen: nur was sich entschluesseln laesst, gilt als gesichert
+  if (await C.openWords(savedVault(), password) !== words) throw new Error('Speichern im Browser fehlgeschlagen.');
 }
 async function unseal(password) {
-  const v = JSON.parse(localStorage.getItem(VAULT) || 'null');
+  const v = savedVault();
   if (!v) throw new Error('In diesem Browser ist kein Konto gespeichert.');
-  try {
-    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: C.hexToBytes(v.iv) }, await vaultKey(password, C.hexToBytes(v.salt)), C.hexToBytes(v.ct));
-    return new TextDecoder().decode(pt);
-  } catch { throw new Error('Falsches Passwort.'); }
+  return C.openWords(v, password);
+}
+// Kopieren: navigator.clipboard gibt es nur auf https-Seiten, sonst das alte execCommand
+function copy(text) {
+  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+  const t = document.createElement('textarea'); t.value = text; t.style.position = 'fixed'; t.style.opacity = '0';
+  document.body.appendChild(t); t.select();
+  const ok = document.execCommand('copy'); t.remove();
+  return ok ? Promise.resolve() : Promise.reject(new Error('Kopieren nicht moeglich, bitte von Hand markieren.'));
 }
 const savedVault = () => { try { return JSON.parse(localStorage.getItem(VAULT) || 'null'); } catch { return null; } };
 
@@ -124,9 +126,12 @@ async function createOperator(words, password, name, box) {
   try {
     msg(box, 'Richte ein …', 'wait');
     const a = C.account(words);
-    const ch = await api('/challenge');
-    await api('/setup', { pubkey: a.pub, address: a.address, nonce: ch.nonce, sig: C.signMessage(a.priv, ch.message), name });
+    // erst im Browser sichern, dann die Box einrichten: scheitert das Sichern, ist auf der Box nichts passiert
     await seal(words.trim().toLowerCase().split(/\s+/).join(' '), password, a.address);
+    const ch = await api('/challenge');
+    try {
+      await api('/setup', { pubkey: a.pub, address: a.address, nonce: ch.nonce, sig: C.signMessage(a.priv, ch.message), name });
+    } catch (e) { localStorage.removeItem(VAULT); throw e; }
     acct = a; draft = null;
     await refresh();
   } catch (e) { msg(box, e.message); }
@@ -160,7 +165,7 @@ function fundAndName() {
       <p class="msg muted" id="tm">${S.names_ready ? '' : 'Der Namens-Index wird noch aus der Chain aufgebaut …'}</p>
       <label for="nm">Name der Arcade</label><input id="nm" maxlength="60" value="${esc(S.name || '')}">
       <div class="row"><button id="claim" disabled>Beanspruchen &amp; veröffentlichen</button></div></div>`;
-  $('#cp').onclick = () => navigator.clipboard.writeText(acct.address).then(() => { $('#cp').textContent = 'Kopiert'; });
+  $('#cp').onclick = () => copy(acct.address).then(() => { $('#cp').textContent = 'Kopiert'; }, (e) => { $('#cp').textContent = e.message; });
   let bal = 0, free = false, t = null;
   const upd = () => { $('#claim').disabled = !(free && bal > 0); };
   const loadBal = async () => {

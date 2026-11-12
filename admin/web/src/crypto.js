@@ -16,6 +16,9 @@ import { base58check as b58c, base64 } from '@scure/base';
 import { HDKey } from '@scure/bip32';
 import { generateMnemonic, mnemonicToSeedSync, validateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
+import { gcm } from '@noble/ciphers/aes.js';
+import { pbkdf2Async } from '@noble/hashes/pbkdf2.js';
+import { randomBytes } from '@noble/hashes/utils.js';
 
 export const NETWORK = { name: 'test', pubkeyhash: 113, path: "m/44'/1'/0'/0/0" };
 export const MAGIC = 'Pepecoin Signed Message:\n';
@@ -65,6 +68,26 @@ export function verifyMessage(sigB64, message, addr) {
   const pub = secp256k1.recoverPublicKey(concatBytes(Uint8Array.of(recid), raw.subarray(1)), h, { prehash: false });
   const p = secp256k1.Point.fromBytes(pub).toBytes(compressed);
   return address(p) === addr;
+}
+
+// ------------------------------------------------------------------ Woerter mit Passwort verschluesseln
+// Ohne WebCrypto (crypto.subtle gibt es nur auf https-Seiten, die Admin-Seite laeuft im LAN ueber http):
+// PBKDF2-SHA256 (310.000 Runden) -> AES-256-GCM aus @noble/ciphers. Zufall: crypto.getRandomValues (ueberall da).
+const PBKDF2_ROUNDS = 310000;
+const vaultKey = (password, salt) => pbkdf2Async(sha256, utf8ToBytes(password), salt, { c: PBKDF2_ROUNDS, dkLen: 32 });
+
+export async function sealWords(words, password) {
+  const salt = randomBytes(16), iv = randomBytes(12);
+  const ct = gcm(await vaultKey(password, salt), iv).encrypt(utf8ToBytes(words));
+  return { v: 2, salt: bytesToHex(salt), iv: bytesToHex(iv), ct: bytesToHex(ct) };
+}
+
+export async function openWords(sealed, password) {
+  if (!sealed || sealed.v !== 2) throw new Error('Unbekanntes Format, bitte mit den 12 Woertern anmelden.');
+  const key = await vaultKey(password, hexToBytes(sealed.salt));
+  let pt;
+  try { pt = gcm(key, hexToBytes(sealed.iv)).decrypt(hexToBytes(sealed.ct)); } catch { throw new Error('Falsches Passwort.'); }
+  return new TextDecoder().decode(pt);
 }
 
 // ------------------------------------------------------------------ Transaktion (Legacy, P2PKH)
