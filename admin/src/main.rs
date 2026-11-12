@@ -20,6 +20,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
+
+mod public;
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use ripemd::Ripemd160;
 use serde_json::{json, Value};
@@ -273,7 +275,7 @@ struct App {
     index: Mutex<Index>,
     admin: Mutex<Value>, // admin.json: operator, name, pending
     nonces: Mutex<HashMap<String, u64>>,
-    offers: Mutex<HashMap<String, (String, Value)>>, // offer id -> (tag, unsigned tx)
+    offers: Mutex<HashMap<String, (String, Value, String)>>, // offer id -> (tag, unsigned tx, Adresse)
 }
 
 impl App {
@@ -540,45 +542,55 @@ fn balance(app: &App) -> Resp {
 }
 
 fn name_check(app: &App, q: &str) -> Resp {
+    let me = app.operator_addr();
+    (200, name_check_for(app, q, me.as_deref()))
+}
+
+/// Ist der @name frei? `me`: die Adresse, fuer die gefragt wird ("gehoert schon dir")
+fn name_check_for(app: &App, q: &str, me: Option<&str>) -> Value {
     let tag = match validate_tag(q) {
         Ok(t) => t,
-        Err(e) => return (200, json!({"ok": false, "reason": e})),
+        Err(e) => return json!({"ok": false, "reason": e}),
     };
-    let me = app.operator_addr();
     let held = app.index.lock().unwrap().tags.get(&tag).cloned();
     if let Some((a, tx, h)) = held {
-        let mine = me.as_deref() == Some(a.as_str());
-        return (200, json!({"ok": mine, "tag": tag, "taken": !mine, "mine": mine, "by": a, "txid": tx, "height": h,
-            "reason": if mine { "gehoert schon dir" } else { "vergeben" }}));
+        let mine = me == Some(a.as_str());
+        return json!({"ok": mine, "tag": tag, "taken": !mine, "mine": mine, "by": a, "txid": tx, "height": h,
+            "reason": if mine { "gehoert schon dir" } else { "vergeben" }});
     }
     let pending = pending_claims(app, &tag);
     if !pending.is_empty() {
-        return (200, json!({"ok": false, "tag": tag, "pending": pending, "reason": "wird gerade beansprucht (unbestaetigt)"}));
+        return json!({"ok": false, "tag": tag, "pending": pending, "reason": "wird gerade beansprucht (unbestaetigt)"});
     }
     let ready = chain_tip(app).map(|t| app.index.lock().unwrap().height + 1 >= t).unwrap_or(false);
-    (200, json!({"ok": ready, "tag": tag, "free": true, "reason": if ready { "frei" } else { "Namens-Index noch nicht fertig" }}))
+    json!({"ok": ready, "tag": tag, "free": true, "reason": if ready { "frei" } else { "Namens-Index noch nicht fertig" }})
 }
 
 fn claim(app: &App, b: &Value) -> Resp {
     let Some(addr) = app.operator_addr() else { return err(409, "noch kein Betreiber") };
-    let (code, check) = name_check(app, b["tag"].as_str().unwrap_or(""));
-    if code != 200 || check["ok"] != true || check["mine"] == true {
-        return err(400, check["reason"].as_str().unwrap_or("Name geht nicht").to_string());
+    match build_claim(app, &addr, b["tag"].as_str().unwrap_or("")) {
+        Ok(v) => (200, v),
+        Err((c, e)) => err(c, e),
+    }
+}
+
+/// Unsignierte Claim-Transaktion fuer `addr`: Inputs nur von dieser Adresse (Absender = erster Input)
+fn build_claim(app: &App, addr: &str, want: &str) -> Result<Value, (u16, String)> {
+    let check = name_check_for(app, want, Some(addr));
+    if check["ok"] != true || check["mine"] == true {
+        return Err((400, check["reason"].as_str().unwrap_or("Name geht nicht").to_string()));
     }
     let tag = check["tag"].as_str().unwrap().to_string();
-    let mut coins = match utxos(app, &addr) {
-        Ok(u) => u,
-        Err(e) => return err(502, e),
-    };
+    let mut coins = utxos(app, addr).map_err(|e| (502, e))?;
     coins.sort_by_key(|c| std::cmp::Reverse(sats(&c["amount"])));
     let data = tag_data(&tag, KIND_CLAIM);
     let op_return = format!("6a{:02x}{}", data.len(), hex::encode(&data));
-    let h = {
-        let a = bs58::decode(&addr).into_vec().unwrap_or_default();
-        let mut x = [0u8; 20];
-        x.copy_from_slice(&a[1..21]);
-        x
-    };
+    let a = bs58::decode(addr).into_vec().unwrap_or_default();
+    if a.len() != 25 {
+        return Err((400, "Adresse unlesbar".into()));
+    }
+    let mut h = [0u8; 20];
+    h.copy_from_slice(&a[1..21]);
     let mine = p2pkh_script(&h);
     let mut inputs = Vec::new();
     let mut total = 0u64;
@@ -596,7 +608,7 @@ fn claim(app: &App, b: &Value) -> Resp {
         }
     }
     if inputs.is_empty() || total < fee {
-        return err(400, format!("Zu wenig Testnet-PEP auf {addr}: noetig sind mindestens {} PEP fuer die Gebuehr.", fmt_pep(fee.max(MIN_FEE_PER_KB))));
+        return Err((400, format!("Zu wenig Testnet-PEP auf {addr}: noetig sind mindestens {} PEP fuer die Gebuehr.", fmt_pep(fee.max(MIN_FEE_PER_KB)))));
     }
     let change = total - fee;
     let mut outputs = vec![json!({"value": 0, "script": op_return})];
@@ -608,11 +620,11 @@ fn claim(app: &App, b: &Value) -> Resp {
     getrandom::getrandom(&mut id).ok();
     let id = hex::encode(id);
     let mut offers = app.offers.lock().unwrap();
-    if offers.len() > 20 {
+    if offers.len() > 200 {
         offers.clear();
     }
-    offers.insert(id.clone(), (tag.clone(), tx.clone()));
-    (200, json!({"offer": id, "tag": tag, "tx": tx}))
+    offers.insert(id.clone(), (tag.clone(), tx.clone(), addr.to_string()));
+    Ok(json!({"offer": id, "tag": tag, "tx": tx}))
 }
 
 fn fmt_pep(s: u64) -> String {
@@ -620,13 +632,26 @@ fn fmt_pep(s: u64) -> String {
 }
 
 fn send(app: &App, b: &Value) -> Resp {
-    let (Some(id), Some(hexs)) = (b["offer"].as_str(), b["hex"].as_str()) else { return err(400, "offer und hex fehlen") };
-    let Some((tag, tx)) = app.offers.lock().unwrap().get(id).cloned() else { return err(404, "Angebot unbekannt (neu bauen)") };
-    let dec = match rpc(&app.cfg, "decoderawtransaction", json!([hexs])) {
-        Ok(d) => d,
-        Err(e) => return err(400, format!("Transaktion unlesbar: {e}")),
-    };
-    // Nur genau die angebotene Transaktion senden: gleiche Inputs, gleiche Outputs
+    let Some(addr) = app.operator_addr() else { return err(409, "noch kein Betreiber") };
+    match send_offer(app, &addr, b) {
+        Ok((txid, tag)) => {
+            let mut admin = app.admin.lock().unwrap();
+            admin["pending"] = json!({"tag": tag, "txid": txid, "at": now()});
+            app.save_admin(&admin);
+            (200, json!({"txid": txid, "tag": tag}))
+        }
+        Err((c, e)) => err(c, e),
+    }
+}
+
+/// Sendet nur genau die fuer `addr` angebotene Transaktion (gleiche Inputs, gleiche Outputs)
+fn send_offer(app: &App, addr: &str, b: &Value) -> Result<(String, String), (u16, String)> {
+    let (Some(id), Some(hexs)) = (b["offer"].as_str(), b["hex"].as_str()) else { return Err((400, "offer und hex fehlen".into())) };
+    let Some((tag, tx, owner)) = app.offers.lock().unwrap().get(id).cloned() else { return Err((404, "Angebot unbekannt (neu bauen)".into())) };
+    if owner != addr {
+        return Err((403, "Dieses Angebot gehoert zu einem anderen Konto.".into()));
+    }
+    let dec = rpc(&app.cfg, "decoderawtransaction", json!([hexs])).map_err(|e| (400, format!("Transaktion unlesbar: {e}")))?;
     let vin = dec["vin"].as_array().cloned().unwrap_or_default();
     let vout = dec["vout"].as_array().cloned().unwrap_or_default();
     let want_in = tx["inputs"].as_array().unwrap();
@@ -638,19 +663,13 @@ fn send(app: &App, b: &Value) -> Resp {
             sats(&a["value"]) == w["value"].as_u64().unwrap_or(u64::MAX) && a["scriptPubKey"]["hex"] == w["script"]
         });
     if !same_in || !same_out {
-        return err(400, "Das ist nicht die angebotene Transaktion - nichts gesendet.");
+        return Err((400, "Das ist nicht die angebotene Transaktion - nichts gesendet.".into()));
     }
-    match rpc(&app.cfg, "sendrawtransaction", json!([hexs])) {
-        Ok(txid) => {
-            app.offers.lock().unwrap().remove(id);
-            let mut admin = app.admin.lock().unwrap();
-            admin["pending"] = json!({"tag": tag, "txid": txid, "at": now()});
-            app.save_admin(&admin);
-            log(&format!("Claim @{tag} gesendet: {txid}"));
-            (200, json!({"txid": txid, "tag": tag}))
-        }
-        Err(e) => err(502, format!("pepecoind hat abgelehnt: {e}")),
-    }
+    let txid = rpc(&app.cfg, "sendrawtransaction", json!([hexs])).map_err(|e| (502, format!("pepecoind hat abgelehnt: {e}")))?;
+    app.offers.lock().unwrap().remove(id);
+    let txid = txid.as_str().unwrap_or("").to_string();
+    log(&format!("Claim @{tag} gesendet: {txid}"));
+    Ok((txid, tag))
 }
 
 fn owner(app: &App, b: &Value) -> Resp {
@@ -717,6 +736,12 @@ fn main() {
     app.write_about();
     let a = app.clone();
     std::thread::spawn(move || indexer(a));
+    // Oeffentlicher Teil (Konten der Nutzer), eigener Port; Caddy reicht ihn ins Internet
+    let a = app.clone();
+    let public_listen = env("ADMIN_PUBLIC_LISTEN", "127.0.0.1:8091");
+    if public_listen != "off" {
+        std::thread::spawn(move || public::serve(a, public_listen));
+    }
     let server = match tiny_http::Server::http(&app.cfg.listen) {
         Ok(s) => s,
         Err(e) => {

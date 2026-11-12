@@ -16,6 +16,7 @@ bs58 = "0.5"
 base64 = "0.22"
 hex = "0.4"
 getrandom = "0.2"
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 
 [profile.release]
 opt-level = "s"

@@ -28,6 +28,24 @@ liteworlds.quest {
 	file_server
 }
 
+# Arcade fuer Nutzer (arcadeos-admin, oeffentlicher Teil auf 127.0.0.1:8091): Konten, @name, Startguthaben.
+# Schluessel bleiben im Browser; daher strenge CSP (nur eigene Skripte, keine fremden Verbindungen).
+arcade.liteworlds.quest {
+	import site
+	header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+	header Cross-Origin-Opener-Policy same-origin
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8091
+	}
+	handle /signin/* {
+		reverse_proxy 127.0.0.1:8091
+	}
+	handle {
+		root * /usr/share/arcadeos/arcade
+		header Cache-Control no-cache
+		file_server
+	}
+}
 # Alles andere auf Port 80 (Aufruf ueber IP oder Geraetenamen): die Monitor-Seite, nur aus dem LAN.
 # @lan (private Adressen + aktuelles IPv6-Praefix des LANs) schreibt S71web nach /run/web/lan.caddy.
 http:// {

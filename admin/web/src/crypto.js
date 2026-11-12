@@ -19,6 +19,9 @@ import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { gcm } from '@noble/ciphers/aes.js';
 import { pbkdf2Async } from '@noble/hashes/pbkdf2.js';
 import { randomBytes } from '@noble/hashes/utils.js';
+import { hmac } from '@noble/hashes/hmac.js';
+import { sha512 } from '@noble/hashes/sha2.js';
+import { ed25519, x25519 } from '@noble/curves/ed25519.js';
 
 export const NETWORK = { name: 'test', pubkeyhash: 113, path: "m/44'/1'/0'/0/0" };
 export const MAGIC = 'Pepecoin Signed Message:\n';
@@ -87,6 +90,64 @@ export async function openWords(sealed, password) {
   const key = await vaultKey(password, hexToBytes(sealed.salt));
   let pt;
   try { pt = gcm(key, hexToBytes(sealed.iv)).decrypt(hexToBytes(sealed.ct)); } catch { throw new Error('Falsches Passwort.'); }
+  return new TextDecoder().decode(pt);
+}
+
+// ------------------------------------------------------------------ Arcade-Konten (dogecoin-arcade seed.py, signin.js)
+// Die Arcades leiten Schluessel, die nicht secp256k1 sind, ueber einen "nur gehaerteten" Baum ab: HMAC-SHA512 wie
+// BIP32, aber OHNE Kurven-Addition (seed.py child()). Zweig 24946' ("ar"):
+//   24946'/0'/0'  X25519-Schluessel des Messengers      24946'/1'/0'  Ed25519-Anmeldeschluessel (Konto-Kennung)
+export const ARCADE_PURPOSE = 24946;
+const H = 0x80000000;
+export function arcadePath(seed, path) {
+  let d = hmac(sha512, utf8ToBytes('Bitcoin seed'), seed);
+  let key = d.slice(0, 32), chain = d.slice(32);
+  for (const i of path) {
+    const idx = new Uint8Array(4); new DataView(idx.buffer).setUint32(0, (i | 0) + H >>> 0, false);
+    d = hmac(sha512, chain, concatBytes(Uint8Array.of(0), key, idx));
+    key = d.slice(0, 32); chain = d.slice(32);
+  }
+  return key;
+}
+/** Woerter wie die Arcades sie normalisieren (signin.js normalise) */
+export const normaliseWords = (w) => String(w || '').normalize('NFKD').toLowerCase().split(/\s+/).filter(Boolean).join(' ');
+const seedOf = (words) => mnemonicToSeedSync(normaliseWords(words));
+
+/** Anmeldeschluessel eines Kontos: {secret (32), pubkey (hex) = Konto-Kennung} */
+export function loginKey(words) {
+  const secret = arcadePath(seedOf(words), [ARCADE_PURPOSE, 1, 0]);
+  return { secret, pubkey: bytesToHex(ed25519.getPublicKey(secret)) };
+}
+export function signLogin(secret, message) { return bytesToHex(ed25519.sign(utf8ToBytes(message), secret)); }
+
+/** Messenger-Schluessel (X25519): {secret, pubkey (hex)} */
+export function messagingKey(words) {
+  const secret = arcadePath(seedOf(words), [ARCADE_PURPOSE, 0, 0]);
+  return { secret, pubkey: bytesToHex(x25519.getPublicKey(secret)) };
+}
+
+/** Alles, was ein Konto im Browser braucht, aus den 12 Woertern */
+export function fullAccount(words) {
+  const a = account(words);
+  return { ...a, words: normaliseWords(words), login: loginKey(words), msg: messagingKey(words) };
+}
+
+// Das verschluesselte Wallet, wie die Arcades es speichern und weitergeben (wallet_js.js seal/open):
+// {kdf: "PBKDF2-SHA512", iterations: 600000, salt, nonce, sealed} = AES-256-GCM der normalisierten Woerter,
+// Schluessel PBKDF2-HMAC-SHA512(Passwort). Gleiches Format => Konten gehen zwischen den Arcades und uns hin und her.
+export const ARCADE_ROUNDS = 600000;
+export const MIN_PASSWORD = 12;
+export async function arcadeSeal(words, password) {
+  const salt = randomBytes(16), nonce = randomBytes(12);
+  const key = await pbkdf2Async(sha512, utf8ToBytes(password), salt, { c: ARCADE_ROUNDS, dkLen: 32 });
+  const sealed = gcm(key, nonce).encrypt(utf8ToBytes(normaliseWords(words)));
+  return { kdf: 'PBKDF2-SHA512', iterations: ARCADE_ROUNDS, salt: bytesToHex(salt), nonce: bytesToHex(nonce), sealed: bytesToHex(sealed) };
+}
+export async function arcadeOpen(blob, password) {
+  if (!blob || blob.kdf !== 'PBKDF2-SHA512' || !(blob.iterations >= 100000)) throw new Error('Unbekanntes Wallet-Format.');
+  const key = await pbkdf2Async(sha512, utf8ToBytes(password), hexToBytes(blob.salt), { c: blob.iterations, dkLen: 32 });
+  let pt;
+  try { pt = gcm(key, hexToBytes(blob.nonce)).decrypt(hexToBytes(blob.sealed)); } catch { throw new Error('Falsches Passwort.'); }
   return new TextDecoder().decode(pt);
 }
 
