@@ -391,7 +391,7 @@ h1 em { font-style:normal; color:var(--pri); }
   .addr .lab { width:100%; }
   .addr .status { margin-left:0; width:100%; text-align:left; display:flex; justify-content:space-between; align-items:baseline; }
   .addr .status b { display:inline; font-size:.85rem; }
-  .slot { width:calc((100vw - 90px) / 7); max-width:40px; }
+  .slot { width:calc((100vw - 90px) / 9); max-width:40px; }
   .stats { grid-template-columns:repeat(2, 1fr); }
   .stat:nth-child(2) { border-right:0; }
   .stat:nth-child(-n+2) { border-bottom:1px solid var(--edge-soft); }
@@ -961,7 +961,7 @@ for (let j = 0; j < 9; j++) {
 }
 
 /* address slots */
-$('#slots').innerHTML = Array.from({ length: 7 }, (_, i) => `<div class="slot" data-i="${i}"><span>${i + 1}</span></div>`).join('');
+$('#slots').innerHTML = Array.from({ length: 9 }, (_, i) => `<div class="slot" data-i="${i}"><span>${i + 1}</span></div>`).join('');
 const slotEls = [...document.querySelectorAll('.slot')];
 
 /* ---------------------------------------------------------------- mesh display */

@@ -12,6 +12,11 @@ port() {
 	echo "${p:-80}"
 }
 
+# Seite: /state/web/monitor (ohne Neustart aenderbar), sonst die mitgelieferte aus dem System
+docroot() {
+	if [ -f /state/web/monitor/index.html ]; then echo /state/web/monitor; else echo /usr/share/arcadeos/monitor; fi
+}
+
 start() {
 	printf "Starting monitor: "
 	P=$(port)
@@ -21,7 +26,7 @@ start() {
 	umask 022
 	start-stop-daemon -S -b -m -p /run/monitor-collect.pid -x /usr/lib/arcadeos/monitor-collect
 	start-stop-daemon -S -q -m -b -p /run/monitor-httpd.pid -x /usr/sbin/httpd -- \
-		-f -p "$P" -u nobody:nobody -h /usr/share/arcadeos/monitor && echo "OK (Port $P)" || echo "FAIL"
+		-f -p "$P" -u nobody:nobody -h "$(docroot)" && echo "OK (Port $P, $(docroot))" || echo "FAIL"
 }
 
 stop() {
