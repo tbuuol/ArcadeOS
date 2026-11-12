@@ -1,0 +1,105 @@
+#!/bin/sh
+#
+# ddns – haelt A-Records bei Namecheap (Dynamic DNS) auf der oeffentlichen IPv4 der Box.
+#
+#   /state/ddns/config        domain=liteworlds.quest
+#                             hosts=@            (mehrere: hosts="@ www")
+#   /state/ddns/namecheap.pw  DDNS-Passwort aus Namecheap (Advanced DNS → Dynamic DNS), 0600
+#   /state/ddns/disabled      vorhanden = aus
+#
+# Jede Minute: oeffentliche IP von der Fritzbox (UPnP-IGD, nur LAN) holen, sonst ueber OpenDNS;
+# mit dem A-Record bei den autoritativen Nameservern vergleichen; nur bei Abweichung aktualisieren
+# (HTTPS mit Zertifikatspruefung, Passwort ueber stdin, nicht in der Prozessliste).
+# Zustand /run/ddns.json, Meldungen ins Syslog (ddns), Aenderungen ins Audit-Log.
+#
+. /usr/lib/arcadeos/common.sh
+DIR=/state/ddns
+GW=192.168.178.1
+INTERVAL=60
+HOLD=600          # nach einem Update/Fehler so lange nicht erneut senden (DNS braucht etwas)
+
+log() { logger -t ddns "$*"; }
+
+is_public_v4() {
+	echo "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1
+	case "$1" in
+		0.*|10.*|127.*|169.254.*|192.168.*|100.6[4-9].*|100.[7-9]?.*|100.1[01]?.*|100.12[0-7].*) return 1;;
+		172.1[6-9].*|172.2?.*|172.3[01].*) return 1;;
+	esac
+	return 0
+}
+
+ip_fritzbox() {
+	gw=$(ip route | awk '/^default/{print $3; exit}'); gw=${gw:-$GW}
+	b='<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:GetExternalIPAddress xmlns:u="urn:schemas-upnp-org:service:WANIPConnection:1"/></s:Body></s:Envelope>'
+	printf 'POST /igdupnp/control/WANIPConn1 HTTP/1.0\r\nHost: %s:49000\r\nContent-Type: text/xml; charset="utf-8"\r\nSOAPAction: "urn:schemas-upnp-org:service:WANIPConnection:1#GetExternalIPAddress"\r\nContent-Length: %s\r\n\r\n%s' \
+		"$gw" "${#b}" "$b" | timeout 5 nc "$gw" 49000 2>/dev/null | sed -n 's/.*<NewExternalIPAddress>\([^<]*\).*/\1/p' | head -1
+}
+
+ip_opendns() {
+	timeout 5 nslookup myip.opendns.com resolver1.opendns.com 2>/dev/null | awk '/^Name:/{n=1} n&&/^Address/{print $2; exit}'
+}
+
+# A-Record direkt beim autoritativen Nameserver (kein Cache dazwischen)
+a_record() {
+	for ns in $NS; do
+		r=$(timeout 5 nslookup -type=a "$1" "$ns" 2>/dev/null | awk '/^Name:/{n=1} n&&/^Address/{print $2; exit}')
+		[ -n "$r" ] && { echo "$r"; return; }
+	done
+}
+
+update() { # host ip -> 0 ok
+	pw=$(cat $DIR/namecheap.pw)
+	out=$(printf 'url = "https://dynamicdns.park-your-domain.com/update?host=%s&domain=%s&password=%s&ip=%s"\n' "$1" "$DOMAIN" "$pw" "$2" \
+		| curl -sS --max-time 20 -K - 2>&1)
+	pw=""
+	echo "$out" | grep -q '<ErrCount>0</ErrCount>' && return 0
+	log "Update $1.$DOMAIN fehlgeschlagen: $(echo "$out" | sed -n 's/.*<Err1>\([^<]*\).*/\1/p; s/^curl: .*/&/p' | head -1)"
+	return 1
+}
+
+status() { # state detail
+	printf '{"t":%s,"state":"%s","ip":"%s","source":"%s","domain":"%s","records":{%s},"detail":"%s"}\n' \
+		"$(date +%s)" "$1" "$IP" "$SRC" "$DOMAIN" "$RECS" "$(printf %s "$2" | tr -d '"\\\n')" > /run/ddns.json.new
+	mv /run/ddns.json.new /run/ddns.json
+}
+
+trap 'exit 0' TERM INT
+NS=""
+while :; do
+	if [ -f $DIR/disabled ] || [ ! -s $DIR/config ] || [ ! -s $DIR/namecheap.pw ]; then
+		DOMAIN=""; IP=""; SRC=""; RECS=""; status off "aus oder nicht eingerichtet"; sleep $INTERVAL; continue
+	fi
+	DOMAIN=$(sed -n 's/^domain=//p' $DIR/config | tr -d '" ')
+	HOSTS=$(sed -n 's/^hosts=//p' $DIR/config | tr -d '"'); HOSTS=${HOSTS:-@}
+	[ -n "$NS" ] || NS=$(timeout 5 nslookup -type=ns "$DOMAIN" 2>/dev/null | awk '/nameserver =/{print $NF}' | sed 's/\.$//')
+	[ -n "$NS" ] || NS="pdns1.registrar-servers.com pdns2.registrar-servers.com"
+
+	SRC=fritzbox; IP=$(ip_fritzbox)
+	is_public_v4 "$IP" || { SRC=opendns; IP=$(ip_opendns); }
+	if ! is_public_v4 "$IP"; then
+		RECS=""; status error "keine oeffentliche IPv4 ermittelbar (${IP:-leer})"; sleep $INTERVAL; continue
+	fi
+
+	RECS=""; state=ok; detail=""
+	now=$(date +%s)
+	for h in $HOSTS; do
+		case "$h" in @) fq=$DOMAIN;; *) fq=$h.$DOMAIN;; esac
+		cur=$(a_record "$fq")
+		RECS="$RECS${RECS:+,}\"$fq\":\"$cur\""
+		[ "$cur" = "$IP" ] && continue
+		hold=$(cat /run/ddns.hold.$h 2>/dev/null || echo 0)
+		if [ $((now - hold)) -lt $HOLD ]; then state=pending; detail="$fq wartet auf DNS"; continue; fi
+		echo "$now" > /run/ddns.hold.$h
+		if update "$h" "$IP"; then
+			log "$fq: ${cur:-leer} -> $IP ($SRC)"
+			audit ddns-update "$fq ${cur:-leer} -> $IP"
+			state=pending; detail="$fq aktualisiert"
+		else
+			state=error; detail="Update $fq fehlgeschlagen"
+		fi
+	done
+	status $state "$detail"
+	sleep $INTERVAL &
+	wait $!
+done

@@ -1,0 +1,6 @@
+#!/bin/sh
+# curl mit TLS-Zertifikatspruefung (busybox-wget prueft keine Zertifikate).
+# Gebuendelt aus Alpine (musl) mit eigenem Loader, Bibliotheken und Mozilla-CA-Liste in /usr/lib/arcadeos/curl.
+D=/usr/lib/arcadeos/curl
+export CURL_CA_BUNDLE=${CURL_CA_BUNDLE:-$D/ca-certificates.crt}
+exec $D/ld-musl-x86_64.so.1 --library-path $D/lib $D/curl "$@"

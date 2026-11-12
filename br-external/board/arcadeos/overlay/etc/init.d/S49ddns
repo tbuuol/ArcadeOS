@@ -1,0 +1,21 @@
+#!/bin/sh
+#
+# Dynamic DNS (Namecheap). Einrichten: /state/ddns/config + /state/ddns/namecheap.pw.
+# Abschalten: Datei /state/ddns/disabled anlegen. Zustand: /run/ddns.json
+#
+
+start() {
+	printf "Starting ddns: "
+	start-stop-daemon -S -b -m -p /run/ddns.pid -x /usr/lib/arcadeos/ddns && echo "OK" || echo "FAIL"
+}
+
+stop() {
+	printf "Stopping ddns: "
+	start-stop-daemon -K -q -p /run/ddns.pid; echo "OK"
+}
+
+case "$1" in
+	start|stop) "$1";;
+	restart|reload) stop; start;;
+	*) echo "Usage: $0 {start|stop|restart|reload}"; exit 1;;
+esac
