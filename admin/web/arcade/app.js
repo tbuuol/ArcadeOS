@@ -1,7 +1,7 @@
 // Atlantis · Arcade (ArcadeOS). Konten wie in den Arcades: 12 Woerter, im Browser mit dem Passwort verschluesselt;
 // die Box bewahrt nur dieses verschluesselte Wallet unter dem @name auf und kann es nicht oeffnen. Anmelden mit
 // @name + Passwort, auch fuer Konten anderer Arcades (die Box holt das Wallet dort, wenn sie es nicht hat).
-import * as C from './crypto.js?v=3';
+import * as C from './crypto.js?v=4';
 
 const $ = (s) => document.querySelector(s);
 const view = $('#view');
@@ -343,12 +343,13 @@ async function pollMsgs(me, draw = false) {
 // Einladungen in Gruppen (dogecoin-arcade group.py) kommen als "arcade-group/1" + JSON mit dem Gruppen-Geheimnis:
 // nicht roh zeigen, nur wer einlaedt und wohin. Gruppen selbst kommen spaeter.
 function shown(text) {
-  const m = /^arcade-group\/1\s*\n([\s\S]*)$/.exec(text || '');
-  if (!m) return text;
-  try {
-    const g = JSON.parse(m[1]);
-    return `Einladung in die Gruppe „${String(g.name || '?').slice(0, 60)}“ (${(g.members || []).length} Mitglieder) – Gruppen kann diese Arcade noch nicht öffnen.`;
-  } catch { return 'Einladung in eine Gruppe (unlesbar).'; }
+  const m = /^\u0000?arcade-group(-left)?\/1\s*\n([\s\S]*)$/.exec(text || '');
+  if (!m) return String(text || '').replace(/[\u0000-\u0008\u000b-\u001f]/g, '');
+  let g = {};
+  try { g = JSON.parse(m[2]); } catch { /* unlesbar */ }
+  const name = String(g.name || '?').slice(0, 60);
+  if (m[1]) return `hat die Gruppe „${name}“ verlassen.`;
+  return `Einladung in die Gruppe „${name}“ (${(g.members || []).length} Mitglieder) – Gruppen kann diese Arcade noch nicht öffnen.`;
 }
 
 function showList(me) {
