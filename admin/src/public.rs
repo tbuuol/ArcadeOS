@@ -30,6 +30,7 @@ pub struct Pub {
     peers: Vec<String>,
     faucet_amount: f64,
     faucet_daily: usize,
+    sessions_path: std::path::PathBuf,
 }
 
 fn conf(app: &App, key: &str, default: &str) -> String {
@@ -45,7 +46,7 @@ impl Pub {
             .unwrap_or_else(|| json!({}));
         Pub {
             accounts: Mutex::new(accounts),
-            sessions: Default::default(),
+            sessions: Mutex::new(load_sessions(&app.cfg.state.join("sessions.json"))),
             hits: Default::default(),
             elsewhere: Default::default(),
             host: conf(app, "PUBLIC_HOST", "arcade.liteworlds.quest"),
@@ -56,6 +57,7 @@ impl Pub {
                 .collect(),
             faucet_amount: conf(app, "FAUCET_AMOUNT", "1").parse().unwrap_or(1.0),
             faucet_daily: conf(app, "FAUCET_DAILY", "20").parse().unwrap_or(20),
+            sessions_path: app.cfg.state.join("sessions.json"),
         }
     }
     fn save(&self, app: &App) {
@@ -97,8 +99,29 @@ impl Pub {
         let mut s = self.sessions.lock().unwrap();
         s.retain(|_, (_, exp)| *exp > now());
         s.insert(hex::encode(sha256(tok.as_bytes())), (pubkey.to_string(), now() + SESSION_DAYS * 86400));
+        self.save_sessions(&s);
         tok
     }
+    fn end_session(&self, cookie: &str) {
+        let Some(tok) = cookie.split(';').find_map(|c| c.trim().strip_prefix("arcade=")) else { return };
+        let mut s = self.sessions.lock().unwrap();
+        if s.remove(&hex::encode(sha256(tok.as_bytes()))).is_some() {
+            self.save_sessions(&s);
+        }
+    }
+    /// Nur sha256(Token) -> (Konto, Ablauf): wer die Datei liest, kann sich damit nicht anmelden
+    fn save_sessions(&self, s: &HashMap<String, (String, u64)>) {
+        let tmp = self.sessions_path.with_extension("new");
+        if std::fs::write(&tmp, serde_json::to_string(s).unwrap()).is_ok() {
+            let _ = std::fs::rename(&tmp, &self.sessions_path);
+        }
+    }
+}
+
+fn load_sessions(path: &std::path::Path) -> HashMap<String, (String, u64)> {
+    let mut s: HashMap<String, (String, u64)> = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    s.retain(|_, (_, exp)| *exp > now());
+    s
 }
 
 struct Req<'a> {
@@ -358,7 +381,10 @@ fn route(app: &App, p: &Pub, r: &Req) -> Out {
         }
         ("POST", "/api/signup") => signup(app, p, r),
         ("POST", "/api/login") => login(app, p, r),
-        ("POST", "/api/logout") => (200, json!({"ok": true}), Some(String::new())),
+        ("POST", "/api/logout") => {
+            p.end_session(&r.cookie);
+            (200, json!({"ok": true}), Some(String::new()))
+        }
         (_, path) if path.starts_with("/api/") => {
             let Some(pk) = me_pk else { return bad(401, "bitte anmelden") };
             match (r.method, path) {
