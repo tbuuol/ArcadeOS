@@ -59,7 +59,7 @@ echo "  (Installation: $(( $(date +%s) - T0 )) s)"
 grep -c '"step":"System kopieren' $SP/install.log | grep -qv '^0$' && ok "Fortschritt in % ($(grep -c pct $SP/install.log) Meldungen)" || bad "kein Fortschritt"
 $S 'tail -1 /state/log/audit.log' | grep -q '"action":"install-done"' && ok "Audit: install-done" || bad "Audit: $($S 'tail -2 /state/log/audit.log')"
 P=$($S 'sgdisk -p /dev/nvme0n1' | awk '/^ +[0-9]+ /{print $1":"$NF}' | tr '\n' ' ')
-check "$P" "1:bios-boot 2:boot 3:rootfs-a 4:rootfs-b 5:state " "Partitionen auf der Platte"
+check "$P" "1:bios-boot 2:boot 3:rootfs-a 4:rootfs-b 5:arcadeos 6:state " "Partitionen auf der Platte"
 check "$($S 'sgdisk -v /dev/nvme0n1' | grep -c 'No problems found')" "1" "GPT der Platte fehlerfrei"
 U1=$($S 'sgdisk -i 3 /dev/sda' | sed -n 's/^Partition unique GUID: //p')
 U2=$($S 'sgdisk -i 3 /dev/nvme0n1' | sed -n 's/^Partition unique GUID: //p')
@@ -79,11 +79,11 @@ check "$($S hostname)" "inst-test" "Konfiguration uebernommen"
 check "$($S 'dropbearkey -y -f /etc/dropbear/dropbear_ed25519_host_key' | sed -n 's/^Fingerprint: *//p')" "$FP" "gleicher Host-Key"
 for i in $(seq 1 30); do $S 'test -f /run/meshd.json' && break; sleep 1; done
 check "$($S 'cat /run/meshd.json' | jfield node_id)" "$NODE" "gleiche Mesh-Identitaet"
-check "$($S 'cat /run/state.json' | jfield device)" "/dev/nvme0n1p5" "/state auf der Platte"
+check "$($S 'cat /run/state.json' | jfield device)" "/dev/nvme0n1p6" "/state auf der Platte"
 SZ=$($S 'df -k /state' | awk 'NR==2{print int($2/1048576)}')
 [ "$SZ" -ge 4 ] && ok "state nutzt den Rest der Platte ($SZ GB)" || bad "state nur $SZ GB"
 check "$($S 'grep " /state " /proc/mounts' | awk '{print $3}')" "ext4" "state ist ext4"
-$S 'dumpe2fs -h /dev/nvme0n1p5 2>/dev/null' | grep -q 'has_journal' && ok "state mit Journal" || bad "state ohne Journal"
+$S 'dumpe2fs -h /dev/nvme0n1p6 2>/dev/null' | grep -q 'has_journal' && ok "state mit Journal" || bad "state ohne Journal"
 $S 'test -f /state/installed.json' && ok "installed.json" || bad "installed.json fehlt"
 $S '/usr/lib/arcadeos/status-screen --once' | grep -q '^Platte: /dev/nvme0n1 (installiert)' && ok "Statusseite: installiert" || bad "Statusseite: $($S '/usr/lib/arcadeos/status-screen --once' | grep -E '^(Stick|Platte)')"
 $S 'test -e /state/update/incoming' && bad "halbes Update mitkopiert" || ok "kein halbes Update mitkopiert"
@@ -95,7 +95,7 @@ echo "== 2. Platte + Stick, Platte zuerst"
 boot both1 DISK=$SP/target.img DISK_BUS=nvme BOOTINDEX=0 -- $STICK
 wait_ssh && ok "SSH" || { bad "startet nicht"; tail -30 $SP/serial-both1.log; exit 1; }
 check "$($S '. /usr/lib/arcadeos/common.sh; boot_disk')" "nvme0n1" "System von der Platte"
-check "$($S 'cat /run/state.json' | jfield device)" "/dev/nvme0n1p5" "/state von der Platte, nicht vom Stick"
+check "$($S 'cat /run/state.json' | jfield device)" "/dev/nvme0n1p6" "/state von der Platte, nicht vom Stick"
 check "$($S hostname)" "inst-test" "Konfiguration der Platte"
 stop
 
@@ -103,7 +103,7 @@ echo "== 3. Stick + Platte, Stick zuerst"
 boot both2 DISK=$SP/stick.img DISK_BUS=usb BOOTINDEX=0 -- $TARGET
 wait_ssh && ok "SSH" || { bad "startet nicht"; tail -30 $SP/serial-both2.log; exit 1; }
 check "$($S '. /usr/lib/arcadeos/common.sh; boot_disk')" "sda" "System vom Stick"
-check "$($S 'cat /run/state.json' | jfield device)" "/dev/sda5" "/state vom Stick, nicht von der Platte"
+check "$($S 'cat /run/state.json' | jfield device)" "/dev/sda6" "/state vom Stick, nicht von der Platte"
 $S 'test -f /state/installed.json' && bad "Stick haelt sich fuer installiert" || ok "Stick bleibt Stick"
 stop
 

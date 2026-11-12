@@ -77,13 +77,13 @@ X
 done
 
 # SSH-Key vom Stick: wie ein User unter Windows - authorized_keys.txt mit CRLF und BOM in die
-# FAT-Partition "boot" legen, starten, mit genau diesem Key einloggen
-echo "== SSH-Key vom Stick (boot/authorized_keys.txt)"
+# Laufwerk ARCADEOS (FAT, Partition "arcadeos") legen, starten, mit genau diesem Key einloggen
+echo "== SSH-Key vom Stick (ARCADEOS/authorized_keys.txt)"
 rm -f $SP/disk.img $SP/vars.fd $SP/userkey $SP/userkey.pub
 cp "$IMG/disk.img" $SP/disk.img
 ssh-keygen -q -t ed25519 -N "" -C stick-user -f $SP/userkey
 printf '\357\273\277%s\r\n' "$(cat $SP/userkey.pub)" > $SP/authorized_keys.txt
-BOOTOFF=$(/sbin/sfdisk -d $SP/disk.img | awk -F'[=,]' '/name="boot"/{gsub(/ /,"",$2); print $2*512}')
+BOOTOFF=$(/sbin/sfdisk -d $SP/disk.img | awk -F'[=,]' '/name="arcadeos"/{gsub(/ /,"",$2); print $2*512}')
 "$ROOT/output/host/bin/mtype" -i "$SP/disk.img@@$BOOTOFF" ::LIESMICH.txt | grep -q authorized_keys \
     && ok "LIESMICH.txt auf dem Stick" || bad "LIESMICH.txt fehlt"
 "$ROOT/output/host/bin/mcopy" -i "$SP/disk.img@@$BOOTOFF" $SP/authorized_keys.txt ::authorized_keys.txt \

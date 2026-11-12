@@ -7,8 +7,8 @@
 #                                                  Die Platte wird GELOESCHT; ihr Name muss zur
 #                                                  Bestaetigung zweimal dastehen.
 #
-# Kopiert die Startplatte bis zum Ende von rootfs-b: Startcode, bios-boot, boot (Kernel, grubenv,
-# authorized_keys, wifi.txt), System A und B. Danach eine eigene Partitionstabelle mit neuen IDs
+# Kopiert die Startplatte bis vor die Datenpartition: Startcode, bios-boot, boot (Kernel, grubenv),
+# System A und B, arcadeos (authorized_keys.txt, wifi.txt). Danach eine eigene Partitionstabelle mit neuen IDs
 # (sgdisk -R, -G), die Datenpartition "state" ueber den ganzen Rest (ext4) und /state vom Stick
 # (Host-Key, Konfiguration, Mesh-Schluessel): das Geraet bleibt dasselbe, nur ohne Stick.
 # Fortschritt als JSON-Zeilen auf stdout, Ergebnis im Audit-Log.
@@ -84,11 +84,18 @@ cmd_to() {
 	disks | grep -qx "$T" || die "$T ist keine Platte"
 	! grep -q "^/dev/$T" /proc/mounts || die "auf $T ist etwas eingebunden"
 
-	# Ende von rootfs-b auf der Startplatte = alles, was kopiert wird (genimage richtet auf 1 MiB aus)
-	rb=$(find_part rootfs-b) || die "rootfs-b nicht gefunden"
+	# Ende der letzten Partition vor state = alles, was kopiert wird (genimage richtet auf 1 MiB aus)
 	st=$(find_part state) || die "state nicht gefunden"
-	END=$(( $(cat "/sys/block/$SRC/$rb/start") + $(cat "/sys/block/$SRC/$rb/size") ))
-	[ $(( END % 2048 )) = 0 ] || die "rootfs-b endet nicht auf einer MiB-Grenze"
+	find_part rootfs-b >/dev/null || die "rootfs-b nicht gefunden"
+	SSTART=$(cat "/sys/block/$SRC/$st/start")
+	END=0
+	for q in /sys/block/"$SRC"/"$SRC"*; do
+		[ -e "$q/partition" ] && [ "${q##*/}" != "$st" ] || continue
+		e=$(( $(cat "$q/start") + $(cat "$q/size") ))
+		[ "$e" -le "$SSTART" ] || die "${q##*/} liegt hinter state"
+		[ "$e" -gt "$END" ] && END=$e
+	done
+	[ $(( END % 2048 )) = 0 ] || die "die Partitionen vor state enden nicht auf einer MiB-Grenze"
 	MB=$(( END / 2048 ))
 	SN=$(cat "/sys/block/$SRC/$st/partition")
 	TSIZE=$(cat "/sys/block/$T/size")
@@ -138,10 +145,10 @@ cmd_to() {
 	printf '{"installed":"%s","from":"%s","version":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SRC" "${VERSION:-?}" > "$MNT/installed.json"
 	sync; umount "$MNT"
 
-	# Pruefen: boot, System A und B Byte fuer Byte gleich wie auf dem Stick
+	# Pruefen: boot, System A und B, arcadeos Byte fuer Byte gleich wie auf dem Stick
 	step "Pruefen" 94
-	for name in boot rootfs-a rootfs-b; do
-		sp=$(find_part "$name"); pn=$(cat "/sys/block/$SRC/$sp/partition")
+	for name in boot rootfs-a rootfs-b arcadeos; do
+		sp=$(find_part "$name") || continue; pn=$(cat "/sys/block/$SRC/$sp/partition")
 		tp=$(part_of "$T" "$pn") || die "Partition $pn ($name) fehlt auf $T"
 		[ "$(sed -n 's/^PARTNAME=//p' "/sys/block/$T/$tp/uevent")" = "$name" ] || die "$tp heisst nicht $name"
 		[ "$(sha256sum < "/dev/$sp")" = "$(sha256sum < "/dev/$tp")" ] || die "$name auf $T weicht vom Stick ab"

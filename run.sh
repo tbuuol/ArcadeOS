@@ -8,6 +8,7 @@ VARS="${VARS:-$IMG/ovmf-vars.fd}"   # UEFI-Variablen (wie NVRAM eines echten PCs
 SSH_PORT="${SSH_PORT:-2222}"        # SSH der VM auf localhost:SSH_PORT
 HTTP_PORT="${HTTP_PORT:-}"          # Monitoring-Seite (Port 80 der VM) auf localhost:HTTP_PORT, leer = nicht weiterleiten
 SMP="${SMP:-2}"                     # Zahl der virtuellen CPU-Kerne
+MEM="${MEM:-256}"                   # Arbeitsspeicher in MB (Claude-Test: mehr)
 # Wie haengt die Platte am Rechner? virtio (Standard) | usb (Stick an xHCI) | uas | ahci (SATA) | nvme | scsi
 DISK_BUS="${DISK_BUS:-virtio}"
 # Startreihenfolge mit weiteren Platten (z.B. Installer-Test): BOOTINDEX=0 = diese Platte zuerst (nicht bei virtio)
@@ -55,7 +56,7 @@ else
     [ -f "$VARS" ] || cp /usr/share/OVMF/OVMF_VARS_4M.fd "$VARS"
     FW_ARGS="-drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -drive if=pflash,format=raw,file=$VARS"
 fi
-exec "$QEMU" -M pc -accel "$ACCEL" -m 256 -smp "$SMP" \
+exec "$QEMU" -M pc -accel "$ACCEL" -m "$MEM" -smp "$SMP" \
     $FW_ARGS \
     $DISK_ARGS \
     -netdev user,id=n0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22${HTTP_PORT:+,hostfwd=tcp:127.0.0.1:$HTTP_PORT-:80} $NIC_DEV \

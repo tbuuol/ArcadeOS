@@ -46,6 +46,16 @@ fi
 
 # root ohne nutzbares Passwort: kein Login an der Konsole, nur SSH-Key
 sed -i 's/^root:[^:]*:/root:*:/' "$TARGET_DIR/etc/shadow"
+# Login-Shell bash: Agenten wie Claude Code per SSH brauchen bash (busybox-ash reicht ihnen nicht).
+# bash.mk traegt /bin/bash in /etc/shells ein, sonst lehnt dropbear den Login ab.
+grep -qx /bin/bash "$TARGET_DIR/etc/shells" || { echo "post-build: /bin/bash fehlt in /etc/shells" >&2; exit 1; }
+sed -i 's#^\(root:[^:]*:0:0:[^:]*:[^:]*:\).*#\1/bin/bash#' "$TARGET_DIR/etc/passwd"
+# musl-Programme, die fuer Alpine gebaut sind (z.B. Claude Code linux-x64-musl), verlangen die
+# C-Bibliothek unter ihrem Alpine-Namen
+for l in "$TARGET_DIR"/lib/ld-musl-*.so.1; do
+    [ -e "$l" ] || continue
+    a=${l##*/ld-musl-}; ln -sfn "${l##*/}" "$TARGET_DIR/lib/libc.musl-$a"
+done
 
 # Read-only Rootfs: persistente Pfade zeigen auf die Zustands-Partition (S00state)
 install -d "$TARGET_DIR/state" "$TARGET_DIR/boot"

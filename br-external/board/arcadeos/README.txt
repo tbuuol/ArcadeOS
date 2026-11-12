@@ -1,6 +1,8 @@
 ArcadeOS - SSH access and Wi-Fi
 ===============================
 
+This drive (ARCADEOS) holds only your settings.
+
 1) SSH key (required, otherwise nobody can log in via SSH)
 
   1. Create a file "authorized_keys.txt" in this folder.
@@ -30,4 +32,5 @@ The stick is for installing onto a disk (the disk gets erased):
   arcadeos-install to <disk> --wipe <disk>
 Then remove the stick and reboot.
 
-Do not change anything else on this drive (EFI, a/, b/ = boot files).
+Agents such as the Claude app can connect directly via SSH (bash,
+writable home directory). On first boot the data area grows to fill the stick.

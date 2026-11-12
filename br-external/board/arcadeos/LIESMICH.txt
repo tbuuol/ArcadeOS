@@ -1,6 +1,8 @@
 ArcadeOS - SSH-Zugang und WLAN
 ==============================
 
+Dieses Laufwerk (ARCADEOS) ist nur fuer deine Einstellungen da.
+
 1) SSH-Key (Pflicht, sonst kommt niemand per SSH aufs Geraet)
 
   1. Datei "authorized_keys.txt" in diesem Ordner anlegen.
@@ -30,4 +32,6 @@ Der Stick ist zum Installieren auf eine Platte (die Platte wird geloescht):
   arcadeos-install to <platte> --wipe <platte>
 Danach Stick abziehen und neu starten.
 
-Nichts sonst in dieser Partition aendern (EFI, a/, b/ = Startdateien).
+Agenten wie die Claude-App koennen sich direkt per SSH verbinden (bash,
+beschreibbares Home-Verzeichnis). Beim ersten Start waechst der Datenbereich
+auf den ganzen Stick.

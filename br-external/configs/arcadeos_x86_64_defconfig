@@ -91,3 +91,12 @@ BR2_PACKAGE_GPTFDISK_SGDISK=y
 # UEFI-Starteintrag fuer die installierte Platte (sonst kennt die Firmware nur alte Eintraege)
 BR2_PACKAGE_EFIBOOTMGR=y
 BR2_PACKAGE_E2FSPROGS=y
+# Stick: Datenpartition beim ersten Start auf den ganzen Stick vergroessern (S00state: sgdisk,
+# resizepart ueber BLKPG - die Platte ist dabei in Benutzung -, resize2fs)
+BR2_PACKAGE_E2FSPROGS_RESIZE2FS=y
+BR2_PACKAGE_UTIL_LINUX_PARTX=y
+# Fuer Agenten per SSH (Claude-App): bash als Login-Shell, zstd, sftp-server (scp/sftp ohne -O)
+BR2_PACKAGE_BUSYBOX_SHOW_OTHERS=y
+BR2_PACKAGE_BASH=y
+BR2_PACKAGE_ZSTD=y
+BR2_PACKAGE_GESFTPSERVER=y

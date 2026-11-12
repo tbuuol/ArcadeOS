@@ -16,10 +16,47 @@ status() {
 	printf '{"mode":"%s","device":"%s","reason":"%s"}\n' "$1" "$2" "$3" > /run/state.json
 }
 
+# Frisch geschriebener Stick: das Image endet hinter "state" (128 MB), der Rest des Sticks ist frei.
+# Beim ersten Start "state" bis ans Ende vergroessern (Agenten wie Claude Code brauchen Platz in
+# /root = /state/root). Die Platte ist in Benutzung (System laeuft von ihr), deshalb die Tabelle mit
+# sgdisk schreiben und dem Kernel nur die neue Groesse melden (resizepart, BLKPG), dann resize2fs -
+# alles bevor state eingebunden ist. Geht etwas schief, bleibt state, wie es war.
+grow() {  # <partition, z.B. sda6>
+	p=$1
+	disk=$(basename "$(readlink -f "/sys/class/block/$p/..")")
+	[ -e "/sys/block/$disk/$p/partition" ] || return 0
+	n=$(cat "/sys/block/$disk/$p/partition")
+	start=$(cat "/sys/block/$disk/$p/start"); size=$(cat "/sys/block/$disk/$p/size")
+	total=$(cat "/sys/block/$disk/size")
+	# nur wenn state die letzte Partition ist und mehr als 64 MiB (+ GPT-Ersatzkopf) frei sind
+	for q in /sys/block/"$disk"/"$disk"*; do
+		[ -e "$q/start" ] || continue
+		[ "$(cat "$q/start")" -gt "$start" ] && return 0
+	done
+	[ $(( total - start - size )) -gt $(( 131072 + 34 )) ] || return 0
+	guid=$(sgdisk -i "$n" "/dev/$disk" 2>/dev/null | sed -n 's/^Partition unique GUID: //p')
+	[ -n "$guid" ] || return 0
+	echo; echo "state: vergroessere /dev/$p auf den ganzen Datentraeger ..."
+	sgdisk -e -d "$n" -n "$n:$start:0" -t "$n:8300" -c "$n:$PARTNAME" -u "$n:$guid" "/dev/$disk" >/dev/null 2>&1
+	new=$(sgdisk -i "$n" "/dev/$disk" 2>/dev/null | sed -n 's/^Partition size: \([0-9]*\) sectors.*/\1/p')
+	if [ -z "$new" ] || [ "$new" -le "$size" ]; then
+		logger -t state "vergroessern: neue Partitionstabelle unbrauchbar" 2>/dev/null; return 0
+	fi
+	resizepart "/dev/$disk" "$n" "$new" 2>/dev/null || { logger -t state "vergroessern: resizepart fehlgeschlagen (gilt nach Neustart)" 2>/dev/null; return 0; }
+	e2fsck -p "/dev/$p" >/dev/null 2>&1
+	if resize2fs "/dev/$p" >/dev/null 2>&1; then
+		echo "state: $(( new / 2048 )) MB"
+		logger -t state "vergroessert: /dev/$p $(( size / 2048 )) MB -> $(( new / 2048 )) MB" 2>/dev/null
+		GROWN="$(( size / 2048 ))->$(( new / 2048 )) MB"
+	fi
+}
+
 start() {
 	printf "Mounting state: "
 	mkdir -p /run
 	dev=$(find_part "$PARTNAME")
+	GROWN=""
+	[ -n "$dev" ] && grow "$dev"
 	if [ -n "$dev" ] && mount -t ext4 -o noatime,nodev,nosuid "/dev/$dev" "$STATE" 2>/dev/null; then
 		status persistent "/dev/$dev" ""
 		echo "OK (/dev/$dev)"
@@ -32,11 +69,19 @@ start() {
 	fi
 	mkdir -p "$STATE/dropbear" "$STATE/seedrng" "$STATE/log" "$STATE/update"
 	chmod 0700 "$STATE/dropbear" "$STATE/seedrng"
+	[ -n "$GROWN" ] && audit state-grow "$GROWN"
+	# Home von root beschreibbar und bleibend (Agenten legen dort ~/.claude, ~/.cache usw. an).
+	# .ssh/authorized_keys bleibt der Link auf die von apply-config erzeugte Liste.
+	mkdir -p "$STATE/root/.ssh"
+	chmod 0700 "$STATE/root" "$STATE/root/.ssh"
+	ln -sfn /run/arcadeos/authorized_keys "$STATE/root/.ssh/authorized_keys"
+	mountpoint -q /root || mount --bind "$STATE/root" /root
 }
 
 stop() {
 	printf "Unmounting state: "
 	sync
+	umount /root 2>/dev/null
 	umount "$STATE" 2>/dev/null && echo "OK" || echo "busy"
 }
 

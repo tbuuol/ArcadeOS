@@ -47,12 +47,17 @@ NIC=e1000e ./run.sh                        # Netzwerkkarte (auch: e1000, igb, vm
 Ein Image für alle x86_64-PCs, Laptops und Mini-PCs – mit UEFI und mit altem BIOS:
 
 1. `output/images/disk.img` mit **balenaEtcher**, **Rufus** (DD-Modus) oder `dd` auf den Stick schreiben.
-2. Eigenen SSH-Public-Key als `authorized_keys` (oder `authorized_keys.txt`) in die FAT-Partition
-   des Sticks legen (unter Windows als Laufwerk „BOOT“ sichtbar, siehe `LIESMICH.txt` dort).
+2. Eigenen SSH-Public-Key als `authorized_keys.txt` (oder `authorized_keys`) ins Laufwerk
+   **ARCADEOS** des Sticks legen – Windows, Mac und Linux zeigen es nach dem Schreiben sofort an
+   (siehe `LIESMICH.txt` dort).
    Für WLAN zusätzlich `wifi.txt` mit `ssid=…`, `password=…`, `country=DE` (mehrere Netze: weitere
    Paare darunter).
 3. Vom Stick starten (UEFI: Secure Boot aus). Der Bildschirm zeigt IP, SSH-Befehl und den
    Fingerabdruck des Host-Keys – beim ersten `ssh root@<IP>` vergleichen.
+
+Beim ersten Start wächst die Datenpartition auf den ganzen Stick. Agenten (z.B. die Claude-App per
+SSH) finden alles, was sie brauchen: Login-Shell bash, ein beschreibbares, bleibendes `/root`
+(liegt auf `/state/root`), `stat`/`timeout`/`zstd` und einen sftp-Server (`scp` ohne `-O`).
 
 ### Auf die Platte installieren
 
@@ -64,7 +69,7 @@ ssh root@<IP> arcadeos-install list                        # Platten (ohne den S
 ssh root@<IP> arcadeos-install to nvme0n1 --wipe nvme0n1   # Name zweimal = Bestätigung
 ```
 
-Kopiert werden Startcode, Boot-Partition (Kernel, SSH-Keys, `wifi.txt`), System A und B und `/state`
+Kopiert werden Startcode, Boot-Partition, System A und B, ARCADEOS (SSH-Keys, `wifi.txt`) und `/state`
 (Host-Key, Konfiguration, Mesh-Identität) – das Gerät bleibt dasselbe. Die Datenpartition bekommt den
 ganzen Rest der Platte (ext4). Unter UEFI legt der Installer den Starteintrag „ArcadeOS“ an die erste
 Stelle. Danach Stick abziehen und neu starten. Steckt der Stick weiter, startet trotzdem jedes Medium
@@ -105,7 +110,8 @@ fallen sonst still weg), und schreibt `linux.config`.
 | `boot`     | FAT32/EFI: GRUB, `grub.cfg`, `grubenv` (A/B-Auswahl), Kernel pro Slot in `a/` und `b/` |
 | `rootfs-a` | System A, squashfs, read-only            |
 | `rootfs-b` | System B für Updates, anfangs leer       |
-| `state`    | ext4, unter `/state`: Host-Keys, Seed, später Konfiguration und Daten |
+| `arcadeos` | FAT, Laufwerk „ARCADEOS“ (Basic Data, 16 MB): `authorized_keys.txt`, `wifi.txt`, `LIESMICH.txt` |
+| `state`    | ext4, unter `/state`: Host-Keys, Konfiguration, Daten, `/root`; auf dem Stick beim ersten Start bis ans Ende vergrößert |
 
 A/B: `grubenv` enthält `slot=A|B` (fest) und `try_slot` (einmaliger Probeboot, wird vor dem Start
 gelöscht). Fehlt der Kernel eines Slots, startet GRUB den anderen.
@@ -201,6 +207,8 @@ tests/qemu-hw.sh         # echte Hardware: UEFI/BIOS × USB/UAS/SATA/NVMe/SCSI �
 tests/qemu-wifi.sh       # WLAN mit simulierten Funkkarten: wifi.txt, arcadeos-config, Rollback
 tests/qemu-monitor.sh    # Monitoring-Seite: nur lesen, Werte, nichts Geheimes, monitor.port
 tests/qemu-install.sh    # Installer: Stick -> NVMe, Start von der Platte (UEFI/BIOS), Stick + Platte
+tests/qemu-claude.sh     # Plug and Play fuer Agenten: Key aus ARCADEOS, state waechst, bash, /root,
+                         # Claude-App-Server und Claude Code (musl) vom Stick und von der Platte
 tests/reboot-soak.sh     # Neustart-Dauerlauf mit Diagnose (QMP-Abfrage bei Hänger)
 ```
 

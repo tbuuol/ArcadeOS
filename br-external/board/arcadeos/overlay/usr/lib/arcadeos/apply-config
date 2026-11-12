@@ -53,42 +53,44 @@ if [ "$MODE" = boot ] && [ -f "$CFG/.pending" ] && [ -d /state/config.prev ]; th
 fi
 
 # 1. SSH-Keys: Recovery-Keys aus dem Image immer, dann die vom Stick, dann die aus der Konfiguration.
-#    Stick: Datei authorized_keys (oder authorized_keys.txt) in der FAT-Partition "boot" - die laesst
-#    sich an jedem Windows-/Mac-/Linux-Rechner oeffnen. Wer den Stick in der Hand hat, besitzt das
-#    Geraet ohnehin. Gelesen nur beim Booten (Windows-Zeilenenden und BOM werden entfernt).
+#    Stick: Datei authorized_keys.txt (oder authorized_keys) im Laufwerk ARCADEOS (FAT, Partition
+#    "arcadeos") - das zeigen Windows, Mac und Linux sofort an. Aeltere Sticks: Partition "boot".
+#    Wer den Stick in der Hand hat, besitzt das Geraet ohnehin. Gelesen nur beim Booten
+#    (Windows-Zeilenenden und BOM werden entfernt). wifi.txt genauso (ARCADEOS hat Vorrang).
 if [ "$MODE" = boot ]; then
 	: > $R/boot_keys
-	dev=$(find_part boot)
-	if [ -n "$dev" ]; then
-		mkdir -p $R/bootfs
-		if mount -t vfat -o ro,nodev,nosuid,noexec "/dev/$dev" $R/bootfs 2>/dev/null; then
-			bom=$(printf '\357\273\277')
-			for f in authorized_keys authorized_keys.txt; do
-				[ -f "$R/bootfs/$f" ] && tr -d '\r' < "$R/bootfs/$f" | sed "1s/^$bom//" >> $R/boot_keys
-			done
-			# WLAN-Zugangsdaten: wifi.txt mit Zeilen ssid=..., password=..., optional country=DE;
-			# mehrere Netze: einfach weitere ssid=/password=-Paare darunter
-			: > $R/boot_wifi; chmod 600 $R/boot_wifi; : > $R/boot_wifi_country
-			if [ -f "$R/bootfs/wifi.txt" ]; then
-				ssid=""; pw=""; nw=0
-				while IFS= read -r line || [ -n "$line" ]; do
-					case "$line" in
-						ssid=*) [ -n "$ssid" ] && { wifi_net "$ssid" "$pw" 1 >> $R/boot_wifi; nw=$((nw + 1)); }
-							ssid=${line#ssid=}; pw="" ;;
-						password=*|psk=*) pw=${line#*=} ;;
-						country=*) echo "${line#country=}" | grep -E '^[A-Z]{2}$' > $R/boot_wifi_country ;;
-					esac
-				done <<-EOF
-				$(tr -d '\r' < "$R/bootfs/wifi.txt" | sed "1s/^$bom//")
-				EOF
-				[ -n "$ssid" ] && { wifi_net "$ssid" "$pw" 1 >> $R/boot_wifi; nw=$((nw + 1)); }
-				[ "$nw" -gt 0 ] && { echo "WLAN-Netze vom Stick: $nw"; audit boot-wifi "$nw Netz(e) aus boot/wifi.txt"; }
-			fi
-			umount $R/bootfs
-		fi
+	: > $R/boot_wifi_src; chmod 600 $R/boot_wifi_src
+	bom=$(printf '\357\273\277')
+	mkdir -p $R/bootfs
+	for pl in arcadeos boot; do
+		dev=$(find_part $pl) || continue
+		[ -n "$dev" ] || continue
+		mount -t vfat -o ro,nodev,nosuid,noexec "/dev/$dev" $R/bootfs 2>/dev/null || continue
+		for f in authorized_keys authorized_keys.txt; do
+			[ -f "$R/bootfs/$f" ] && { tr -d '\r' < "$R/bootfs/$f" | sed "1s/^$bom//"; echo; } >> $R/boot_keys
+		done
+		[ -s $R/boot_wifi_src ] || { [ -f "$R/bootfs/wifi.txt" ] && tr -d '\r' < "$R/bootfs/wifi.txt" | sed "1s/^$bom//" > $R/boot_wifi_src; }
+		umount $R/bootfs
+	done
+	# WLAN-Zugangsdaten: wifi.txt mit Zeilen ssid=..., password=..., optional country=DE;
+	# mehrere Netze: einfach weitere ssid=/password=-Paare darunter
+	: > $R/boot_wifi; chmod 600 $R/boot_wifi; : > $R/boot_wifi_country
+	if [ -s $R/boot_wifi_src ]; then
+		ssid=""; pw=""; nw=0
+		while IFS= read -r line || [ -n "$line" ]; do
+			case "$line" in
+				ssid=*) [ -n "$ssid" ] && { wifi_net "$ssid" "$pw" 1 >> $R/boot_wifi; nw=$((nw + 1)); }
+					ssid=${line#ssid=}; pw="" ;;
+				password=*|psk=*) pw=${line#*=} ;;
+				country=*) echo "${line#country=}" | grep -E '^[A-Z]{2}$' > $R/boot_wifi_country ;;
+			esac
+		done < $R/boot_wifi_src
+		[ -n "$ssid" ] && { wifi_net "$ssid" "$pw" 1 >> $R/boot_wifi; nw=$((nw + 1)); }
+		[ "$nw" -gt 0 ] && { echo "WLAN-Netze vom Stick: $nw"; audit boot-wifi "$nw Netz(e) aus wifi.txt"; }
 	fi
+	rm -f $R/boot_wifi_src
 	n=$(grep -cE '^(ssh-|ecdsa-|sk-)' $R/boot_keys)
-	[ "$n" -gt 0 ] && { echo "SSH-Keys vom Stick: $n"; audit boot-keys "$n Key(s) aus boot/authorized_keys"; }
+	[ "$n" -gt 0 ] && { echo "SSH-Keys vom Stick: $n"; audit boot-keys "$n Key(s) aus authorized_keys(.txt)"; }
 fi
 {
 	cat /etc/arcadeos/recovery_keys

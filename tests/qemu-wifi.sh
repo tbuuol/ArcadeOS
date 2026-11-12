@@ -86,7 +86,7 @@ wait_wifi() {
 echo "== wifi.txt vom Stick (BOM, Windows-Zeilenenden, zwei Netze, das erste falsch)"
 $S sh -s <<EOF
 mkdir -p /tmp/bootrw
-mount -t vfat /dev/\$(. /usr/lib/arcadeos/common.sh; find_part boot) /tmp/bootrw
+mount -t vfat /dev/\$(. /usr/lib/arcadeos/common.sh; find_part arcadeos) /tmp/bootrw
 printf '\357\273\277ssid=Gibt-es-nicht\r\npassword=irgendwas1\r\n\r\nssid=%s\r\npassword=%s\r\ncountry=DE\r\n' '$SSID' '$PSK' > /tmp/bootrw/wifi.txt
 umount /tmp/bootrw
 /usr/lib/arcadeos/apply-config boot >/dev/null
@@ -109,7 +109,7 @@ $S '! test -f /run/wpa_supplicant.wlan0.pid && ! ps | grep -q "[w]pa_supplicant 
     || bad "wpa_supplicant laeuft nach ifdown weiter"
 # Stick wieder ohne WLAN, sonst verbindet er unten trotz falschem Passwort in der Konfiguration
 $S sh -s <<'EOF'
-mount -t vfat /dev/$(. /usr/lib/arcadeos/common.sh; find_part boot) /tmp/bootrw && rm -f /tmp/bootrw/wifi.txt && umount /tmp/bootrw
+mount -t vfat /dev/$(. /usr/lib/arcadeos/common.sh; find_part arcadeos) /tmp/bootrw && rm -f /tmp/bootrw/wifi.txt && umount /tmp/bootrw
 /usr/lib/arcadeos/apply-config boot >/dev/null
 EOF
 check "$($S 'grep -c ^network= /run/arcadeos/wpa_supplicant.conf')" "0" "ohne wifi.txt kein Netz"

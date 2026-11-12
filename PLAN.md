@@ -228,6 +228,14 @@ Nächste Schritte (Entscheidung tbuuol): vollwertige Arcade auf OS-Ebene, eigene
 Image aber aus, bis der Besitzer eine Chain hinzufügt; standardmäßig nur der Basis-Node, Zusatz-Indizes
 optional; immer Self-Custody. Test-Hardware: tbuuols Server zu Hause.
 
+- **Plug and Play für Agenten (2026-11-12, fertig):** erster Live-Test auf tbuuols Server zeigte, dass die
+  Claude-App per SSH nur mit Handarbeit lief. Jetzt im Image: eigenes Laufwerk ARCADEOS (FAT, Basic
+  Data – Windows/Mac/Linux zeigen es sofort; die ESP „boot" verstecken sie) für `authorized_keys.txt`
+  und `wifi.txt`; `state` wächst beim ersten Start auf den ganzen Stick (sgdisk + resizepart + resize2fs);
+  `/root` = `/state/root`; Login-Shell bash; busybox mit stat/timeout/pgrep/…, wget mit HTTPS; zstd;
+  sftp-server; `libc.musl-x86_64.so.1` (Alpine-Name, Claude Code linux-x64-musl). Test
+  `tests/qemu-claude.sh` (54): Claude-App-Server und Claude Code laufen vom Stick und von der Platte.
+  Ergebnis vom ersten Live-Versuch: Claude Code braucht bash und AVX (jeder neuere PC).
 - **Universal-Stick:** eine FAT-Bootpartition kann gleichzeitig die Pi-Firmware (`config.txt`,
   arm64-Kernel) und `EFI/BOOT/BOOTX64.EFI` (x86-Kernel) enthalten – derselbe Stick bootet auf
   Pi und PC, jeder zieht sich seinen Teil. (Zu prüfen: Pi 5 / Pi 4 USB-Boot, UEFI mit MBR.)
