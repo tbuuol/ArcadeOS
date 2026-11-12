@@ -982,13 +982,15 @@ function renderMesh(m) {
   const avg = rtts.length ? rtts.reduce((a, b) => a + b, 0) / rtts.length : null;
   chevs.forEach((c, j) => c.classList.toggle('lit', ORDER.indexOf(j) < links.length));
   glyphEls.forEach(g => g.classList.remove('sel'));
+  // Wie eine Tor-Adresse: jedes Symbol hoechstens einmal (belegt -> das naechste freie)
+  const used = new Set(), glyphOf = links.map(l => { let g = hash(l.id) % 39; while (used.has(g)) g = (g + 1) % 39; used.add(g); return g; });
   slotEls.forEach((el2, i) => {
     const l = links[i];
-    if (l) { const g = hash(l.id) % 39; glyphEls[g].classList.add('sel'); el2.innerHTML = glyphSvg(g, 1.2) + `<span>${i + 1}</span>`; el2.classList.add('on'); el2.title = `${l.id} · ${l.transport} · ${l.rtt_ms != null ? l.rtt_ms + ' ms' : '–'} · seit ${dur(l.up_s)}`; }
+    if (l) { const g = glyphOf[i]; glyphEls[g].classList.add('sel'); el2.innerHTML = glyphSvg(g, 1.2) + `<span>${i + 1}</span>`; el2.classList.add('on'); el2.title = `${l.id} · ${l.transport} · ${l.rtt_ms != null ? l.rtt_ms + ' ms' : '–'} · seit ${dur(l.up_s)}`; }
     else { el2.classList.remove('on'); el2.innerHTML = `<span>${i + 1}</span>`; el2.title = ''; }
   });
   if (key !== shownLinks) {
-    if (links.length) { ringTarget = -(hash(links[links.length - 1].id) % 39) * 360 / 39 - 360; setRing(); }
+    if (links.length) { ringTarget = -glyphOf[glyphOf.length - 1] * 360 / 39 - 360; setRing(); }
     if (shownLinks !== '') {
       const before = shownLinks ? shownLinks.split(',') : [];
       for (const l of links) if (!before.includes(l.id)) addLog(`Verbindung zu ${l.id} (${l.transport}${l.rtt_ms != null ? ', ' + l.rtt_ms + ' ms' : ''})`, 'MESH', false);
