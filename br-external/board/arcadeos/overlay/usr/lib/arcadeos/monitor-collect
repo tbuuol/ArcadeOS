@@ -167,7 +167,7 @@ end
 
 local SERVICES = {
 	{ "SSH", "dropbear" }, { "Mesh", "meshd" }, { "Zeit (NTP)", "ntpd" }, { "WLAN", "wpa_supplicant" },
-	{ "Watchdog", "watchdog" }, { "Syslog", "syslogd" }, { "Cron", "crond" }, { "Webserver", "httpd" },
+	{ "Watchdog", "watchdog" }, { "Syslog", "syslogd" }, { "Cron", "crond" }, { "Webserver", "httpd" }, { "Web", "caddy" },
 }
 -- Chain-Knoten nur, wenn auf diesem Geraet eingerichtet (/etc/init.d/S65kotia, S66pepecoin): Name, Prozess,
 -- Startskript, RPC-Programm (fuer den Sync-Stand)

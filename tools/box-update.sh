@@ -59,11 +59,16 @@ mkdir -p "$W"; rm -rf "$W/root" "$W/rootfs.squashfs" "$W/base.img"
 dd if="/dev/$dev" of="$W/base.img" bs=1M 2>/dev/null
 /state/build/enter.sh unsquashfs -q -d /work/root /work/base.img >/dev/null
 rm -f "$W/base.img"
-# Dateien darueberlegen: Rechte wie in <dateien-dir>, Besitzer root
+# Dateien darueberlegen: Rechte wie in <dateien-dir>, Besitzer root; neue Verzeichnisse 755
+# (sonst erben sie die umask der SSH-Sitzung, 077, und nur root kaeme hinein)
+umask 022
 (cd "$FILES" && find . -type f) | while read -r f; do
 	install -D -m "$(stat -c %a "$FILES/$f")" "$FILES/$f" "$W/root/${f#./}"
 	echo "  + ${f#./}" >&2
 done
+# Verzeichnisse, die in <dateien-dir> 755 sind, auch im System 755 (repariert z.B. eins, das schon
+# mit 700 im Basis-Slot steckt); enger gestellt wird nie
+(cd "$FILES" && find . -mindepth 1 -type d -perm 755) | while read -r d; do [ -d "$W/root/${d#./}" ] && chmod 755 "$W/root/${d#./}"; done
 # Neuer Kernel: Module muessen zu ihm passen
 if [ -n "$KERNEL" ]; then
 	if [ -n "$MODULES" ]; then

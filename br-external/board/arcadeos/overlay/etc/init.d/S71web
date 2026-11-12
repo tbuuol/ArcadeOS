@@ -1,0 +1,28 @@
+#!/bin/sh
+#
+# Webserver (Caddy) fuer die Websites der Box, HTTPS mit Let's Encrypt. Laeuft als uid 1002.
+# Konfiguration /state/web/Caddyfile, Websites /state/web/sites/<domain>/.
+# Abschalten: Datei /state/web/disabled anlegen (dann bedient httpd die Monitor-Seite wieder auf Port 80).
+#
+
+start() {
+	printf "Starting web: "
+	if [ -f /state/web/disabled ]; then echo "abgeschaltet (/state/web/disabled)"; return 0; fi
+	rm -f /run/web.stop
+	start-stop-daemon -S -b -m -p /run/web-supervise.pid -x /usr/lib/arcadeos/web-supervise && echo "OK" || echo "FAIL"
+}
+
+stop() {
+	printf "Stopping web: "
+	touch /run/web.stop
+	start-stop-daemon -K -q -p /run/web-supervise.pid
+	killall -TERM caddy 2>/dev/null
+	for i in 1 2 3 4 5; do pidof caddy >/dev/null || break; sleep 1; done
+	echo "OK"
+}
+
+case "$1" in
+	start|stop) "$1";;
+	restart|reload) stop; start;;
+	*) echo "Usage: $0 {start|stop|restart|reload}"; exit 1;;
+esac

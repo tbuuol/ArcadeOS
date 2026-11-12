@@ -1,0 +1,46 @@
+#!/bin/sh
+# Haelt den Webserver (Caddy) am Laufen, als uid/gid 1002 mit nur CAP_NET_BIND_SERVICE (Ports 80/443).
+# Startet ihn neu, wenn sich /state/web/Caddyfile oder das IPv6-Praefix des LANs aendert; eine
+# fehlerhafte Caddyfile wird nicht uebernommen (der laufende Caddy bleibt). Aus: /state/web/disabled
+. /usr/lib/arcadeos/common.sh
+W=/state/web
+UID_WEB=1002
+CONF=$W/Caddyfile
+LAN=/run/web/lan.caddy
+export HOME=$W/caddy XDG_DATA_HOME=$W/caddy XDG_CONFIG_HOME=$W/caddy
+log() { logger -t web "$*"; }
+caddy_as() { /usr/lib/arcadeos/runas "$@"; }
+
+mkdir -p $W/sites /run/web
+[ -d $W/caddy ] || install -d -m 700 -o $UID_WEB -g $UID_WEB $W/caddy
+[ -s $CONF ] || install -m 644 /usr/share/arcadeos/web/Caddyfile $CONF
+
+lan_v6() { ip -6 addr show dev eth0 scope global 2>/dev/null | awk '/inet6/ && $2 !~ /^f[cd]/ {split($2,a,"/"); print a[1]; exit}' | awk -F: '{print $1":"$2":"$3":"$4"::/64"}'; }
+write_lan() { p=$(lan_v6); printf '@lan remote_ip private_ranges %s\n' "$p" > $LAN.new; chmod 644 $LAN.new; mv $LAN.new $LAN; }
+sig() { echo "$(stat -c %Y $CONF 2>/dev/null) $(cat $LAN 2>/dev/null)"; }
+valid() { caddy_as $UID_WEB $UID_WEB /usr/sbin/caddy validate --config $CONF --adapter caddyfile >/tmp/web-validate.log 2>&1; }
+
+child=""
+gone() { while kill -0 "$1" 2>/dev/null; do sleep 1; done; }
+trap '[ -n "$child" ] && { kill -TERM "$child" 2>/dev/null; gone "$child"; }; exit 0' TERM INT
+while :; do
+	write_lan
+	if ! valid; then
+		log "Caddyfile fehlerhaft, Caddy startet nicht: $(grep -m1 -i error /tmp/web-validate.log | cut -c1-200)"
+		sleep 60; continue
+	fi
+	caddy_as -b $UID_WEB $UID_WEB /usr/sbin/caddy run --config $CONF --adapter caddyfile 2>&1 | logger -t caddy &
+	sleep 1; child=$(pidof caddy)
+	echo "$child" > /run/web/caddy.pid
+	s=$(sig)
+	while kill -0 "$child" 2>/dev/null; do
+		sleep 30 & wait $!
+		write_lan
+		[ "$(sig)" = "$s" ] && continue
+		if valid; then log "Konfiguration/LAN-Praefix geaendert, Neustart"; kill -TERM "$child"; gone "$child"; break
+		else log "geaenderte Caddyfile fehlerhaft, die alte laeuft weiter"; s=$(sig); fi
+	done
+	child=""
+	[ -f /run/web.stop ] && exit 0
+	sleep 5
+done

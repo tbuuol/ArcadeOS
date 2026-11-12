@@ -3,6 +3,8 @@
 # Monitoring-Seite (nur lesen): monitor-collect schreibt /run/monitor/status.json, busybox httpd
 # liefert als nobody nur statische Dateien aus /usr/share/arcadeos/monitor aus (kein CGI).
 # Port: arcadeos-config monitor.port (Standard 80, 0 = aus) -> /run/arcadeos/monitor.port
+# Laeuft der Webserver (S71web, Caddy), lauscht httpd nur auf 127.0.0.1:8080; Caddy reicht ihn
+# auf Port 80 an Anfragen aus dem LAN weiter, von aussen ist er nicht erreichbar.
 #
 
 port() {
@@ -14,6 +16,7 @@ start() {
 	printf "Starting monitor: "
 	P=$(port)
 	if [ "$P" = 0 ]; then echo "aus (monitor.port=0)"; return 0; fi
+	[ -x /usr/sbin/caddy ] && [ ! -f /state/web/disabled ] && P=127.0.0.1:8080
 	# status.json muss fuer httpd (nobody) lesbar sein; aus einer SSH-Sitzung kaeme umask 077 mit
 	umask 022
 	start-stop-daemon -S -b -m -p /run/monitor-collect.pid -x /usr/lib/arcadeos/monitor-collect
