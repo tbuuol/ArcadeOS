@@ -1,0 +1,49 @@
+# Webserver der Box (Caddy) – Vorlage. Die echte Konfiguration ist /state/web/Caddyfile
+# (beim ersten Start von hier kopiert). Nach dem Bearbeiten: /etc/init.d/S71web restart
+# (die Datei wird vorher geprueft; ist sie fehlerhaft, laeuft die alte weiter).
+#
+# Websites:     /state/web/sites/<domain>/            (statische Dateien, root gehoert alles)
+# Zertifikate:  /state/web/caddy                      (Let's Encrypt, automatisch)
+# Neue Domain:  A-Record auf die Box (siehe /state/ddns/config), Block wie unten anlegen, restart.
+
+{
+	admin off
+	storage file_system /state/web/caddy
+}
+
+(site) {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		X-Frame-Options SAMEORIGIN
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+}
+
+liteworlds.quest {
+	import site
+	root * /state/web/sites/liteworlds.quest
+	file_server
+}
+
+# Alles andere auf Port 80 (Aufruf ueber IP oder Geraetenamen): die Monitor-Seite, nur aus dem LAN.
+# @lan (private Adressen + aktuelles IPv6-Praefix des LANs) schreibt S71web nach /run/web/lan.caddy.
+http:// {
+	import /run/web/lan.caddy
+	handle @lan {
+		# Arcade einrichten (arcadeos-admin, S67admin): Seite + API, nur aus dem LAN
+		redir /admin /admin/
+		handle /admin/api/* {
+			reverse_proxy 127.0.0.1:8090
+		}
+		handle_path /admin/* {
+			root * /usr/share/arcadeos/admin
+			header Cache-Control no-store
+			file_server
+		}
+		reverse_proxy 127.0.0.1:8080
+	}
+	respond 404
+}

@@ -38,6 +38,8 @@ pub const OUTBOUND_TARGET: usize = 6;
 pub const LISTEN_PORT: u16 = 8421;
 /// Eingehende Verbindungen hoechstens (wie die Arcades), laufende Handshakes mitgezaehlt
 pub const MAX_INBOUND: usize = 32;
+/// op/me alle 60 s (wie die Arcades: beim Verbindungsaufbau und einmal pro Minute)
+const ABOUT_EVERY: Duration = Duration::from_secs(60);
 pub const PING_EVERY: Duration = Duration::from_secs(15);
 pub const DEAD_AFTER: Duration = Duration::from_secs(45);
 const DIAL_EVERY: Duration = Duration::from_secs(1);
@@ -65,6 +67,9 @@ pub struct Config {
     /// TCP-Port fuer eingehende Verbindungen; None = nur ausgehend
     pub listen: Option<u16>,
     pub max_inbound: usize,
+    /// Wer diese Arcade betreibt (op/me-Rahmen wie die Arcades, dogecoin-arcade mesh/operators.py):
+    /// JSON {tag, name, version, owner}, geschrieben von arcadeos-admin; fehlt sie, sagt meshd nichts
+    pub about_file: Option<PathBuf>,
 }
 
 fn now_unix() -> f64 {
@@ -427,6 +432,14 @@ impl Node {
         self.run_link(lk, addr, peer, false).await;
     }
 
+    /// op/me-Rahmen aus about.json: nur Felder in der Form, die die Arcades annehmen (said_tag: 2-24 a-z0-9_,
+    /// name bis 60 Zeichen, owner {a, x, s}); ohne Datei oder ohne Inhalt nichts.
+    fn about_frame(&self) -> Option<Value> {
+        let path = self.cfg.about_file.as_ref()?;
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+        Some(about_to_frame(&v))
+    }
+
     /// Port, den wir im AUTH nennen: nur, wenn wir wirklich lauschen
     fn announced_port(&self) -> Option<u16> {
         let st = self.st.lock().unwrap();
@@ -560,6 +573,18 @@ impl Node {
                 }
             }
         });
+        // Wer betreibt diese Arcade (op/me): gleich und dann jede Minute, aus about.json (frisch gelesen)
+        let (n2, t3) = (self.clone(), out_tx.clone());
+        let teller = tokio::spawn(async move {
+            loop {
+                if let Some(f) = n2.about_frame() {
+                    if t3.send(f).is_err() {
+                        break;
+                    }
+                }
+                sleep(ABOUT_EVERY).await;
+            }
+        });
         // Pinger: nach 1 s, dann alle 15 s
         let pings: Arc<Mutex<HashMap<String, Instant>>> = Arc::new(Mutex::new(HashMap::new()));
         let (p2, t2) = (pings.clone(), out_tx.clone());
@@ -672,6 +697,7 @@ impl Node {
             }
         }
         pinger.abort();
+        teller.abort();
         writer.abort();
         let gone = self.st.lock().unwrap().links.remove(&peer);
         if let Some(l) = gone {
@@ -751,6 +777,29 @@ impl Node {
     }
 }
 
+/// op/me-Rahmen aus dem Inhalt von about.json
+fn about_to_frame(v: &Value) -> Value {
+    let mut f = json!({"t": "op", "op": "me"});
+    let tag = v["tag"].as_str().unwrap_or("");
+    if (2..=24).contains(&tag.len()) && tag.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_') {
+        f["tag"] = json!(tag);
+    }
+    let name: String = v["name"].as_str().unwrap_or("").chars().filter(|c| !c.is_control()).take(60).collect();
+    if !name.is_empty() {
+        f["name"] = json!(name);
+    }
+    let ver: String = v["version"].as_str().unwrap_or("").chars().take(40).collect();
+    if !ver.is_empty() {
+        f["version"] = json!(ver);
+    }
+    f["hosts"] = json!([]);
+    let o = &v["owner"];
+    if o["a"].is_string() && o["x"].is_u64() && o["s"].is_string() {
+        f["owner"] = json!({"a": o["a"], "x": o["x"], "s": o["s"]});
+    }
+    f
+}
+
 /// Kopf einer Nachricht fuer das Log, auf 300 Zeichen gekuerzt (Signaturen/Keys bleiben drin: oeffentlich)
 fn body_preview(h: &Option<Value>) -> Option<String> {
     h.as_ref().map(|v| v.to_string().chars().take(300).collect())
@@ -783,6 +832,20 @@ mod tests {
     }
 
     #[test]
+    fn about_frame_like_the_arcades() {
+        let f = about_to_frame(&json!({"tag": "liteworlds", "name": "LiteWorlds Arcade", "version": "ArcadeOS x",
+            "owner": {"a": "nZVm", "x": 1800000000u64, "s": "sig"}}));
+        assert_eq!(f["t"], "op");
+        assert_eq!(f["op"], "me");
+        assert_eq!(f["tag"], "liteworlds");
+        assert_eq!(f["name"], "LiteWorlds Arcade");
+        assert_eq!(f["owner"]["x"], 1800000000u64);
+        // falsche Form wird weggelassen, nicht weitergegeben
+        let g = about_to_frame(&json!({"tag": "Bad-Tag", "owner": {"a": 1}}));
+        assert!(g.get("tag").is_none() && g.get("owner").is_none() && g.get("name").is_none());
+    }
+
+    #[test]
     fn mapped_ipv4_is_plain_ipv4() {
         assert_eq!(canonical_ip("::ffff:207.244.232.43".parse().unwrap()).to_string(), "207.244.232.43");
         assert_eq!(canonical_ip("2605::1".parse().unwrap()).to_string(), "2605::1");
@@ -802,6 +865,7 @@ mod tests {
             outbound: OUTBOUND_TARGET,
             listen: Some(LISTEN_PORT),
             max_inbound,
+            about_file: None,
         };
         (Node::new(cfg).unwrap(), dir)
     }

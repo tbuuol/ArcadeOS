@@ -199,6 +199,34 @@ glibc-Lader aus `/state/glibc` auf (libc6, libstdc++6, libgcc-s1 aus Debian), al
 Für Pepecoin dieselbe Version, Prüfsumme, Signatur und Konfiguration wie der Arcade-Installer
 (`dogecoin-arcade/installer/install.py`: v1.1.0, `testnet=1`, `txindex=1`, RPC lokal mit Cookie, ZMQ 28432…).
 
+## Webserver (optional)
+
+`S71web` betreibt Caddy (`/usr/sbin/caddy`) über `web-supervise` als eigener Nutzer (1002) mit nur
+`CAP_NET_BIND_SERVICE` (`/usr/lib/arcadeos/runas -b`, Quelle `tools/runas.c`). Konfiguration `/state/web/Caddyfile`
+(beim ersten Start aus `/usr/share/arcadeos/web/Caddyfile`), Websites unter `/state/web/sites/<domain>/`, Zertifikate
+automatisch (Let's Encrypt) in `/state/web/caddy`. Die Monitoring-Seite und `/admin/` gibt Caddy auf Port 80 nur an
+Anfragen aus dem LAN weiter (`@lan`: private Adressen und das aktuelle IPv6-Präfix, `/run/web/lan.caddy`); httpd
+lauscht dann nur auf 127.0.0.1:8080. Abschalten: `touch /state/web/disabled`.
+
+## Arcade einrichten (Admin)
+
+`http://<gerät>/admin/` (nur aus dem LAN): Betreiber-Konto anlegen, Testnet-PEP auf die angezeigte Adresse, @name
+beanspruchen, fertig. Wie in den Arcades (dogecoin-arcade) bleiben die Schlüssel beim Betreiber: die 12 Wörter
+entstehen im Browser (BIP39, `m/44'/1'/0'/0/0` – dasselbe Konto wie in den Arcade-Wallets) und werden nur dort,
+mit einem Passwort verschlüsselt, abgelegt. Das Gerät kennt nur öffentlichen Schlüssel und Adresse.
+
+- `arcadeos-admin` (Quelle `admin/`, Dienst `S67admin`, nur 127.0.0.1:8090) nimmt den Betreiber einmal an (Signatur
+  über eine Zufallszahl), beobachtet seine Adresse im Pepecoin-Testnet-Knoten, führt den @name-Index aus der eigenen
+  Chain (Regeln wie die Arcades, ab Block 1.496.133), baut die unsignierte Claim-Transaktion und sendet nur genau
+  diese, wenn sie signiert zurückkommt. Eingerichtet über `/state/arcade/config` (`DATADIR=<Testnet-Datenverzeichnis>`).
+- Claim: `OP_RETURN "arcd"` + Omni-AnyData + `INSC 01 03 <länge> <name>`; Absender = erster Input.
+- Den Besitz-Nachweis (`arcade-owner`, wie `dogecoin-arcade/arcade/owner.py`) signiert der Browser. `meshd` sagt
+  den anderen Arcades per `op/me` (beim Verbindungsaufbau und jede Minute) @name, Arcade-Name, Version und
+  Nachweis – aus `/state/arcade/about.json`; dort steht der @name nur, wenn er laut Chain dem Betreiber gehört.
+- Browser-Kryptografie: `admin/web/static/crypto.js`, gebündelt aus `@noble/*` und `@scure/*` (MIT, Quelle
+  `admin/web/src/crypto.js`); geprüft gegen BIP44-Testvektoren und Pepecoin Core (`verifymessage`,
+  `signrawtransaction` byte-gleich).
+
 ## Monitoring-Seite
 
 Jedes Gerät zeigt unter `http://<IP>/` live, was los ist (Syfy-UI, Themes Atlantis/OASIS):

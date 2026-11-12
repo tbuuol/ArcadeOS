@@ -1,0 +1,21 @@
+#!/bin/sh
+# Haelt arcadeos-admin am Laufen (Neustart nach 10 s), als Besitzer des Knoten-Datenverzeichnisses aus
+# /state/arcade/config (DATADIR=...). Meldungen ins Syslog (logger -t admin).
+. /usr/lib/arcadeos/common.sh
+CONF=/state/arcade/config
+DATADIR=$(sed -n 's/^DATADIR=//p' $CONF 2>/dev/null)
+[ -d "$DATADIR" ] || { logger -t admin "DATADIR fehlt in $CONF"; exit 1; }
+U=$(stat -c %u "$DATADIR"); G=$(stat -c %g "$DATADIR")
+[ "$U" -gt 0 ] || { logger -t admin "$DATADIR gehoert root - der Dienst laeuft nicht als root"; exit 1; }
+install -d -m 750 -o "$U" -g "$G" /state/arcade
+export ADMIN_COOKIE="$DATADIR/testnet3/.cookie"
+child=""
+trap '[ -n "$child" ] && kill -TERM "$child" 2>/dev/null; exit 0' TERM INT
+while :; do
+	/usr/lib/arcadeos/runas "$U" "$G" /usr/sbin/arcadeos-admin 2>&1 | logger -t admin &
+	child=$!
+	wait "$child"
+	child=""
+	[ -f /run/admin.stop ] && exit 0
+	sleep 10
+done

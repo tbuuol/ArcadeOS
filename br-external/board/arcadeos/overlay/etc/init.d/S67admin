@@ -1,0 +1,31 @@
+#!/bin/sh
+#
+# Arcade einrichten (arcadeos-admin): Betreiber-Konto, @name auf Pepecoin-Testnet, Besitz-Nachweis.
+# Seite unter http://<box>/admin/ (Caddy, nur LAN), Dienst nur auf 127.0.0.1:8090.
+# Laeuft nur, wenn eingerichtet: /state/arcade/config mit DATADIR=<Datenverzeichnis des Pepecoin-Testnet-Knotens>;
+# laeuft als Besitzer dieses Verzeichnisses (liest das RPC-Cookie des Knotens). Abschalten: /state/arcade/disabled.
+#
+
+CONF=/state/arcade/config
+
+start() {
+	printf "Starting admin: "
+	[ -f $CONF ] || { echo "nicht eingerichtet ($CONF)"; return 0; }
+	[ -f /state/arcade/disabled ] && { echo "abgeschaltet (/state/arcade/disabled)"; return 0; }
+	start-stop-daemon -S -b -m -p /run/admin-supervise.pid -x /usr/lib/arcadeos/admin-supervise && echo "OK" || echo "FAIL"
+}
+
+stop() {
+	printf "Stopping admin: "
+	touch /run/admin.stop
+	start-stop-daemon -K -q -p /run/admin-supervise.pid
+	killall arcadeos-admin 2>/dev/null
+	rm -f /run/admin.stop
+	echo "OK"
+}
+
+case "$1" in
+	start|stop) "$1";;
+	restart|reload) stop; start;;
+	*) echo "Usage: $0 {start|stop|restart|reload}"; exit 1;;
+esac

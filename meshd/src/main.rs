@@ -166,6 +166,8 @@ fn cmd_run(args: Vec<String>) {
     }
     dlog::init(state.join("debug.log"));
     let listen = listen_port(listen_arg, &state.join("listen"));
+    // Wer diese Arcade betreibt: von arcadeos-admin (Einrichtung unter http://<box>/admin/)
+    let about = std::path::PathBuf::from(std::env::var("MESHD_ABOUT").unwrap_or_else(|_| "/state/arcade/about.json".into()));
     let cfg = node::Config {
         net,
         key_file: state.join("key"),
@@ -175,6 +177,7 @@ fn cmd_run(args: Vec<String>) {
         outbound,
         listen,
         max_inbound: node::MAX_INBOUND,
+        about_file: Some(about),
     };
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
     rt.block_on(async {

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>ArcadeOS · Arcade einrichten</title>
+<style>
+:root { --bg:#04121c; --panel:#0a2233; --line:#1d4560; --text:#d8f3ff; --muted:#7fa6bd; --pri:#4fd8ff; --acc:#ffb547; --ok:#54f2a6; --warn:#ff6b5a;
+  --mono:ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; }
+* { box-sizing:border-box; }
+body { margin:0; background:radial-gradient(ellipse at top, #0b2a40, var(--bg) 60%); color:var(--text); font:15px/1.5 system-ui, sans-serif; min-height:100vh; }
+main { max-width:640px; margin:0 auto; padding:24px 16px 60px; }
+h1 { font-size:1.35rem; letter-spacing:.06em; margin:0 0 4px; } h1 em { color:var(--pri); font-style:normal; }
+.lead { color:var(--muted); margin:0 0 18px; }
+.steps { display:grid; grid-template-columns:repeat(4, 1fr); gap:6px; list-style:none; padding:0; margin:0 0 18px; }
+.steps li { font-size:.78rem; color:var(--muted); border-top:4px solid var(--line); padding-top:5px; }
+.steps li.done { border-color:var(--ok); color:var(--ok); } .steps li.now { border-color:var(--pri); color:var(--text); font-weight:600; }
+.box { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; margin:0 0 14px; }
+.box h2 { font-size:1.05rem; margin:0 0 8px; }
+p { margin:6px 0; } .muted { color:var(--muted); font-size:.88rem; }
+.words { display:grid; grid-template-columns:repeat(3, 1fr); gap:6px; margin:10px 0; counter-reset:w; }
+.words span { background:#06192a; border:1px solid var(--line); border-radius:8px; padding:6px 8px; font-family:var(--mono); counter-increment:w; }
+.words span::before { content:counter(w) ". "; color:var(--muted); }
+input, textarea { width:100%; background:#06192a; color:var(--text); border:1px solid var(--line); border-radius:8px; padding:9px 10px; font:inherit; }
+textarea { font-family:var(--mono); min-height:80px; }
+input:focus, textarea:focus { outline:2px solid var(--pri); border-color:transparent; }
+label { display:block; font-size:.85rem; color:var(--muted); margin:10px 0 4px; }
+.row { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+button { background:var(--pri); color:#032; border:0; border-radius:8px; padding:10px 16px; font:inherit; font-weight:600; cursor:pointer; }
+button.alt { background:transparent; color:var(--pri); border:1px solid var(--pri); }
+button:disabled { opacity:.45; cursor:not-allowed; }
+.addr { font-family:var(--mono); word-break:break-all; background:#06192a; border:1px dashed var(--pri); border-radius:8px; padding:8px 10px; }
+.msg { margin-top:10px; font-size:.9rem; } .msg.err { color:var(--warn); } .msg.ok { color:var(--ok); } .msg.wait { color:var(--acc); }
+.kv { display:grid; grid-template-columns:auto 1fr; gap:4px 14px; font-size:.9rem; } .kv b { color:var(--muted); font-weight:500; } .kv span { font-family:var(--mono); word-break:break-all; }
+.big { font-size:1.6rem; font-weight:700; color:var(--ok); }
+.warnbox { border-color:var(--acc); } .warnbox h2 { color:var(--acc); }
+.bar { height:6px; background:var(--line); border-radius:9px; overflow:hidden; margin:6px 0; } .bar i { display:block; height:100%; background:var(--pri); }
+</style>
+</head>
+<body>
+<main>
+  <h1>ArcadeOS · <em>Arcade einrichten</em></h1>
+  <p class="lead">Dein Admin-Konto, dein @name, und die anderen Arcades sehen, wer diese Arcade betreibt.</p>
+  <ol class="steps" id="steps"><li>1 · Admin-Konto</li><li>2 · Guthaben</li><li>3 · @name</li><li>4 · Fertig</li></ol>
+  <div id="view"><div class="box"><p class="muted">Lade …</p></div></div>
+  <p class="muted" id="foot"></p>
+</main>
+<script type="module" src="app.js"></script>
+</body>
+</html>
