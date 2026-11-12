@@ -2,14 +2,28 @@
 # Haelt meshd am Laufen: nach einem Absturz Neustart nach 5 s. Kurze Meldungen (stderr) gehen ins
 # Syslog, ausfuehrlich schreibt meshd selbst nach /state/mesh/debug.log.
 # SIGTERM (vom Init-Skript): meshd sauber beenden (speichert sein Adressbuch), dann selbst enden.
+#
+# meshd ist aus dem Internet erreichbar (Port 8421) und laeuft deshalb NICHT als root, sondern als uid 1004
+# ohne jede Capability (8421 > 1024) und mit no_new_privs. Ihm gehoert nur /state/mesh (Schluessel,
+# Adressbuch, Log) und /run/meshd/ (Status; /run/meshd.json ist ein Link dorthin). Gruppe 1001, damit er
+# /state/arcade/about.json von arcadeos-admin lesen kann (Ordner 750, Gruppe 1001) - mehr gibt die Gruppe nicht her.
 
+MESH_UID=1004
+MESH_GID=1001
 child=""
-trap '[ -n "$child" ] && kill -TERM "$child" 2>/dev/null; wait "$child" 2>/dev/null; exit 0' TERM INT
+gone() { while kill -0 "$1" 2>/dev/null; do sleep 1; done; }
+trap '[ -n "$child" ] && { kill -TERM "$child" 2>/dev/null; gone "$child"; }; exit 0' TERM INT
 FIFO=/run/meshd.log
 while :; do
+	# Zustand gehoert meshd (auch nach dem Umstieg von root oder wenn root dort etwas angelegt hat)
+	mkdir -p /state/mesh
+	chown -R $MESH_UID:$MESH_GID /state/mesh
+	chmod 750 /state/mesh
+	install -d -m 755 -o $MESH_UID -g $MESH_GID /run/meshd
+	ln -sfn meshd/status.json /run/meshd.json
 	[ -p $FIFO ] || { rm -f $FIFO; mkfifo -m 600 $FIFO; }
 	logger -t meshd < $FIFO &
-	/usr/sbin/meshd run > /dev/null 2> $FIFO &
+	/usr/lib/arcadeos/runas $MESH_UID $MESH_GID /usr/sbin/meshd run --status /run/meshd/status.json > /dev/null 2> $FIFO &
 	child=$!
 	echo "$child" > /run/meshd.pid
 	wait "$child"

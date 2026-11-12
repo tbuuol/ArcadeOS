@@ -29,7 +29,7 @@ check() {
 	if [ ! -f /state/mesh/disabled ]; then
 		pidof meshd >/dev/null || { echo "meshd laeuft nicht"; return 1; }
 		[ -f /run/meshd.json ] || { echo "kein meshd-Status"; return 1; }
-		age=$(( $(date +%s) - $(stat -c %Y /run/meshd.json) ))
+		age=$(( $(date +%s) - $(stat -L -c %Y /run/meshd.json) ))
 		[ "$age" -le 30 ] || { echo "meshd-Status veraltet (${age}s)"; return 1; }
 		if ip route 2>/dev/null | grep -q '^default'; then
 			grep -q '"links":\[{' /run/meshd.json || { echo "meshd ohne Verbindung"; return 1; }
