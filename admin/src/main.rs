@@ -22,6 +22,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::Engine;
 
 mod public;
+mod utxo;
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use ripemd::Ripemd160;
 use serde_json::{json, Value};
@@ -190,11 +191,19 @@ fn op_return_data(spk: &[u8]) -> Option<Vec<u8>> {
 
 // ------------------------------------------------------------------ RPC zum Pepecoin-Knoten
 fn rpc(cfg: &Cfg, method: &str, params: Value) -> Result<Value, String> {
+    let v = rpc_post(cfg, &json!({"jsonrpc": "1.0", "id": "admin", "method": method, "params": params}).to_string())?;
+    if !v["error"].is_null() {
+        return Err(format!("{}", v["error"]["message"].as_str().unwrap_or("RPC-Fehler")));
+    }
+    Ok(v["result"].clone())
+}
+
+/// Rohe JSON-RPC-Anfrage (einzeln oder als Batch-Liste)
+fn rpc_post(cfg: &Cfg, body: &str) -> Result<Value, String> {
     let cookie = std::fs::read_to_string(&cfg.cookie).map_err(|e| format!("RPC-Cookie: {e} (laeuft pepecoind?)"))?;
     let auth = base64::engine::general_purpose::STANDARD.encode(cookie.trim());
-    let body = json!({"jsonrpc": "1.0", "id": "admin", "method": method, "params": params}).to_string();
     let mut s = TcpStream::connect(&cfg.rpc).map_err(|e| format!("RPC: {e}"))?;
-    s.set_read_timeout(Some(Duration::from_secs(60))).ok();
+    s.set_read_timeout(Some(Duration::from_secs(120))).ok();
     write!(
         s,
         "POST / HTTP/1.1\r\nHost: {}\r\nAuthorization: Basic {auth}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -204,13 +213,8 @@ fn rpc(cfg: &Cfg, method: &str, params: Value) -> Result<Value, String> {
     .map_err(|e| format!("RPC: {e}"))?;
     let mut resp = Vec::new();
     s.read_to_end(&mut resp).map_err(|e| format!("RPC: {e}"))?;
-    let text = String::from_utf8_lossy(&resp);
-    let json_part = text.split_once("\r\n\r\n").map(|x| x.1).unwrap_or("");
-    let v: Value = serde_json::from_str(json_part).map_err(|_| format!("RPC: keine Antwort ({})", text.lines().next().unwrap_or("")))?;
-    if !v["error"].is_null() {
-        return Err(format!("{}", v["error"]["message"].as_str().unwrap_or("RPC-Fehler")));
-    }
-    Ok(v["result"].clone())
+    let at = resp.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4).unwrap_or(resp.len());
+    serde_json::from_slice(&resp[at..]).map_err(|_| format!("RPC: keine Antwort ({})", String::from_utf8_lossy(&resp[..at.min(80)]).lines().next().unwrap_or("")))
 }
 
 // ------------------------------------------------------------------ Zustand
@@ -276,6 +280,7 @@ struct App {
     admin: Mutex<Value>, // admin.json: operator, name, pending
     nonces: Mutex<HashMap<String, u64>>,
     offers: Mutex<HashMap<String, (String, Value, String)>>, // offer id -> (tag, unsigned tx, Adresse)
+    utxo: Mutex<utxo::Utxo>,
 }
 
 impl App {
@@ -500,10 +505,6 @@ fn setup(app: &App, b: &Value) -> Resp {
     if !verify_message(sig, &format!("arcadeos-admin\n{node}\n{nonce}"), address) {
         return err(400, "Signatur passt nicht");
     }
-    // Adresse beobachten (neu, also ohne Rescan)
-    if let Err(e) = rpc(&app.cfg, "importaddress", json!([address, "arcadeos-admin", false])) {
-        return err(502, format!("pepecoind: {e}"));
-    }
     let mut admin = app.admin.lock().unwrap();
     admin["operator"] = json!({"pubkey": pubkey, "address": address, "since": now()});
     let name = b["name"].as_str().map(clean_name).unwrap_or_default();
@@ -520,8 +521,7 @@ fn clean_name(s: &str) -> String {
 }
 
 fn utxos(app: &App, addr: &str) -> Result<Vec<Value>, String> {
-    let v = rpc(&app.cfg, "listunspent", json!([0, 9_999_999, [addr]]))?;
-    Ok(v.as_array().cloned().unwrap_or_default())
+    utxo::coins(app, addr)
 }
 
 fn sats(v: &Value) -> u64 {
@@ -533,8 +533,8 @@ fn balance(app: &App) -> Resp {
     let Some(addr) = app.operator_addr() else { return err(409, "noch kein Betreiber") };
     match utxos(app, &addr) {
         Ok(u) => {
-            let conf: u64 = u.iter().filter(|x| x["confirmations"].as_u64().unwrap_or(0) > 0).map(|x| sats(&x["amount"])).sum();
-            let unconf: u64 = u.iter().filter(|x| x["confirmations"].as_u64().unwrap_or(0) == 0).map(|x| sats(&x["amount"])).sum();
+            let conf: u64 = u.iter().filter(|x| x["confirmations"].as_u64().unwrap_or(0) > 0).map(|x| x["sats"].as_u64().unwrap_or(0)).sum();
+            let unconf: u64 = u.iter().filter(|x| x["confirmations"].as_u64().unwrap_or(0) == 0).map(|x| x["sats"].as_u64().unwrap_or(0)).sum();
             (200, json!({"address": addr, "confirmed": conf, "unconfirmed": unconf, "coins": u.len()}))
         }
         Err(e) => err(502, e),
@@ -582,7 +582,7 @@ fn build_claim(app: &App, addr: &str, want: &str) -> Result<Value, (u16, String)
     }
     let tag = check["tag"].as_str().unwrap().to_string();
     let mut coins = utxos(app, addr).map_err(|e| (502, e))?;
-    coins.sort_by_key(|c| std::cmp::Reverse(sats(&c["amount"])));
+    coins.sort_by_key(|c| std::cmp::Reverse(c["sats"].as_u64().unwrap_or(0)));
     let data = tag_data(&tag, KIND_CLAIM);
     let op_return = format!("6a{:02x}{}", data.len(), hex::encode(&data));
     let a = bs58::decode(addr).into_vec().unwrap_or_default();
@@ -599,8 +599,8 @@ fn build_claim(app: &App, addr: &str, want: &str) -> Result<Value, (u16, String)
         if c["scriptPubKey"].as_str() != Some(mine.as_str()) {
             continue;
         }
-        inputs.push(json!({"txid": c["txid"], "vout": c["vout"], "script": mine, "amount": sats(&c["amount"])}));
-        total += sats(&c["amount"]);
+        inputs.push(json!({"txid": c["txid"], "vout": c["vout"], "script": mine, "amount": c["sats"].as_u64().unwrap_or(0)}));
+        total += c["sats"].as_u64().unwrap_or(0);
         let size = 10 + inputs.len() as u64 * 148 + (9 + 2 + data.len() as u64) + 34;
         fee = size.div_ceil(1000) * MIN_FEE_PER_KB;
         if total >= fee + DUST {
@@ -732,10 +732,12 @@ fn main() {
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_else(|| json!({"operator": null, "name": "", "pending": null, "owner": null}));
     let index = Index::load(&cfg.state.join("tags.json"));
-    let app = Arc::new(App { cfg, index: Mutex::new(index), admin: Mutex::new(admin), nonces: Default::default(), offers: Default::default() });
+    let app = Arc::new(App { cfg, index: Mutex::new(index), admin: Mutex::new(admin), nonces: Default::default(), offers: Default::default(), utxo: Default::default() });
     app.write_about();
     let a = app.clone();
     std::thread::spawn(move || indexer(a));
+    let a = app.clone();
+    std::thread::spawn(move || utxo::run(a));
     // Oeffentlicher Teil (Konten der Nutzer), eigener Port; Caddy reicht ihn ins Internet
     let a = app.clone();
     let public_listen = env("ADMIN_PUBLIC_LISTEN", "127.0.0.1:8091");

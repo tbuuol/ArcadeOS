@@ -230,9 +230,6 @@ fn signup(app: &App, p: &Pub, r: &Req) -> Out {
     if p.by_tag(&tag).is_some() || p.accounts.lock().unwrap().get(pk).is_some() {
         return bad(409, "Dieses Konto oder dieser Name ist hier schon angelegt - bitte anmelden.");
     }
-    if let Err(e) = rpc(&app.cfg, "importaddress", json!([addr, "arcade-user", false])) {
-        return bad(502, format!("Knoten: {e}"));
-    }
     p.accounts.lock().unwrap()[pk] = json!({"tag": tag, "address": addr, "coinpub": coinpub, "blob": b["blob"],
         "made": now(), "source": "here", "faucet": null, "pending": null});
     p.save(app);
@@ -263,7 +260,6 @@ fn login(app: &App, p: &Pub, r: &Req) -> Out {
         if holder.as_deref().map(|h| h != addr).unwrap_or(false) || p.by_tag(&tag).is_some() {
             return bad(409, "Der Name gehoert laut Chain jemand anderem.");
         }
-        let _ = rpc(&app.cfg, "importaddress", json!([addr, "arcade-user", false]));
         p.accounts.lock().unwrap()[pk] = json!({"tag": tag, "address": addr, "coinpub": null, "blob": w["blob"],
             "made": now(), "source": w["from"], "faucet": null, "pending": null});
         p.save(app);
@@ -279,8 +275,8 @@ fn me(app: &App, p: &Pub, pk: &str) -> Out {
     let held = app.index.lock().unwrap().by_addr.get(&addr).cloned();
     let (conf, unconf) = match utxos(app, &addr) {
         Ok(u) => (
-            u.iter().filter(|x| x["confirmations"].as_u64().unwrap_or(0) > 0).map(|x| sats(&x["amount"])).sum::<u64>(),
-            u.iter().filter(|x| x["confirmations"].as_u64().unwrap_or(0) == 0).map(|x| sats(&x["amount"])).sum::<u64>(),
+            u.iter().filter(|x| x["confirmations"].as_u64().unwrap_or(0) > 0).map(|x| x["sats"].as_u64().unwrap_or(0)).sum::<u64>(),
+            u.iter().filter(|x| x["confirmations"].as_u64().unwrap_or(0) == 0).map(|x| x["sats"].as_u64().unwrap_or(0)).sum::<u64>(),
         ),
         Err(_) => (0, 0),
     };
