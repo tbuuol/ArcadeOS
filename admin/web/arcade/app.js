@@ -1,7 +1,7 @@
 // Atlantis · Arcade (ArcadeOS). Konten wie in den Arcades: 12 Woerter, im Browser mit dem Passwort verschluesselt;
 // die Box bewahrt nur dieses verschluesselte Wallet unter dem @name auf und kann es nicht oeffnen. Anmelden mit
 // @name + Passwort, auch fuer Konten anderer Arcades (die Box holt das Wallet dort, wenn sie es nicht hat).
-import * as C from './crypto.js?v=4';
+import * as C from './crypto.js?v=5';
 
 const $ = (s) => document.querySelector(s);
 const view = $('#view');
@@ -263,7 +263,26 @@ function msgKey(me) {
   } catch { return null; }
 }
 function forgetKeys() { try { Object.keys(localStorage).filter((k) => k.startsWith('arcade-msgkey:')).forEach((k) => localStorage.removeItem(k)); } catch { /* egal */ } }
-const sentList = (a) => { try { return JSON.parse(localStorage.getItem(sentKey(a)) || '[]'); } catch { return []; } };
+// Gesendetes: Kopie im Speicher (Sitzung), in localStorage (wenn der Browser es erlaubt) und versiegelt an den eigenen
+// Schluessel auf der Box (jeder Browser, jedes Geraet) - zusammengefuehrt nach txid
+const sentMem = [], sentSrv = new Map();
+let sentLoaded = false;
+const sentLocal = (a) => { try { return JSON.parse(localStorage.getItem(sentKey(a)) || '[]'); } catch { return []; } };
+function sentList(a) {
+  const all = new Map();
+  for (const m of [...sentSrv.values(), ...sentLocal(a), ...sentMem]) all.set(m.txid, m);
+  return [...all.values()];
+}
+async function loadSent(mk) {
+  if (sentLoaded) return;
+  try {
+    const r = await api('/api/sent');
+    for (const x of r.sent || []) {
+      try { const m = JSON.parse(new TextDecoder().decode(C.boxSealOpen(C.hexToBytes(x.box), mk.secret, C.hexToBytes(mk.pubkey)))); sentSrv.set(x.txid, { ...m, txid: x.txid }); } catch { /* fremd/kaputt */ }
+    }
+    sentLoaded = true;
+  } catch { /* spaeter nochmal */ }
+}
 const who = (pub) => { const k = inbox.keys[pub]; return k ? (k.tag ? `@${k.tag}` : (k.name || `${k.address.slice(0, 10)}…`)) : `unbekannt (${pub.slice(0, 8)})`; };
 
 async function messenger(me, bal) {
@@ -312,8 +331,11 @@ async function messenger(me, bal) {
       const offer = await api('/api/message', { payload, coinpub: acct.pub });
       const r = await signAndSend(box, offer, `Nachricht an @${k.tag || to} senden?`);
       if (!r) return;
-      const list = sentList(me.address); list.push({ to: k.tag || to, text, txid: r.txid, at: Date.now() });
-      try { localStorage.setItem(sentKey(me.address), JSON.stringify(list.slice(-200))); } catch { /* egal */ }
+      const entry = { to: k.tag || to, text, txid: r.txid, at: Date.now() };
+      sentMem.push(entry);
+      try { const l = sentLocal(me.address); l.push(entry); localStorage.setItem(sentKey(me.address), JSON.stringify(l.slice(-200))); } catch { /* Browser speichert nichts */ }
+      const sealed = C.boxSeal(new TextEncoder().encode(JSON.stringify({ to: entry.to, text, at: entry.at })), C.hexToBytes(acct.msg.pubkey));
+      api('/api/sent', { txid: r.txid, box: C.bytesToHex(sealed) }).catch(() => {});
       $('#tx').value = ''; draft.tx = '';
       msg(box, 'Gesendet – kommt mit dem nächsten Block an.', 'ok');
       showList(me);
@@ -326,6 +348,7 @@ async function messenger(me, bal) {
 async function pollMsgs(me, draw = false) {
   const mk = msgKey(me);
   if (!mk || !$('#list')) return;
+  if (!sentLoaded) { await loadSent(mk); draw = true; }
   try {
     const r = await api(`/api/msgs?from=${inbox.next}`);
     for (const k of r.keys) inbox.keys[k.pubkey] = k;

@@ -483,6 +483,30 @@ fn message(app: &App, p: &Pub, pk: &str, b: &Value) -> Out {
     }
 }
 
+/// Eigene Kopien gesendeter Nachrichten: im Browser an den EIGENEN Messenger-Schluessel versiegelt, die Box
+/// bewahrt sie nur auf (kann sie nicht lesen). So sieht man Gesendetes in jedem Browser, ohne localStorage.
+fn sent_list(p: &Pub, pk: &str) -> Out {
+    let a = p.accounts.lock().unwrap();
+    ok(json!({"sent": a[pk]["sent"].as_array().cloned().unwrap_or_default()}))
+}
+
+fn sent_add(app: &App, p: &Pub, pk: &str, b: &Value) -> Out {
+    let (Some(txid), Some(boxed)) = (b["txid"].as_str(), b["box"].as_str()) else { return bad(400, "txid und box fehlen") };
+    if !is_hex(txid, 64) || boxed.len() > 20_000 || hex::decode(boxed).is_err() {
+        return bad(400, "Kopie nicht im erwarteten Format");
+    }
+    {
+        let mut a = p.accounts.lock().unwrap();
+        let list = a[pk]["sent"].as_array().cloned().unwrap_or_default();
+        let mut list: Vec<Value> = list.into_iter().filter(|x| x["txid"] != txid).collect();
+        list.push(json!({"txid": txid, "at": now(), "box": boxed}));
+        let n = list.len();
+        a[pk]["sent"] = json!(list.into_iter().skip(n.saturating_sub(300)).collect::<Vec<_>>());
+    }
+    p.save(app);
+    ok(json!({"ok": true}))
+}
+
 fn route(app: &App, p: &Pub, r: &Req) -> Out {
     if let Some(tag) = r.path.strip_prefix("/signin/") {
         if r.method == "GET" {
@@ -529,6 +553,8 @@ fn route(app: &App, p: &Pub, r: &Req) -> Out {
                 }
                 ("POST", "/api/announce") => announce(app, p, &pk, r.body),
                 ("POST", "/api/message") => message(app, p, &pk, r.body),
+                ("GET", "/api/sent") => sent_list(p, &pk),
+                ("POST", "/api/sent") => sent_add(app, p, &pk, r.body),
                 _ => bad(404, "unbekannt"),
             }
         }
