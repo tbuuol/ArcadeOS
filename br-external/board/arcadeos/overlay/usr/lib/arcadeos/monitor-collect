@@ -169,6 +169,8 @@ local SERVICES = {
 	{ "SSH", "dropbear" }, { "Mesh", "meshd" }, { "Zeit (NTP)", "ntpd" }, { "WLAN", "wpa_supplicant" },
 	{ "Watchdog", "watchdog" }, { "Syslog", "syslogd" }, { "Cron", "crond" }, { "Webserver", "httpd" },
 }
+-- Kotia Core nur, wenn auf diesem Geraet eingerichtet (/etc/init.d/S65kotia)
+do local f = io.open("/state/kotia/kotiad") if f then f:close(); SERVICES[#SERVICES + 1] = { "Kotia", "kotiad" } end end
 
 local function collect()
 	local now = os.time()

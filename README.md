@@ -181,6 +181,17 @@ UUID finden: `blkid`. Sofort einbinden ohne Neustart: `/etc/init.d/S12mounts res
 System normal weiter; Grund im Audit-Log (`disk-mount-failed`), Zustand in `/run/mounts.json`. Formatiert wird nie.
 Die Monitoring-Seite zeigt eingebundene Platten mit Belegung an.
 
+## Kotia Core (optional)
+
+`S65kotia` betreibt Kotia Core (`kotiad`) als Dienst, wenn das Gerät ein Startskript `/state/kotia/kotiad` hat
+(startet kotiad im Vordergrund; Code 3 = Daten fehlen, z.B. Platte nicht eingebunden). `kotia-supervise` wartet beim
+Booten aufs Netz (sonst scheitert schon das RPC-Binden an 127.0.0.1), startet kotiad nach einem Absturz neu und beendet
+ihn beim Herunterfahren sauber per SIGTERM, bevor die Platten ausgehängt werden. Abschalten: `touch /state/kotia/disabled`.
+Die Monitoring-Seite zeigt den Dienst „Kotia“, sobald er eingerichtet ist.
+
+Die veröffentlichten Kotia-Programme sind für glibc gebaut, ArcadeOS nutzt musl: das Startskript ruft sie über einen
+glibc-Lader aus `/state/glibc` auf (libc6, libstdc++6, libgcc-s1 aus Debian), als Nutzer der Daten statt als root.
+
 ## Monitoring-Seite
 
 Jedes Gerät zeigt unter `http://<IP>/` live, was los ist (Syfy-UI, Themes Atlantis/OASIS):
