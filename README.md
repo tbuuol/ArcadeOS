@@ -146,6 +146,9 @@ Verbindung). Dreimal hintereinander gesund → es ruft selbst `arcadeos-update c
 <dateien-dir> <zusatz> --install` nimmt das System des laufenden Slots, legt die Dateien aus `<dateien-dir>`
 darüber, packt es neu, signiert mit dem Geräte-Schlüssel `/state/update/keys/box.key` (minisign) und spielt es
 in den inaktiven Slot. Der zugehörige Public Key gehört nach `keys/trusted/release/`, damit Images ihm vertrauen.
+Neuer Kernel: `--kernel <bzImage> --modules <dir>` (Module aus `make modules_install INSTALL_MOD_PATH=<dir>`, ersetzen
+`/lib/modules` komplett, damit sie zum Kernel passen). Mit dem Compiler der Build-Umgebung `GCC_PLUGINS` abschalten:
+Buildroots Compiler kann keine, die Images sind ohne gebaut.
 Braucht die Build-Umgebung unter `/state/build` (Alpine-chroot mit Rust und squashfs-tools).
 
 ## Konfiguration

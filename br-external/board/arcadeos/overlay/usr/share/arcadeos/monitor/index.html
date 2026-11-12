@@ -686,7 +686,8 @@ function buildBars(d) {
   out.push(d.temp_c != null ? bar('Temperatur', d.temp_c, d.temp_c.toFixed(0) + ' °C', d.temp_c >= 80) : bar('Temperatur', 0, 'kein Sensor'));
   const bat = d.power && d.power.battery;
   if (bat) out.push(bar('Akku', bat.pct, `${bat.pct} % · ${({ Charging: 'lädt', Discharging: 'entlädt', Full: 'voll', 'Not charging': 'hält' })[bat.status] || bat.status || ''}`, bat.pct <= 20 && !d.power.ac));
-  else out.push(bar('Akku', d.power && d.power.ac ? 100 : 0, d.power && d.power.ac === true ? 'Netzteil' : 'kein Akku'));
+  // Ohne Akku laeuft das Geraet am Netz (Desktop-PCs melden meist auch kein Netzteil): voller Balken
+  else out.push(bar('Akku', 100, d.power && d.power.ac === true ? 'Netzteil' : 'Netzbetrieb'));
   const l1 = d.cpu.load && d.cpu.load[0];
   if (l1 != null) out.push(bar('Last (1 min)', 100 * l1 / Math.max(1, d.cpu.cores), l1.toFixed(2), l1 > d.cpu.cores));
   // System (/) ist schreibgeschuetzt und immer voll: nur die Datenpartition kann volllaufen
