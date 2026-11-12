@@ -289,6 +289,17 @@ async function messenger(me, bal) {
   showList(me);
 }
 
+// Einladungen in Gruppen (dogecoin-arcade group.py) kommen als "arcade-group/1" + JSON mit dem Gruppen-Geheimnis:
+// nicht roh zeigen, nur wer einlaedt und wohin. Gruppen selbst kommen spaeter.
+function shown(text) {
+  const m = /^arcade-group\/1\s*\n([\s\S]*)$/.exec(text || '');
+  if (!m) return text;
+  try {
+    const g = JSON.parse(m[1]);
+    return `Einladung in die Gruppe „${String(g.name || '?').slice(0, 60)}“ (${(g.members || []).length} Mitglieder) – Gruppen kann diese Arcade noch nicht öffnen.`;
+  } catch { return 'Einladung in eine Gruppe (unlesbar).'; }
+}
+
 function showList(me) {
   const el = $('#list');
   if (!el) return;
@@ -298,7 +309,7 @@ function showList(me) {
   ].sort((a, b) => b.sort - a.sort);
   if (!rows.length) { el.innerHTML = '<p class="muted">Noch keine Nachrichten.</p>'; return; }
   el.innerHTML = rows.map((r) => `<div class="m ${r.in ? 'in' : 'out'}"><div class="mh"><b>${r.in ? 'von' : 'an'} ${esc(r.who)}</b><span>${esc(r.when)}</span></div>
-    <div class="mt">${esc(r.text)}${r.file ? `<p class="muted">[Anhang: ${esc(r.file.name)} – noch nicht unterstützt]</p>` : ''}</div>
+    <div class="mt">${esc(shown(r.text))}${r.file ? `<p class="muted">[Anhang: ${esc(r.file.name)} – noch nicht unterstützt]</p>` : ''}</div>
     ${r.in && r.who.startsWith('@') ? `<button class="link rp" data-to="${esc(r.who.slice(1))}">Antworten</button>` : ''}</div>`).join('');
   el.querySelectorAll('.rp').forEach((b) => { b.onclick = () => { $('#to').value = draft.to = b.dataset.to; $('#tx').focus(); }; });
 }
