@@ -23,6 +23,7 @@ use base64::Engine;
 
 mod public;
 mod utxo;
+mod msgs;
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use ripemd::Ripemd160;
 use serde_json::{json, Value};
@@ -281,6 +282,7 @@ struct App {
     nonces: Mutex<HashMap<String, u64>>,
     offers: Mutex<HashMap<String, (String, Value, String)>>, // offer id -> (tag, unsigned tx, Adresse)
     utxo: Mutex<utxo::Utxo>,
+    msgs: Mutex<msgs::Msgs>,
 }
 
 impl App {
@@ -581,17 +583,24 @@ fn build_claim(app: &App, addr: &str, want: &str) -> Result<Value, (u16, String)
         return Err((400, check["reason"].as_str().unwrap_or("Name geht nicht").to_string()));
     }
     let tag = check["tag"].as_str().unwrap().to_string();
-    let mut coins = utxos(app, addr).map_err(|e| (502, e))?;
-    coins.sort_by_key(|c| std::cmp::Reverse(c["sats"].as_u64().unwrap_or(0)));
     let data = tag_data(&tag, KIND_CLAIM);
     let op_return = format!("6a{:02x}{}", data.len(), hex::encode(&data));
-    let a = bs58::decode(addr).into_vec().unwrap_or_default();
-    if a.len() != 25 {
-        return Err((400, "Adresse unlesbar".into()));
-    }
+    let mut v = fund(app, addr, vec![(0, op_return)], &tag)?;
+    v["tag"] = json!(tag);
+    Ok(v)
+}
+
+/// Unsignierte Transaktion von `addr`: diese Outputs, Coins nur von `addr` (groesste zuerst), Rest zurueck.
+/// Als Angebot gemerkt; `label` ist der @name (Claim) oder "#..." fuer anderes.
+fn fund(app: &App, addr: &str, outs: Vec<(u64, String)>, label: &str) -> Result<Value, (u16, String)> {
+    let mut coins = utxos(app, addr).map_err(|e| (502, e))?;
+    coins.sort_by_key(|c| std::cmp::Reverse(c["sats"].as_u64().unwrap_or(0)));
+    let k = utxo::key_of(addr).filter(|k| k[0] == 0).ok_or((400, "nur P2PKH-Adressen".to_string()))?;
     let mut h = [0u8; 20];
-    h.copy_from_slice(&a[1..21]);
+    h.copy_from_slice(&k[1..]);
     let mine = p2pkh_script(&h);
+    let need: u64 = outs.iter().map(|o| o.0).sum();
+    let out_size: u64 = outs.iter().map(|o| 8 + varint(o.1.len() / 2).len() as u64 + o.1.len() as u64 / 2).sum();
     let mut inputs = Vec::new();
     let mut total = 0u64;
     let mut fee = 0u64;
@@ -601,17 +610,17 @@ fn build_claim(app: &App, addr: &str, want: &str) -> Result<Value, (u16, String)
         }
         inputs.push(json!({"txid": c["txid"], "vout": c["vout"], "script": mine, "amount": c["sats"].as_u64().unwrap_or(0)}));
         total += c["sats"].as_u64().unwrap_or(0);
-        let size = 10 + inputs.len() as u64 * 148 + (9 + 2 + data.len() as u64) + 34;
+        let size = 10 + inputs.len() as u64 * 148 + out_size + 34;
         fee = size.div_ceil(1000) * MIN_FEE_PER_KB;
-        if total >= fee + DUST {
+        if total >= need + fee + DUST {
             break;
         }
     }
-    if inputs.is_empty() || total < fee {
-        return Err((400, format!("Zu wenig Testnet-PEP auf {addr}: noetig sind mindestens {} PEP fuer die Gebuehr.", fmt_pep(fee.max(MIN_FEE_PER_KB)))));
+    if inputs.is_empty() || total < need + fee {
+        return Err((400, format!("Zu wenig Testnet-PEP auf {addr}: noetig sind {} PEP.", fmt_pep((need + fee).max(MIN_FEE_PER_KB)))));
     }
-    let change = total - fee;
-    let mut outputs = vec![json!({"value": 0, "script": op_return})];
+    let change = total - need - fee;
+    let mut outputs: Vec<Value> = outs.iter().map(|(v, s)| json!({"value": v, "script": s})).collect();
     if change >= DUST {
         outputs.push(json!({"value": change, "script": mine}));
     }
@@ -623,8 +632,8 @@ fn build_claim(app: &App, addr: &str, want: &str) -> Result<Value, (u16, String)
     if offers.len() > 200 {
         offers.clear();
     }
-    offers.insert(id.clone(), (tag.clone(), tx.clone(), addr.to_string()));
-    Ok(json!({"offer": id, "tag": tag, "tx": tx}))
+    offers.insert(id.clone(), (label.to_string(), tx.clone(), addr.to_string()));
+    Ok(json!({"offer": id, "tx": tx}))
 }
 
 fn fmt_pep(s: u64) -> String {
@@ -668,7 +677,7 @@ fn send_offer(app: &App, addr: &str, b: &Value) -> Result<(String, String), (u16
     let txid = rpc(&app.cfg, "sendrawtransaction", json!([hexs])).map_err(|e| (502, format!("pepecoind hat abgelehnt: {e}")))?;
     app.offers.lock().unwrap().remove(id);
     let txid = txid.as_str().unwrap_or("").to_string();
-    log(&format!("Claim @{tag} gesendet: {txid}"));
+    log(&format!("{} gesendet: {txid}", if tag.starts_with('#') { tag.clone() } else { format!("Claim @{tag}") }));
     Ok((txid, tag))
 }
 
@@ -732,12 +741,14 @@ fn main() {
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_else(|| json!({"operator": null, "name": "", "pending": null, "owner": null}));
     let index = Index::load(&cfg.state.join("tags.json"));
-    let app = Arc::new(App { cfg, index: Mutex::new(index), admin: Mutex::new(admin), nonces: Default::default(), offers: Default::default(), utxo: Default::default() });
+    let app = Arc::new(App { cfg, index: Mutex::new(index), admin: Mutex::new(admin), nonces: Default::default(), offers: Default::default(), utxo: Default::default(), msgs: Default::default() });
     app.write_about();
     let a = app.clone();
     std::thread::spawn(move || indexer(a));
     let a = app.clone();
     std::thread::spawn(move || utxo::run(a));
+    let a = app.clone();
+    std::thread::spawn(move || msgs::run(a));
     // Oeffentlicher Teil (Konten der Nutzer), eigener Port; Caddy reicht ihn ins Internet
     let a = app.clone();
     let public_listen = env("ADMIN_PUBLIC_LISTEN", "127.0.0.1:8091");

@@ -7,6 +7,8 @@ const $ = (s) => document.querySelector(s);
 const view = $('#view');
 let acct = null;      // entsperrtes Konto (nur in diesem Tab): {words, priv, pub, address, login, msg}
 let timer = null;
+const draft = { to: '', tx: '' };   // halb geschriebene Nachricht ueberlebt das Auffrischen
+let inbox = { next: 0, mine: [], keys: {}, seen: new Set() };   // entschluesselte Nachrichten (nur in diesem Tab)
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const pep = (s) => (Number(s || 0) / 1e8).toLocaleString('de-DE', { maximumFractionDigits: 8 });
 const clean = (t) => String(t || '').trim().replace(/^@/, '').toLowerCase();
@@ -159,6 +161,7 @@ async function home() {
       <div class="kv" style="margin-top:10px"><b>Guthaben</b><span>${pep(me.confirmed)} PEP${me.unconfirmed ? ` (+${pep(me.unconfirmed)} unterwegs)` : ''}</span>
       <b>Adresse</b><span class="addr">${esc(me.address)}</span></div>
       <div class="row" id="acts"></div></div>
+    <div class="box" id="msgbox"></div>
     <div class="row"><button class="link" id="out">Abmelden</button></div>`;
   const acts = $('#acts');
   if (!me.faucet && bal === 0) {
@@ -169,22 +172,38 @@ async function home() {
     const b = document.createElement('button'); b.textContent = `@${want} beanspruchen`; acts.appendChild(b);
     b.onclick = () => claim(want, b);
   }
-  $('#out').onclick = async () => { await api('/api/logout', {}).catch(() => {}); acct = null; start(); };
-  timer = setInterval(() => { if (!document.hidden) home(); }, 20000);
+  $('#out').onclick = async () => { await api('/api/logout', {}).catch(() => {}); acct = null; inbox = { next: 0, mine: [], keys: {}, seen: new Set() }; start(); };
+  messenger(me, bal);
+  timer = setInterval(() => { if (!document.hidden && !document.querySelector('#msgbox textarea:focus, #msgbox input:focus')) home(); }, 30000);
+}
+
+// Nach dem Neuladen sind die Schluessel weg (nur die Sitzung bleibt): einmal mit dem Passwort entsperren
+async function unlock(box, why = 'Zum Signieren brauche ich dein Passwort noch einmal:') {
+  if (acct) return true;
+  const pw = prompt(why);
+  if (!pw) return false;
+  try {
+    msg(box, 'Entsperre …', 'wait');
+    const me = await api('/api/me');
+    const w = await api(`/signin/${encodeURIComponent(me.tag)}`);
+    acct = C.fullAccount(await C.arcadeOpen(w.blob, pw));
+    msg(box, '', 'muted');
+    return true;
+  } catch (e) { msg(box, e.message); return false; }
+}
+
+// Angebot der Box pruefen lassen, signieren, senden
+async function signAndSend(box, offer, what) {
+  const own = offer.tx.outputs.at(-1);
+  const spent = offer.tx.inputs.reduce((a, i) => a + i.amount, 0) - (own && own.script === offer.tx.inputs[0].script ? own.value : 0);
+  if (!confirm(`${what}\nKosten: ${pep(spent)} PEP (Testnet)`)) { msg(box, 'Abgebrochen.', 'muted'); return null; }
+  const hex = C.signTx(offer.tx, acct);
+  return api('/api/send', { offer: offer.offer, hex });
 }
 
 async function claim(tag, btn) {
   const box = btn.closest('.box');
-  if (!acct) {   // nach dem Neuladen: Schluessel nur nach erneutem Entsperren
-    const pw = prompt('Zum Signieren brauche ich dein Passwort noch einmal:');
-    if (!pw) return;
-    try {
-      msg(box, 'Entsperre …', 'wait');
-      const me = await api('/api/me');
-      const w = await api(`/signin/${encodeURIComponent(me.tag)}`);
-      acct = C.fullAccount(await C.arcadeOpen(w.blob, pw));
-    } catch (e) { return msg(box, e.message); }
-  }
+  if (!await unlock(box)) return;
   busy(btn, true);
   try {
     msg(box, 'Baue die Transaktion …', 'wait');
@@ -198,3 +217,88 @@ async function claim(tag, btn) {
 
 // Beim Laden: angemeldet (Sitzung) -> Konto, sonst Anmelden
 api('/api/me').then(() => home()).catch(() => start());
+
+// ------------------------------------------------------------------ Messenger
+// Nachrichten liegen verschluesselt auf der Pepecoin-Testnet-Chain. Der Browser probiert jede, ob sie an dich geht;
+// die Box sieht nie, was drinsteht oder an wen. Gesendetes kann man selbst nicht mehr entschluesseln - eine Kopie
+// bleibt deshalb hier im Browser.
+const sentKey = (a) => `arcade-sent:${a}`;
+const sentList = (a) => { try { return JSON.parse(localStorage.getItem(sentKey(a)) || '[]'); } catch { return []; } };
+const who = (pub) => { const k = inbox.keys[pub]; return k ? (k.tag ? `@${k.tag}` : (k.name || `${k.address.slice(0, 10)}…`)) : `unbekannt (${pub.slice(0, 8)})`; };
+
+async function messenger(me, bal) {
+  const box = $('#msgbox');
+  if (!box) return;
+  if (!acct) {
+    box.innerHTML = `<h2>Nachrichten</h2><p class="muted">Zum Lesen brauchst du deinen Schlüssel – der bleibt in deinem Browser.</p><div class="row"><button id="un">Nachrichten öffnen</button></div>`;
+    $('#un').onclick = async () => { if (await unlock(box, 'Passwort, um deine Nachrichten zu öffnen:')) messenger(me, bal); };
+    return;
+  }
+  const mine = acct.msg.pubkey, on = me.msgkey && me.msgkey.pubkey === mine;
+  let head = '';
+  if (!on) {
+    head = me.msgkey
+      ? `<p class="msg wait">Für deine Adresse ist ein anderer Messenger-Schlüssel veröffentlicht (z. B. aus einer anderen Arcade). Nachrichten an den alten kann dieser Browser nicht lesen.</p>`
+      : `<p class="muted">Damit man dir schreiben kann, veröffentlichst du einmal deinen Messenger-Schlüssel auf der Chain.</p>`;
+    head += `<div class="row"><button id="ann" ${bal > 0 ? '' : 'disabled'}>${me.msgkey ? 'Meinen Schlüssel neu veröffentlichen' : 'Messenger einschalten'}</button></div>`;
+  }
+  box.innerHTML = `<h2>Nachrichten</h2>${head}
+    <label for="to">An</label><div class="at"><input id="to" autocapitalize="none" spellcheck="false" placeholder="name"></div>
+    <label for="tx">Nachricht</label><textarea id="tx" rows="3" maxlength="7000"></textarea>
+    <div class="row"><button id="snd" ${bal > 0 ? '' : 'disabled'}>Senden</button></div>
+    <div id="list"><p class="muted">Suche deine Nachrichten …</p></div>`;
+  $('#to').value = draft.to; $('#tx').value = draft.tx;
+  $('#to').oninput = () => { draft.to = $('#to').value; }; $('#tx').oninput = () => { draft.tx = $('#tx').value; };
+  if ($('#ann')) $('#ann').onclick = async () => {
+    try {
+      msg(box, 'Baue die Transaktion …', 'wait');
+      const offer = await api('/api/announce', { pubkey: mine });
+      if (await signAndSend(box, offer, 'Messenger-Schlüssel veröffentlichen?')) msg(box, 'Gesendet – ab dem nächsten Block kann man dir schreiben.', 'ok');
+    } catch (e) { msg(box, e.message); }
+  };
+  $('#snd').onclick = async () => {
+    const to = clean($('#to').value), text = $('#tx').value.trim();
+    if (!to || !text) return msg(box, 'Bitte Empfänger und Text eingeben.');
+    try {
+      msg(box, `Suche den Schlüssel von @${to} …`, 'wait');
+      const k = await api(`/api/key?to=${encodeURIComponent(to)}`);
+      if (k.error) return msg(box, k.error);
+      if (!k.pubkey) return msg(box, `@${to} hat noch keinen Messenger-Schlüssel veröffentlicht.`);
+      const payload = C.arcmSeal(acct.msg, k.pubkey, text);
+      const offer = await api('/api/message', { payload, coinpub: acct.pub });
+      const r = await signAndSend(box, offer, `Nachricht an @${k.tag || to} senden?`);
+      if (!r) return;
+      const list = sentList(me.address); list.push({ to: k.tag || to, text, txid: r.txid, at: Date.now() });
+      try { localStorage.setItem(sentKey(me.address), JSON.stringify(list.slice(-200))); } catch { /* egal */ }
+      $('#tx').value = ''; draft.tx = '';
+      msg(box, 'Gesendet – kommt mit dem nächsten Block an.', 'ok');
+      showList(me);
+    } catch (e) { msg(box, e.message); }
+  };
+  try {
+    const r = await api(`/api/msgs?from=${inbox.next}`);
+    for (const k of r.keys) inbox.keys[k.pubkey] = k;
+    for (const it of r.items) {
+      if (inbox.seen.has(it.txid)) continue;
+      inbox.seen.add(it.txid);
+      const m = C.arcmOpen(acct.msg, it.p);
+      if (m && !m.forged) inbox.mine.push({ ...m, h: it.h, txid: it.txid });
+    }
+    inbox.next = r.next;
+  } catch (e) { $('#list').innerHTML = `<p class="msg err">${esc(e.message)}</p>`; return; }
+  showList(me);
+}
+
+function showList(me) {
+  const el = $('#list');
+  if (!el) return;
+  const rows = [
+    ...inbox.mine.map((m) => ({ in: true, who: who(m.sender), text: m.text, file: m.file, when: `Block ${m.h}`, sort: m.h * 1e13 })),
+    ...sentList(me.address).map((m) => ({ in: false, who: `@${m.to}`, text: m.text, when: new Date(m.at).toLocaleString('de-DE'), sort: m.at })),
+  ].sort((a, b) => b.sort - a.sort);
+  if (!rows.length) { el.innerHTML = '<p class="muted">Noch keine Nachrichten.</p>'; return; }
+  el.innerHTML = rows.map((r) => `<div class="m ${r.in ? 'in' : 'out'}"><div class="mh"><b>${r.in ? 'von' : 'an'} ${esc(r.who)}</b><span>${esc(r.when)}</span></div>
+    <div class="mt">${esc(r.text)}${r.file ? `<p class="muted">[Anhang: ${esc(r.file.name)} – noch nicht unterstützt]</p>` : ''}</div>
+    ${r.in && r.who.startsWith('@') ? `<button class="link rp" data-to="${esc(r.who.slice(1))}">Antworten</button>` : ''}</div>`).join('');
+  el.querySelectorAll('.rp').forEach((b) => { b.onclick = () => { $('#to').value = draft.to = b.dataset.to; $('#tx').focus(); }; });
+}

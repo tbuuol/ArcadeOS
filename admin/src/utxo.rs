@@ -12,7 +12,7 @@ use std::collections::{HashSet, VecDeque};
 use std::io::{BufReader, BufWriter};
 
 type Key = [u8; 21]; // 0 = P2PKH / 1 = P2SH, dann hash160
-type Txid = [u8; 32]; // interne Reihenfolge (wie im Block)
+pub type Txid = [u8; 32]; // interne Reihenfolge (wie im Block)
 
 #[derive(Clone, Copy)]
 struct Coin {
@@ -50,7 +50,7 @@ const BATCH: u32 = 100;
 const MAGIC: &[u8; 8] = b"PEPUTXO1";
 
 // ------------------------------------------------------------------ Lesen roher Daten
-struct Rd<'a> {
+pub struct Rd<'a> {
     b: &'a [u8],
     p: usize,
 }
@@ -81,15 +81,15 @@ impl<'a> Rd<'a> {
     }
 }
 
-struct TxIn<'a> {
-    prev: (Txid, u32),
-    sig: &'a [u8],
+pub struct TxIn<'a> {
+    pub prev: (Txid, u32),
+    pub sig: &'a [u8],
 }
 
-struct Tx<'a> {
-    txid: Txid,
-    ins: Vec<TxIn<'a>>,
-    outs: Vec<(u64, &'a [u8])>,
+pub struct Tx<'a> {
+    pub txid: Txid,
+    pub ins: Vec<TxIn<'a>>,
+    pub outs: Vec<(u64, &'a [u8])>,
 }
 
 fn read_tx<'a>(r: &mut Rd<'a>) -> Result<Tx<'a>, String> {
@@ -113,7 +113,7 @@ fn read_tx<'a>(r: &mut Rd<'a>) -> Result<Tx<'a>, String> {
 }
 
 /// Kopf (80 Byte, bei Merged Mining + AuxPoW) und Transaktionen
-fn read_block(b: &[u8]) -> Result<(Txid, Txid, Vec<Tx<'_>>), String> {
+pub fn read_block(b: &[u8]) -> Result<(Txid, Txid, Vec<Tx<'_>>), String> {
     let mut r = Rd { b, p: 0 };
     let head = r.take(80)?;
     let prev: Txid = head[4..36].try_into().unwrap();
@@ -187,13 +187,13 @@ fn script_of(k: &Key) -> String {
     }
 }
 
-fn shown(t: &Txid) -> String {
+pub fn shown(t: &Txid) -> String {
     let mut x = *t;
     x.reverse();
     hex::encode(x)
 }
 
-fn internal(s: &str) -> Result<Txid, String> {
+pub fn internal(s: &str) -> Result<Txid, String> {
     let mut t: Txid = hex::decode(s).ok().and_then(|v| v.try_into().ok()).ok_or("Hash unlesbar")?;
     t.reverse();
     Ok(t)
@@ -361,7 +361,7 @@ fn prev_key(cfg: &Cfg, prev: &(Txid, u32)) -> Option<Key> {
 }
 
 /// Mehrere RPC-Aufrufe in einer Anfrage (JSON-RPC-Batch); Ergebnisse in Aufruf-Reihenfolge
-fn batch(cfg: &Cfg, method: &str, params: impl Iterator<Item = Value>) -> Result<Vec<Value>, String> {
+pub fn batch(cfg: &Cfg, method: &str, params: impl Iterator<Item = Value>) -> Result<Vec<Value>, String> {
     let calls: Vec<Value> = params.enumerate().map(|(i, p)| json!({"jsonrpc": "1.0", "id": i, "method": method, "params": p})).collect();
     if calls.is_empty() {
         return Ok(Vec::new());

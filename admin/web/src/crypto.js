@@ -184,3 +184,66 @@ export function signTx(tx, acct) {
   });
   return bytesToHex(serialize(tx, sigScripts));
 }
+
+// ------------------------------------------------------------------ Messenger (arcm, wie dogecoin-arcade envelope.py)
+// inner = crypto_box(Absender, Empfaenger, "arcm" 01 01 || Text) mit Zufalls-Nonce (24)
+// sealed = crypto_box_seal(Empfaenger, Absender-pk || nonce || inner)
+// Nutzlast = "arcm" 01 01 || clen (2, BE) || sealed
+import { hsalsa, xsalsa20poly1305 } from '@noble/ciphers/salsa.js';
+import { blake2b } from '@noble/hashes/blake2.js';
+
+const SIGMA = new Uint32Array([0x61707865, 0x3320646e, 0x79622d32, 0x6b206574]);
+const ARCM_SINGLE = Uint8Array.of(0x61, 0x72, 0x63, 0x6d, 1, 1);
+function boxKey(secret, pub) {                       // crypto_box_beforenm
+  const s = Uint8Array.from(x25519.getSharedSecret(secret, pub));
+  const out = new Uint32Array(8);
+  hsalsa(SIGMA, new Uint32Array(s.buffer), new Uint32Array(4), out);
+  return new Uint8Array(out.buffer);
+}
+function sealNonce(epk, pub) { return blake2b(concatBytes(epk, pub), { dkLen: 24 }); }
+export function boxSeal(msg, pub) {                  // crypto_box_seal
+  const esk = randomBytes(32), epk = x25519.getPublicKey(esk);
+  return concatBytes(epk, xsalsa20poly1305(boxKey(esk, pub), sealNonce(epk, pub)).encrypt(msg));
+}
+export function boxSealOpen(c, secret, pub) {        // crypto_box_seal_open
+  const epk = c.subarray(0, 32);
+  return xsalsa20poly1305(boxKey(secret, epk), sealNonce(epk, pub)).decrypt(c.subarray(32));
+}
+/** Nachricht an `toPub` (hex) versiegeln -> Nutzlast (hex) */
+export function arcmSeal(me, toPub, text) {
+  const to = hexToBytes(toPub), nonce = randomBytes(24);
+  const inner = xsalsa20poly1305(boxKey(me.secret, to), nonce).encrypt(concatBytes(ARCM_SINGLE, utf8ToBytes(text)));
+  const sealed = boxSeal(concatBytes(hexToBytes(me.pubkey), nonce, inner), to);
+  const clen = Uint8Array.of(sealed.length >> 8, sealed.length & 0xff);
+  return bytesToHex(concatBytes(ARCM_SINGLE, clen, sealed));
+}
+const ARCB = Uint8Array.of(1, 0x41, 0x52, 0x43, 0x42);
+/** Nutzlast (hex) oeffnen, wenn sie an `me` geht: {sender (hex), text, profile, file} oder null */
+export function arcmOpen(me, payloadHex) {
+  const p = hexToBytes(payloadHex);
+  if (p.length < 8 || p[5] !== 1) return null;
+  for (let i = 0; i < 6; i++) if (p[i] !== ARCM_SINGLE[i]) return null;
+  const clen = (p[6] << 8) | p[7];
+  if (clen < 48 + 32 + 40 || 8 + clen > p.length) return null;
+  let env;
+  try { env = boxSealOpen(p.subarray(8, 8 + clen), me.secret, hexToBytes(me.pubkey)); } catch { return null; }
+  if (env.length < 32 + 40) return null;
+  const sender = env.subarray(0, 32), nonce = env.subarray(32, 56);
+  let plain;
+  try { plain = xsalsa20poly1305(boxKey(me.secret, sender), nonce).decrypt(env.subarray(56)); } catch { return { sender: bytesToHex(sender), forged: true }; }
+  for (let i = 0; i < 6; i++) if (plain[i] !== ARCM_SINGLE[i]) return { sender: bytesToHex(sender), forged: true };
+  const body = plain.subarray(6), out = { sender: bytesToHex(sender), text: '' };
+  const dec = (b) => new TextDecoder().decode(b);
+  if (body.length > 8 && ARCB.every((x, i) => body[i] === x) && body[5] === 1) {
+    const n = (body[6] << 8) | body[7];
+    try {
+      const h = JSON.parse(dec(body.subarray(8, 8 + n)));
+      out.text = typeof h.text === 'string' ? h.text : '';
+      if (h.profile && typeof h.profile === 'object') out.profile = { name: String(h.profile.name || '').slice(0, 80) };
+      if (h.file && typeof h.file === 'object') out.file = { name: String(h.file.name || 'Anhang').slice(0, 120), type: String(h.file.type || ''), size: body.length - 8 - n };
+      return out;
+    } catch { /* als Text zeigen */ }
+  }
+  out.text = dec(body);
+  return out;
+}

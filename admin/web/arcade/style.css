@@ -29,3 +29,9 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 .name { font-size:1.8rem; font-weight:700; color:var(--ok); margin:4px 0; } .name.want { color:var(--acc); }
 .warnbox { border-color:var(--acc); } .warnbox h2 { color:var(--acc); }
 footer { margin-top:26px; text-align:center; }
+#list { margin-top:16px; display:flex; flex-direction:column; gap:8px; }
+.m { border:1px solid var(--line); border-radius:10px; padding:8px 10px; background:#06192a; }
+.m.out { border-style:dashed; }
+.mh { display:flex; justify-content:space-between; gap:8px; font-size:.82rem; color:var(--muted); } .mh b { color:var(--pri); font-weight:600; }
+.m.out .mh b { color:var(--acc); }
+.mt { white-space:pre-wrap; word-break:break-word; margin-top:4px; }

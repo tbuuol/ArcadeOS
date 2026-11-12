@@ -358,7 +358,7 @@ fn me(app: &App, p: &Pub, pk: &str) -> Out {
     };
     ok(json!({"pubkey": pk, "tag": a["tag"], "held": held, "address": addr, "confirmed": conf, "unconfirmed": unconf,
         "faucet": a["faucet"], "pending": a["pending"], "source": a["source"],
-        "faucet_amount": p.faucet_amount, "names_ready": chain_tip(app).map(|t| app.index.lock().unwrap().height + 1 >= t).unwrap_or(false)}))
+        "faucet_amount": p.faucet_amount, "msgkey": app.msgs.lock().unwrap().keys.get(&addr).map(|k| json!({"pubkey": k.0, "height": k.1})), "names_ready": chain_tip(app).map(|t| app.index.lock().unwrap().height + 1 >= t).unwrap_or(false)}))
 }
 
 fn faucet(app: &App, p: &Pub, r: &Req, pk: &str) -> Out {
@@ -397,12 +397,88 @@ fn claim_public(app: &App, p: &Pub, pk: &str, tag: &str) -> Out {
 fn send_public(app: &App, p: &Pub, pk: &str, b: &Value) -> Out {
     let addr = p.accounts.lock().unwrap()[pk]["address"].as_str().unwrap_or("").to_string();
     match send_offer(app, &addr, b) {
+        Ok((txid, tag)) if tag.starts_with('#') => ok(json!({"txid": txid, "kind": tag})),
         Ok((txid, tag)) => {
             p.accounts.lock().unwrap()[pk]["pending"] = json!({"tag": tag, "txid": txid, "at": now()});
             p.accounts.lock().unwrap()[pk]["tag"] = json!(tag);
             p.save(app);
             ok(json!({"txid": txid, "tag": tag}))
         }
+        Err((c, e)) => bad(c, e),
+    }
+}
+
+// ------------------------------------------------------------------ Messenger
+/// Alle versiegelten Nachrichten (Typ 1) ab `from` + Schluessel-Verzeichnis; der Browser probiert selbst, was ihm gehoert
+fn messages(app: &App, r: &Req) -> Out {
+    let from: usize = r.query.split('&').find_map(|q| q.strip_prefix("from=")).and_then(|v| v.parse().ok()).unwrap_or(0);
+    let m = app.msgs.lock().unwrap();
+    let tags = app.index.lock().unwrap().by_addr.clone();
+    let items: Vec<Value> = m.items.iter().enumerate().skip(from).filter(|(_, i)| i.p.get(5) == Some(&1)).take(5000)
+        .map(|(n, i)| json!({"i": n, "h": i.h, "txid": i.txid, "p": hex::encode(&i.p)})).collect();
+    let next = items.last().and_then(|x| x["i"].as_u64()).map(|n| n as usize + 1).unwrap_or(m.items.len().max(from));
+    let keys: Vec<Value> = m.keys.iter().map(|(a, k)| json!({"address": a, "tag": tags.get(a), "pubkey": k.0, "name": k.3})).collect();
+    ok(json!({"next": next, "items": items, "keys": keys}))
+}
+
+/// Schluessel eines @name oder einer Adresse
+fn key_of(app: &App, to: &str) -> Value {
+    let to = to.trim().trim_start_matches('@');
+    let (addr, tag) = if utxo::key_of(to).is_some() {
+        (to.to_string(), app.index.lock().unwrap().by_addr.get(to).cloned())
+    } else {
+        let t = to.to_lowercase();
+        match app.index.lock().unwrap().tags.get(&t) {
+            Some(e) => (e.0.clone(), Some(t)),
+            None => return json!({"error": format!("@{t} gibt es nicht")}),
+        }
+    };
+    match app.msgs.lock().unwrap().keys.get(&addr) {
+        Some(k) => json!({"address": addr, "tag": tag, "pubkey": k.0, "height": k.1, "name": k.3, "own": k.4}),
+        None => json!({"address": addr, "tag": tag, "pubkey": null}),
+    }
+}
+
+fn coinpub_of(p: &Pub, pk: &str, b: &Value, addr: &str) -> Option<Vec<u8>> {
+    let stored = p.accounts.lock().unwrap()[pk]["coinpub"].as_str().map(String::from);
+    let cp = hex::decode(stored.or_else(|| b["coinpub"].as_str().map(String::from))?).ok()?;
+    (cp.len() == 33 && b58check(PKH, &hash160(&cp)) == addr).then_some(cp)
+}
+
+fn announce(app: &App, p: &Pub, pk: &str, b: &Value) -> Out {
+    let (addr, tag) = {
+        let a = p.accounts.lock().unwrap();
+        (a[pk]["address"].as_str().unwrap_or("").to_string(), a[pk]["tag"].as_str().unwrap_or("").to_string())
+    };
+    let Some(key) = b["pubkey"].as_str().and_then(|h| hex::decode(h).ok()).and_then(|v| <[u8; 32]>::try_from(v).ok()) else {
+        return bad(400, "Schluessel fehlt");
+    };
+    let k = utxo::key_of(&addr).unwrap_or([0; 21]);
+    let held = app.index.lock().unwrap().by_addr.get(&addr).cloned();
+    let out = msgs::announce_output(&key, &k[1..], held.as_deref().or(Some(tag.as_str())).filter(|t| !t.is_empty()));
+    match fund(app, &addr, vec![(0, out)], "#Schluessel") {
+        Ok(v) => ok(v),
+        Err((c, e)) => bad(c, e),
+    }
+}
+
+fn message(app: &App, p: &Pub, pk: &str, b: &Value) -> Out {
+    let addr = p.accounts.lock().unwrap()[pk]["address"].as_str().unwrap_or("").to_string();
+    let Some(payload) = b["payload"].as_str().and_then(|h| hex::decode(h).ok()) else { return bad(400, "Nachricht fehlt") };
+    if !payload.starts_with(b"arcm\x01\x01") || payload.len() < 8 + 120 {
+        return bad(400, "keine versiegelte Nachricht");
+    }
+    let Some(cp) = coinpub_of(p, pk, b, &addr) else { return bad(400, "oeffentlicher Schluessel des Kontos fehlt") };
+    if p.accounts.lock().unwrap()[pk]["coinpub"].is_null() {
+        p.accounts.lock().unwrap()[pk]["coinpub"] = json!(hex::encode(&cp));
+        p.save(app);
+    }
+    let outs = match msgs::class_b_outputs(&addr, &cp, &payload) {
+        Ok(o) => o,
+        Err(e) => return bad(400, e),
+    };
+    match fund(app, &addr, outs, "#Nachricht") {
+        Ok(v) => ok(v),
         Err((c, e)) => bad(c, e),
     }
 }
@@ -446,6 +522,13 @@ fn route(app: &App, p: &Pub, r: &Req) -> Out {
                 ("POST", "/api/faucet") => faucet(app, p, r, &pk),
                 ("POST", "/api/claim") => claim_public(app, p, &pk, r.body["tag"].as_str().unwrap_or("")),
                 ("POST", "/api/send") => send_public(app, p, &pk, r.body),
+                ("GET", "/api/msgs") => messages(app, r),
+                ("GET", "/api/key") => {
+                    let to = r.query.split('&').find_map(|q| q.strip_prefix("to=")).map(|v| v.replace("%40", "@")).unwrap_or_default();
+                    ok(key_of(app, &to))
+                }
+                ("POST", "/api/announce") => announce(app, p, &pk, r.body),
+                ("POST", "/api/message") => message(app, p, &pk, r.body),
                 _ => bad(404, "unbekannt"),
             }
         }
