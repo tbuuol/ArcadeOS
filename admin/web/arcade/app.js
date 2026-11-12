@@ -172,7 +172,7 @@ async function home() {
     const b = document.createElement('button'); b.textContent = `@${want} beanspruchen`; acts.appendChild(b);
     b.onclick = () => claim(want, b);
   }
-  $('#out').onclick = async () => { await api('/api/logout', {}).catch(() => {}); acct = null; inbox = { next: 0, mine: [], keys: {}, seen: new Set() }; start(); };
+  $('#out').onclick = async () => { await api('/api/logout', {}).catch(() => {}); acct = null; forgetKeys(); inbox = { next: 0, mine: [], keys: {}, seen: new Set() }; start(); };
   messenger(me, bal);
   timer = setInterval(() => { if (!document.hidden && !document.querySelector('#msgbox textarea:focus, #msgbox input:focus')) home(); }, 30000);
 }
@@ -223,18 +223,32 @@ api('/api/me').then(() => home()).catch(() => start());
 // die Box sieht nie, was drinsteht oder an wen. Gesendetes kann man selbst nicht mehr entschluesseln - eine Kopie
 // bleibt deshalb hier im Browser.
 const sentKey = (a) => `arcade-sent:${a}`;
+// Nur der Messenger-Schluessel wird im Browser gemerkt (Lesen ohne Passwort). Coins ausgeben braucht weiter das Passwort.
+const msgKeyName = (a) => `arcade-msgkey:${a}`;
+function msgKey(me) {
+  if (acct) {
+    try { localStorage.setItem(msgKeyName(me.address), JSON.stringify({ secret: C.bytesToHex(acct.msg.secret), pubkey: acct.msg.pubkey })); } catch { /* egal */ }
+    return acct.msg;
+  }
+  try {
+    const k = JSON.parse(localStorage.getItem(msgKeyName(me.address)) || 'null');
+    return k && { secret: C.hexToBytes(k.secret), pubkey: k.pubkey };
+  } catch { return null; }
+}
+function forgetKeys() { try { Object.keys(localStorage).filter((k) => k.startsWith('arcade-msgkey:')).forEach((k) => localStorage.removeItem(k)); } catch { /* egal */ } }
 const sentList = (a) => { try { return JSON.parse(localStorage.getItem(sentKey(a)) || '[]'); } catch { return []; } };
 const who = (pub) => { const k = inbox.keys[pub]; return k ? (k.tag ? `@${k.tag}` : (k.name || `${k.address.slice(0, 10)}…`)) : `unbekannt (${pub.slice(0, 8)})`; };
 
 async function messenger(me, bal) {
   const box = $('#msgbox');
   if (!box) return;
-  if (!acct) {
+  const mk = msgKey(me);
+  if (!mk) {
     box.innerHTML = `<h2>Nachrichten</h2><p class="muted">Zum Lesen brauchst du deinen Schlüssel – der bleibt in deinem Browser.</p><div class="row"><button id="un">Nachrichten öffnen</button></div>`;
     $('#un').onclick = async () => { if (await unlock(box, 'Passwort, um deine Nachrichten zu öffnen:')) messenger(me, bal); };
     return;
   }
-  const mine = acct.msg.pubkey, on = me.msgkey && me.msgkey.pubkey === mine;
+  const mine = mk.pubkey, on = me.msgkey && me.msgkey.pubkey === mine;
   let head = '';
   if (!on) {
     head = me.msgkey
@@ -251,6 +265,7 @@ async function messenger(me, bal) {
   $('#to').oninput = () => { draft.to = $('#to').value; }; $('#tx').oninput = () => { draft.tx = $('#tx').value; };
   if ($('#ann')) $('#ann').onclick = async () => {
     try {
+      if (!await unlock(box)) return;
       msg(box, 'Baue die Transaktion …', 'wait');
       const offer = await api('/api/announce', { pubkey: mine });
       if (await signAndSend(box, offer, 'Messenger-Schlüssel veröffentlichen?')) msg(box, 'Gesendet – ab dem nächsten Block kann man dir schreiben.', 'ok');
@@ -264,6 +279,7 @@ async function messenger(me, bal) {
       const k = await api(`/api/key?to=${encodeURIComponent(to)}`);
       if (k.error) return msg(box, k.error);
       if (!k.pubkey) return msg(box, `@${to} hat noch keinen Messenger-Schlüssel veröffentlicht.`);
+      if (!await unlock(box, 'Zum Senden brauche ich dein Passwort (es signiert die Transaktion):')) return;
       const payload = C.arcmSeal(acct.msg, k.pubkey, text);
       const offer = await api('/api/message', { payload, coinpub: acct.pub });
       const r = await signAndSend(box, offer, `Nachricht an @${k.tag || to} senden?`);
@@ -281,7 +297,7 @@ async function messenger(me, bal) {
     for (const it of r.items) {
       if (inbox.seen.has(it.txid)) continue;
       inbox.seen.add(it.txid);
-      const m = C.arcmOpen(acct.msg, it.p);
+      const m = C.arcmOpen(mk, it.p);
       if (m && !m.forged) inbox.mine.push({ ...m, h: it.h, txid: it.txid });
     }
     inbox.next = r.next;
