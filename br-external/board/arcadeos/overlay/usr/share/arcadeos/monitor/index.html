@@ -327,6 +327,11 @@ h1 em { font-style:normal; color:var(--pri); }
 /* ------------------------------------------------------------------ monitor */
 .sector.o .dot { background:var(--muted); box-shadow:none; animation:none; }
 .sector.o .stt { color:var(--muted); }
+/* Chain-Knoten: Kachel bis zum Sync-Stand gefuellt (--fill); waehrend des ersten Syncs Akzentfarbe */
+.sector.sync { background:linear-gradient(90deg, rgba(var(--pri-rgb), .26) var(--fill, 0%), rgba(var(--pri-rgb), .05) var(--fill, 0%)); }
+.sector.sync.ibd { background:linear-gradient(90deg, rgba(var(--acc-rgb), .24) var(--fill, 0%), rgba(var(--acc-rgb), .05) var(--fill, 0%)); }
+.sector.sync.ibd .dot { background:var(--acc); box-shadow:0 0 8px var(--acc); }
+.sector.sync.ibd .stt { color:var(--acc); }
 .foot.lost .live { color:var(--warn); background:rgba(255,80,60,.14); border-right-color:var(--warn); }
 .foot.lost .live i { background:var(--warn); box-shadow:0 0 8px var(--warn); }
 .modes span b { font-weight:inherit; color:var(--text); }
@@ -704,7 +709,17 @@ function buildSectors(d) {
     const optional = (sv.proc === 'wpa_supplicant' && !wifiOn) || (sv.proc === 'meshd' && !d.mesh.running && !sv.up);
     const cls = sv.up ? '' : optional ? 'o' : 'a';
     if (cls === 'a') down++;
-    return `<div class="sector ${cls}"><i class="dot"></i><span class="nm">${esc(sv.name)}</span><span class="stt">${sv.up ? 'läuft' : optional ? 'aus' : 'gestoppt'}</span></div>`;
+    let stt = sv.up ? 'läuft' : optional ? 'aus' : 'gestoppt', more = '', attrs = '';
+    // Chain-Knoten: die Kachel fuellt sich mit dem Sync-Stand (Bloecke / Blockkoepfe, vom Sammler alle 30 s)
+    const sy = sv.up && sv.sync ? sv.sync : null;
+    if (sy && sy.starting) stt = 'startet';
+    else if (sy) {
+      const pct = clamp(+sy.pct || 0, 0, 100);
+      more = ' sync' + (sy.ibd ? ' ibd' : '');
+      attrs = ` style="--fill:${pct}%" title="${esc(sy.chain)} · Block ${esc(sy.blocks)} / ${esc(sy.headers)}"`;
+      stt = sy.ibd ? `sync ${pct.toFixed(1)} %` : 'synchron';
+    }
+    return `<div class="sector ${cls}${more}"${attrs}><i class="dot"></i><span class="nm">${esc(sv.name)}</span><span class="stt">${stt}</span></div>`;
   }).join('');
   $('#svcCode').textContent = `${d.services.filter(x => x.up).length}/${d.services.length}`;
   return down;

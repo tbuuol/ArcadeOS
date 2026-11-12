@@ -169,9 +169,38 @@ local SERVICES = {
 	{ "SSH", "dropbear" }, { "Mesh", "meshd" }, { "Zeit (NTP)", "ntpd" }, { "WLAN", "wpa_supplicant" },
 	{ "Watchdog", "watchdog" }, { "Syslog", "syslogd" }, { "Cron", "crond" }, { "Webserver", "httpd" },
 }
--- Chain-Knoten nur, wenn auf diesem Geraet eingerichtet (/etc/init.d/S65kotia, S66pepecoin)
-for _, n in ipairs({ { "Kotia", "kotiad", "/state/kotia/kotiad" }, { "Pepecoin", "pepecoind", "/state/pepecoin/pepecoind" } }) do
-	local f = io.open(n[3]) if f then f:close(); SERVICES[#SERVICES + 1] = { n[1], n[2] } end
+-- Chain-Knoten nur, wenn auf diesem Geraet eingerichtet (/etc/init.d/S65kotia, S66pepecoin): Name, Prozess,
+-- Startskript, RPC-Programm (fuer den Sync-Stand)
+local NODES = {
+	{ "Kotia", "kotiad", "/state/kotia/kotiad", "/state/kotia/kotia-cli" },
+	{ "Pepecoin", "pepecoind", "/state/pepecoin/pepecoind", "/state/pepecoin/pepecoin-cli" },
+}
+for _, n in ipairs(NODES) do
+	local f = io.open(n[3]) if f then f:close(); SERVICES[#SERVICES + 1] = { n[1], n[2], cli = n[4] } end
+end
+
+-- Sync-Stand eines laufenden Knotens, alle SYNC_EVERY s per "<cli> getblockchaininfo" (hoechstens 5 s).
+-- Fortschritt = Bloecke / Blockkoepfe: verificationprogress ist bei manchen Chains unbrauchbar (Pepecoin-Testnet
+-- meldet schon bei Block 64 den Wert 1). Waehrend des ersten Syncs nie 100 %. Nur Zahlen, nichts Geheimes.
+local SYNC_EVERY = 30
+local sync_cache = {}
+local function node_sync(s, up, now)
+	if not s.cli or not up then sync_cache[s[2]] = nil; return nil end
+	local c = sync_cache[s[2]]
+	if c and now - c.t < SYNC_EVERY then return c.v end
+	local ok, d = pcall(json.decode, sh("timeout 5 " .. s.cli .. " getblockchaininfo") or "")
+	local v
+	if ok and type(d) == "table" and tonumber(d.blocks) then
+		local blocks, headers = tonumber(d.blocks), math.max(tonumber(d.headers) or 0, tonumber(d.blocks))
+		local ibd = d.initialblockdownload == true
+		local pct = headers > 0 and 100 * blocks / headers or 0
+		if ibd then pct = math.min(pct, 99.9) end
+		v = { blocks = blocks, headers = headers, pct = round(pct, 1), ibd = ibd, chain = tostring(d.chain or "") }
+	else
+		v = { starting = true }   -- RPC noch nicht bereit (Knoten laedt seine Datenbank)
+	end
+	sync_cache[s[2]] = { t = now, v = v }
+	return v
 end
 
 local function collect()
@@ -242,7 +271,10 @@ local function collect()
 	local running = {}
 	for _, c in ipairs(sec.comm or {}) do running[c] = true end
 	local services = {}
-	for _, s in ipairs(SERVICES) do services[#services + 1] = { name = s[1], proc = s[2], up = running[s[2]] == true } end
+	for _, s in ipairs(SERVICES) do
+		local up = running[s[2]] == true
+		services[#services + 1] = { name = s[1], proc = s[2], up = up, sync = node_sync(s, up, now) }
+	end
 
 	local procs = #(sec.comm or {})
 	local la1, la5, la15 = (read("/proc/loadavg") or ""):match("^(%S+) (%S+) (%S+)")
