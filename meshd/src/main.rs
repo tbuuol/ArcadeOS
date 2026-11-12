@@ -1,9 +1,10 @@
 //! meshd – ArcadeOS Mesh-Dienst (Arcade-Mesh-Protokoll v2).
 //!
 //! Befehle:
-//!   meshd run [--net arcade-main] [--state DIR] [--status DATEI] [--outbound N]
+//!   meshd run [--net arcade-main] [--state DIR] [--status DATEI] [--outbound N] [--listen PORT]
 //!       Dauerbetrieb (node.rs). DIR (Standard /state/mesh): key, peers.json, seeds (optional),
-//!       debug.log (JSON-Zeilen, rotiert bei 2 MB)
+//!       listen (optional: Port fuer eingehende Verbindungen, 0 = keine), debug.log (JSON-Zeilen,
+//!       rotiert bei 2 MB). Ohne Angabe lauscht meshd auf 8421; --listen geht vor der Datei.
 //!   meshd status [--status DATEI]      Zustand des laufenden Dienstes (JSON)
 //!   meshd probe [--net arcade-main] [--pings N] host:port|wss://host/mesh ...
 //! verbindet sich mit jedem Knoten (frischer Schluessel, lauscht nicht), misst TCP-Aufbau, Handshake
@@ -140,7 +141,7 @@ async fn probe(addr: String, net: String, pings: usize, key: SigningKey) -> Valu
 }
 
 fn usage() -> ! {
-    eprintln!("Aufruf: meshd run [--net arcade-main] [--state /state/mesh] [--status /run/meshd.json] [--outbound 6]");
+    eprintln!("Aufruf: meshd run [--net arcade-main] [--state /state/mesh] [--status /run/meshd.json] [--outbound 6] [--listen 8421|0]");
     eprintln!("       meshd status [--status /run/meshd.json]");
     eprintln!("       meshd probe [--net arcade-main] [--pings N] host:port|wss://host/mesh ...");
     std::process::exit(2);
@@ -151,6 +152,7 @@ fn cmd_run(args: Vec<String>) {
     let mut state = std::path::PathBuf::from("/state/mesh");
     let mut status = std::path::PathBuf::from("/run/meshd.json");
     let mut outbound = node::OUTBOUND_TARGET;
+    let mut listen_arg: Option<u16> = None;
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -158,10 +160,12 @@ fn cmd_run(args: Vec<String>) {
             "--state" => state = it.next().unwrap_or_else(|| usage()).into(),
             "--status" => status = it.next().unwrap_or_else(|| usage()).into(),
             "--outbound" => outbound = it.next().and_then(|s| s.parse().ok()).unwrap_or_else(|| usage()),
+            "--listen" => listen_arg = Some(it.next().and_then(|s| s.parse().ok()).unwrap_or_else(|| usage())),
             _ => usage(),
         }
     }
     dlog::init(state.join("debug.log"));
+    let listen = listen_port(listen_arg, &state.join("listen"));
     let cfg = node::Config {
         net,
         key_file: state.join("key"),
@@ -169,6 +173,8 @@ fn cmd_run(args: Vec<String>) {
         seeds_file: state.join("seeds"),
         status_file: status,
         outbound,
+        listen,
+        max_inbound: node::MAX_INBOUND,
     };
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
     rt.block_on(async {
@@ -188,6 +194,19 @@ fn cmd_run(args: Vec<String>) {
         }
         n.shutdown();
     });
+}
+
+/// Port fuer eingehende Verbindungen: --listen, sonst Datei `listen` im Zustand, sonst 8421; 0 = keine.
+/// Eine unlesbare Datei zaehlt wie keine (mit Warnung), damit ein Tippfehler den Knoten nicht abschaltet.
+fn listen_port(arg: Option<u16>, file: &std::path::Path) -> Option<u16> {
+    let port = arg.unwrap_or_else(|| match std::fs::read_to_string(file) {
+        Ok(s) => s.trim().parse().unwrap_or_else(|_| {
+            dlog::ev("warn", "listen_file_invalid", json!({"path": file.display().to_string(), "content": s.trim()}));
+            node::LISTEN_PORT
+        }),
+        Err(_) => node::LISTEN_PORT,
+    });
+    (port != 0).then_some(port)
 }
 
 fn cmd_status(args: Vec<String>) {
@@ -243,4 +262,25 @@ fn main() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::listen_port;
+
+    #[test]
+    fn listen_port_from_arg_file_or_default() {
+        let dir = std::env::temp_dir().join(format!("meshd-listen-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("listen");
+        assert_eq!(listen_port(None, &f), Some(8421), "ohne Datei: Standardport");
+        std::fs::write(&f, "9000\n").unwrap();
+        assert_eq!(listen_port(None, &f), Some(9000));
+        assert_eq!(listen_port(Some(7000), &f), Some(7000), "--listen geht vor");
+        std::fs::write(&f, "0").unwrap();
+        assert_eq!(listen_port(None, &f), None, "0 = nur ausgehend");
+        std::fs::write(&f, "quatsch").unwrap();
+        assert_eq!(listen_port(None, &f), Some(8421), "unlesbar: Standardport");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

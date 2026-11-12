@@ -6,10 +6,17 @@
 //!
 //! Stand: Blatt-Knoten. Raumverkehr (sub/pub) wird gezaehlt, aber nicht weitergeleitet – andere
 //! Knoten bauen ihre Wege nur ueber Knoten, deren Ankuendigungen sie erreicht haben, also laeuft
-//! ueber ein Blatt kein fremder Verkehr. Nur ausgehend, keine Ankuendigung auf der Chain.
+//! ueber ein Blatt kein fremder Verkehr. Keine Ankuendigung auf der Chain.
+//!
+//! Eingehend (wie die Arcades, `listen_port`): lauscht auf TCP LISTEN_PORT (IPv6 und IPv4), bis
+//! MAX_INBOUND eingehende Verbindungen, die nicht zu den OUTBOUND_TARGET ausgehenden zaehlen. Den Port
+//! nennt meshd im AUTH jeder Verbindung (`listen`); eine Arcade, bei der wir waehlen, merkt sich damit
+//! unsere Adresse, waehlt sie selbst und gibt sie erst weiter, wenn sie uns dort erreicht hat. Nennt ein
+//! eingehender Knoten seinen Port, kommt seine Adresse als Spur ins Adressbuch (weitergegeben erst,
+//! wenn wir ihn dort selbst erreicht haben).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -19,13 +26,18 @@ use rand::rngs::OsRng;
 use rand::seq::SliceRandom;
 use rand::RngCore;
 use serde_json::{json, Value};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
 
 use crate::dlog::ev;
-use crate::link::{self, handshake, Body};
+use crate::link::{self, handshake, Body, Rd, Wr};
 
 pub const OUTBOUND_TARGET: usize = 6;
+/// Standardport des Arcade-Mesh (docs/mesh-protocol.md)
+pub const LISTEN_PORT: u16 = 8421;
+/// Eingehende Verbindungen hoechstens (wie die Arcades), laufende Handshakes mitgezaehlt
+pub const MAX_INBOUND: usize = 32;
 pub const PING_EVERY: Duration = Duration::from_secs(15);
 pub const DEAD_AFTER: Duration = Duration::from_secs(45);
 const DIAL_EVERY: Duration = Duration::from_secs(1);
@@ -50,6 +62,9 @@ pub struct Config {
     pub seeds_file: PathBuf,
     pub status_file: PathBuf,
     pub outbound: usize,
+    /// TCP-Port fuer eingehende Verbindungen; None = nur ausgehend
+    pub listen: Option<u16>,
+    pub max_inbound: usize,
 }
 
 fn now_unix() -> f64 {
@@ -78,6 +93,26 @@ fn acceptable(host: &str, port: i64) -> bool {
     }
 }
 
+/// IPv4 ueber einen Dual-Stack-Socket kommt als ::ffff:a.b.c.d an: als IPv4 behandeln
+fn canonical_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(ip),
+        v4 => v4,
+    }
+}
+
+/// Lauschenden Socket oeffnen: [::]:port (Linux nimmt dort auch IPv4 an), sonst nur 0.0.0.0:port
+pub async fn bind_listener(port: u16) -> std::io::Result<TcpListener> {
+    match TcpListener::bind((std::net::Ipv6Addr::UNSPECIFIED, port)).await {
+        Ok(l) => Ok(l),
+        Err(e6) => {
+            let l = TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, port)).await?;
+            ev("warn", "listen_v4_only", json!({"port": port, "v6_error": e6.to_string()}));
+            Ok(l)
+        }
+    }
+}
+
 /// Wie link::connect sie erwartet
 fn dial_string(host: &str, port: u16) -> String {
     if is_ws(host) {
@@ -102,6 +137,7 @@ struct Entry {
 
 struct LinkInfo {
     addr: (String, u16),
+    inbound: bool, // die Gegenseite hat gewaehlt (zaehlt nicht zu den ausgehenden)
     since: Instant,
     rtt: Option<f64>,
     tx: mpsc::UnboundedSender<Value>,
@@ -113,6 +149,10 @@ struct State {
     addrs: HashMap<(String, u16), Entry>,
     links: HashMap<String, LinkInfo>,
     dialing: HashSet<(String, u16)>,
+    accepting: usize, // eingehende Handshakes, die gerade laufen
+    dialback_asked: HashMap<String, String>, // Nonce -> Knoten, den wir um einen Rueckruf gebeten haben
+    dialback: HashMap<String, Value>,        // letzte Antwort je Knoten: erreicht er uns von aussen?
+    listening: Option<String>, // wo meshd tatsaechlich lauscht
 }
 
 pub struct Node {
@@ -157,7 +197,15 @@ impl Node {
             key,
             id,
             started: Instant::now(),
-            st: Mutex::new(State { addrs: HashMap::new(), links: HashMap::new(), dialing: HashSet::new() }),
+            st: Mutex::new(State {
+                addrs: HashMap::new(),
+                links: HashMap::new(),
+                dialing: HashSet::new(),
+                accepting: 0,
+                listening: None,
+                dialback_asked: HashMap::new(),
+                dialback: HashMap::new(),
+            }),
         });
         node.load_addresses();
         Ok(node)
@@ -231,7 +279,7 @@ impl Node {
 
     fn outbound_count(&self) -> usize {
         let st = self.st.lock().unwrap();
-        st.links.len() + st.dialing.len()
+        st.links.values().filter(|l| !l.inbound).count() + st.dialing.len()
     }
 
     /// Kandidaten zum Waehlen: faellig, nicht wir, nicht schon verbunden; direkte vor Tunneln
@@ -275,10 +323,23 @@ impl Node {
             let st = self.st.lock().unwrap();
             ev("info", "start", json!({
                 "node_id": self.id, "net": self.cfg.net, "outbound_target": self.cfg.outbound,
+                "listen": self.cfg.listen, "max_inbound": self.cfg.max_inbound,
                 "version": env!("CARGO_PKG_VERSION"), "addrs_loaded": st.addrs.len(),
                 "seeds": st.addrs.values().filter(|e| e.seed).count(),
                 "reached_before": st.addrs.values().filter(|e| e.ok > 0.0).count(),
             }));
+        }
+        if let Some(port) = self.cfg.listen {
+            // Ein belegter Port legt den Knoten nicht still: dann eben nur ausgehend
+            match bind_listener(port).await {
+                Ok(l) => {
+                    // vor dem ersten Waehlen setzen: schon die ersten AUTHs nennen den Port
+                    self.st.lock().unwrap().listening = l.local_addr().ok().map(|a| a.to_string());
+                    let n = self.clone();
+                    tokio::spawn(async move { n.accept_loop(l).await });
+                }
+                Err(e) => ev("error", "listen_failed", json!({"port": port, "error": e.to_string()})),
+            }
         }
         let n = self.clone();
         tokio::spawn(async move { n.status_loop().await });
@@ -317,7 +378,7 @@ impl Node {
         let res = async {
             let io = timeout(Duration::from_secs(limit), link::connect(&target)).await.map_err(|_| link::LinkError::Timeout)??;
             connect_ms = t0.elapsed().as_secs_f64() * 1000.0;
-            handshake(io, &self.key, &self.cfg.net, true, None).await
+            handshake(io, &self.key, &self.cfg.net, true, self.announced_port()).await
         }
         .await;
         let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -363,7 +424,83 @@ impl Node {
         if fresh {
             self.tell_others(&addr, &peer);
         }
-        self.run_link(lk, addr, peer).await;
+        self.run_link(lk, addr, peer, false).await;
+    }
+
+    /// Port, den wir im AUTH nennen: nur, wenn wir wirklich lauschen
+    fn announced_port(&self) -> Option<u16> {
+        let st = self.st.lock().unwrap();
+        st.listening.as_ref().and(self.cfg.listen)
+    }
+
+    /// Eingehende Verbindungen annehmen, bis MAX_INBOUND (laufende Handshakes mitgezaehlt)
+    pub async fn accept_loop(self: Arc<Self>, lst: TcpListener) {
+        let local = lst.local_addr().map(|a| a.to_string()).unwrap_or_default();
+        self.st.lock().unwrap().listening = Some(local.clone());
+        ev("info", "listening", json!({"addr": local, "max_inbound": self.cfg.max_inbound}));
+        loop {
+            let (sock, from) = match lst.accept().await {
+                Ok(x) => x,
+                Err(e) => {
+                    // z.B. keine Dateideskriptoren mehr: kurz warten statt im Kreis zu laufen
+                    ev("warn", "accept_failed", json!({"error": e.to_string()}));
+                    sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+            };
+            let admitted = {
+                let mut st = self.st.lock().unwrap();
+                let busy = st.links.values().filter(|l| l.inbound).count() + st.accepting;
+                if busy >= self.cfg.max_inbound {
+                    false
+                } else {
+                    st.accepting += 1;
+                    true
+                }
+            };
+            if !admitted {
+                ev("debug", "inbound_refused", json!({"from": from.to_string(), "reason": "voll"}));
+                drop(sock);
+                continue;
+            }
+            let n = self.clone();
+            tokio::spawn(async move { n.accept_one(sock, from).await });
+        }
+    }
+
+    async fn accept_one(self: Arc<Self>, sock: TcpStream, from: SocketAddr) {
+        let host = canonical_ip(from.ip()).to_string();
+        let target = dial_string(&host, from.port());
+        let _ = sock.set_nodelay(true);
+        let (r, w) = sock.into_split();
+        let t0 = Instant::now();
+        // handshake() begrenzt jeden Schritt auf 10 s: ein stummer Gegenueber haelt keinen Platz
+        let res = handshake((Rd::Tcp(r), Wr::Tcp(w)), &self.key, &self.cfg.net, false, self.announced_port()).await;
+        {
+            let mut st = self.st.lock().unwrap();
+            st.accepting = st.accepting.saturating_sub(1);
+        }
+        let lk = match res {
+            Ok(l) => l,
+            Err(e) => {
+                ev("debug", "inbound_failed", json!({"from": target, "error": e.to_string()}));
+                return;
+            }
+        };
+        let peer = lk.peer_id();
+        // Wo er sagt, dass er erreichbar ist: eine Spur, weitergegeben erst, wenn wir ihn dort erreicht haben
+        if let Some(p) = lk.peer_listen {
+            if acceptable(&host, p as i64) {
+                self.add_address(&host, p, Some(&peer), false);
+            }
+        }
+        if self.st.lock().unwrap().links.contains_key(&peer) {
+            ev("debug", "duplicate_link", json!({"addr": target, "peer": peer, "inbound": true}));
+            return;
+        }
+        ev("info", "link_up", json!({"peer": peer, "addr": target, "transport": "tcp", "inbound": true,
+            "handshake_ms": (t0.elapsed().as_secs_f64() * 10000.0).round() / 10.0, "peer_listen": lk.peer_listen}));
+        self.run_link(lk, (host, from.port()), peer, true).await;
     }
 
     /// Neu erreichte Adresse den bestehenden Verbindungen mitteilen
@@ -376,7 +513,7 @@ impl Node {
         }
     }
 
-    async fn run_link(self: Arc<Self>, lk: link::Link, addr: (String, u16), peer: String) {
+    async fn run_link(self: Arc<Self>, lk: link::Link, addr: (String, u16), peer: String, inbound: bool) {
         let link::Link { mut tx, mut rx, .. } = lk;
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Value>();
         {
@@ -386,8 +523,8 @@ impl Node {
             }
             st.links.insert(
                 peer.clone(),
-                LinkInfo { addr: addr.clone(), since: Instant::now(), rtt: None, tx: out_tx.clone(), frames: BTreeMap::new(),
-                    frames_logged: BTreeMap::new() },
+                LinkInfo { addr: addr.clone(), inbound, since: Instant::now(), rtt: None, tx: out_tx.clone(),
+                    frames: BTreeMap::new(), frames_logged: BTreeMap::new() },
             );
             // unsere erreichten Adressen weitergeben (wie die Arcades beim Verbindungsaufbau)
             let good: Vec<Value> = st
@@ -399,6 +536,19 @@ impl Node {
                 .collect();
             if !good.is_empty() {
                 let _ = out_tx.send(json!({"t": "addrs", "a": good}));
+            }
+            // Sind wir von aussen erreichbar? Die Gegenseite waehlt die Adresse, von der unsere Verbindung
+            // kommt, auf unserem Port und sagt, ob dort wir antworten (dialback). Nur ueber direkte
+            // ausgehende TCP-Verbindungen: hinter einem Tunnel kennt sie keine Adresse von uns.
+            if let (false, false, Some(_), Some(port)) = (inbound, is_ws(&addr.0), st.listening.as_ref(), self.cfg.listen) {
+                let mut b = [0u8; 8];
+                OsRng.fill_bytes(&mut b);
+                let n = hex::encode(b);
+                if st.dialback_asked.len() >= 64 {
+                    st.dialback_asked.clear(); // unbeantwortete Fragen nicht ewig sammeln
+                }
+                st.dialback_asked.insert(n.clone(), peer.clone());
+                let _ = out_tx.send(json!({"t": "dialback", "port": port, "n": n}));
             }
         }
 
@@ -504,6 +654,19 @@ impl Node {
                         }
                     }
                 }
+                "dialback-said" => {
+                    let n = h.get("n").and_then(Value::as_str).unwrap_or("");
+                    let mut st = self.st.lock().unwrap();
+                    // nur Antworten auf eigene Fragen an genau diesen Knoten
+                    if st.dialback_asked.get(n) == Some(&peer) {
+                        st.dialback_asked.remove(n);
+                        let ok = h.get("ok").and_then(Value::as_bool) == Some(true);
+                        let host: String = h.get("host").and_then(Value::as_str).unwrap_or("").chars().take(64).collect();
+                        st.dialback.insert(peer.clone(), json!({"peer": &peer[..16], "ok": ok, "seen_as": host, "at": now_unix().round()}));
+                        drop(st);
+                        ev("info", "dialback", json!({"peer": peer, "ok": ok, "seen_as": host}));
+                    }
+                }
                 // sub/pub und Erweiterungen der Arcade-Software: zaehlen, nicht weiterleiten (Blatt)
                 _ => {}
             }
@@ -512,7 +675,7 @@ impl Node {
         writer.abort();
         let gone = self.st.lock().unwrap().links.remove(&peer);
         if let Some(l) = gone {
-            ev("info", "link_down", json!({"peer": peer, "addr": dial_string(&l.addr.0, l.addr.1), "reason": reason,
+            ev("info", "link_down", json!({"peer": peer, "addr": dial_string(&l.addr.0, l.addr.1), "inbound": l.inbound, "reason": reason,
                 "up_s": l.since.elapsed().as_secs(), "rtt_ms": l.rtt.map(|r| (r * 10000.0).round() / 10.0), "frames": l.frames}));
         }
     }
@@ -531,7 +694,7 @@ impl Node {
                     .filter(|(_, d)| *d > 0)
                     .collect();
                 l.frames_logged = l.frames.clone();
-                links.push(json!({"peer": &id[..16], "addr": dial_string(&l.addr.0, l.addr.1),
+                links.push(json!({"peer": &id[..16], "addr": dial_string(&l.addr.0, l.addr.1), "inbound": l.inbound,
                     "rtt_ms": l.rtt.map(|r| (r * 10000.0).round() / 10.0), "up_s": l.since.elapsed().as_secs(), "frames_1min": delta}));
             }
             let known = st.addrs.len();
@@ -552,6 +715,7 @@ impl Node {
                     "id": id,
                     "addr": dial_string(&l.addr.0, l.addr.1),
                     "transport": if is_ws(&l.addr.0) { "websocket" } else { "tcp" },
+                    "inbound": l.inbound,
                     "rtt_ms": l.rtt.map(|r| (r * 10000.0).round() / 10.0),
                     "up_s": l.since.elapsed().as_secs(),
                     "frames": l.frames,
@@ -561,12 +725,18 @@ impl Node {
         json!({
             "node_id": self.id,
             "net": self.cfg.net,
-            "mode": "leaf-outbound",
+            "mode": if st.listening.is_some() { "leaf" } else { "leaf-outbound" },
+            "listening": st.listening,
             "uptime_s": self.started.elapsed().as_secs(),
             "links": links,
+            "inbound": st.links.values().filter(|l| l.inbound).count(),
+            "outbound": st.links.values().filter(|l| !l.inbound).count(),
             "dialing": st.dialing.len(),
             "addrs_known": st.addrs.len(),
             "addrs_reached": st.addrs.values().filter(|e| e.ok > 0.0).count(),
+            // Rueckrufe der Gegenseiten: ok = dort, wo sie uns sehen, sind wir von aussen erreichbar
+            "dialback": st.dialback.values().cloned().collect::<Vec<Value>>(),
+            "reachable": st.dialback.values().any(|d| d["ok"] == true),
         })
     }
 
@@ -610,6 +780,143 @@ mod tests {
         assert_eq!(dial_string("1.2.3.4", 8421), "1.2.3.4:8421");
         assert_eq!(dial_string("2605::1", 8421), "[2605::1]:8421");
         assert_eq!(dial_string("wss://x.y/mesh", 443), "wss://x.y/mesh");
+    }
+
+    #[test]
+    fn mapped_ipv4_is_plain_ipv4() {
+        assert_eq!(canonical_ip("::ffff:207.244.232.43".parse().unwrap()).to_string(), "207.244.232.43");
+        assert_eq!(canonical_ip("2605::1".parse().unwrap()).to_string(), "2605::1");
+        assert_eq!(canonical_ip("1.2.3.4".parse().unwrap()).to_string(), "1.2.3.4");
+    }
+
+    fn test_node(tag: &str, max_inbound: usize) -> (Arc<Node>, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("meshd-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("seeds"), "").unwrap(); // keine Live-Arcades im Test
+        let cfg = Config {
+            net: "arcade-main".into(),
+            key_file: dir.join("key"),
+            peers_file: dir.join("peers.json"),
+            seeds_file: dir.join("seeds"),
+            status_file: dir.join("status.json"),
+            outbound: OUTBOUND_TARGET,
+            listen: Some(LISTEN_PORT),
+            max_inbound,
+        };
+        (Node::new(cfg).unwrap(), dir)
+    }
+
+    async fn dial_in(addr: SocketAddr, listen: Option<u16>) -> Result<link::Link, link::LinkError> {
+        let key = SigningKey::generate(&mut OsRng);
+        let io = link::connect(&addr.to_string()).await?;
+        handshake(io, &key, "arcade-main", true, listen).await
+    }
+
+    #[test]
+    fn inbound_link_is_accepted_and_kept_apart_from_outbound() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let (node, dir) = test_node("inbound", MAX_INBOUND);
+            let lst = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = lst.local_addr().unwrap();
+            tokio::spawn(node.clone().accept_loop(lst));
+            let mut lk = dial_in(addr, Some(8421)).await.unwrap();
+            // wir sind der Knoten, den die Gegenseite gewaehlt hat
+            assert_eq!(hex::encode(lk.peer_key), node.id);
+            assert_eq!(lk.peer_listen, Some(LISTEN_PORT), "lauschender Knoten nennt seinen Port");
+            let mut seen = false;
+            for _ in 0..50 {
+                if node.status()["inbound"] == 1 {
+                    seen = true;
+                    break;
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+            assert!(seen, "Verbindung nicht angenommen: {}", node.status());
+            assert_eq!(node.outbound_count(), 0, "eingehend zaehlt nicht als ausgehend");
+            assert_eq!(node.status()["links"][0]["inbound"], true);
+            // die Verbindung lebt: ping wird beantwortet
+            lk.tx.send(&json!({"t": "ping", "n": "beef"}), b"").await.unwrap();
+            let mut pong = false;
+            for _ in 0..5 {
+                if let Ok(Ok(Body::Json(h, _))) = timeout(Duration::from_secs(2), lk.rx.recv()).await {
+                    if h["t"] == "pong" && h["n"] == "beef" {
+                        pong = true;
+                        break;
+                    }
+                }
+            }
+            assert!(pong, "kein pong ueber die eingehende Verbindung");
+            // 127.0.0.1 ist keine oeffentliche Adresse: kommt nicht ins Adressbuch
+            assert!(!node.st.lock().unwrap().addrs.keys().any(|(h, _)| h == "127.0.0.1"));
+            drop(lk);
+            std::fs::remove_dir_all(dir).unwrap();
+        });
+    }
+
+    #[test]
+    fn asks_for_dialback_and_records_the_answer() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let (node, dir) = test_node("dialback", MAX_INBOUND);
+            node.st.lock().unwrap().listening = Some("[::]:8421".into()); // tut so, als lausche er
+            // eine Arcade: nimmt an, beantwortet die Rueckruf-Frage (und eine fremde Nonce, die nicht zaehlen darf)
+            let lst = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = lst.local_addr().unwrap().port();
+            let arcade = tokio::spawn(async move {
+                let (s, _) = lst.accept().await.unwrap();
+                let (r, w) = s.into_split();
+                let key = SigningKey::generate(&mut OsRng);
+                let mut lk = handshake((Rd::Tcp(r), Wr::Tcp(w)), &key, "arcade-main", false, Some(8421)).await.unwrap();
+                assert_eq!(lk.peer_listen, Some(LISTEN_PORT), "meshd nennt seinen Port beim Waehlen");
+                loop {
+                    let Body::Json(h, _) = lk.rx.recv().await.unwrap() else { continue };
+                    if h["t"] == "dialback" {
+                        assert_eq!(h["port"], 8421);
+                        lk.tx.send(&json!({"t": "dialback-said", "n": "fremd", "ok": true, "host": "198.51.100.1"}), b"").await.unwrap();
+                        lk.tx.send(&json!({"t": "dialback-said", "n": h["n"], "ok": true, "host": "203.0.113.7"}), b"").await.unwrap();
+                        return lk; // offen halten
+                    }
+                }
+            });
+            node.add_address("127.0.0.1", port, None, false);
+            tokio::spawn(node.clone().dial(("127.0.0.1".to_string(), port)));
+            let _lk = timeout(Duration::from_secs(5), arcade).await.expect("keine Rueckruf-Frage").unwrap();
+            let mut st = Value::Null;
+            for _ in 0..50 {
+                st = node.status();
+                if st["reachable"] == true {
+                    break;
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+            assert_eq!(st["reachable"], true, "{st}");
+            assert_eq!(st["dialback"].as_array().unwrap().len(), 1);
+            assert_eq!(st["dialback"][0]["seen_as"], "203.0.113.7", "nur die Antwort auf die eigene Nonce zaehlt");
+            std::fs::remove_dir_all(dir).unwrap();
+        });
+    }
+
+    #[test]
+    fn inbound_limit_and_one_link_per_node() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let (node, dir) = test_node("limit", 1);
+            let lst = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = lst.local_addr().unwrap();
+            tokio::spawn(node.clone().accept_loop(lst));
+            let _first = dial_in(addr, None).await.unwrap();
+            for _ in 0..50 {
+                if node.status()["inbound"] == 1 {
+                    break;
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+            // der zweite kommt nicht mehr durch den Handshake: Platz ist belegt
+            assert!(dial_in(addr, None).await.is_err(), "Grenze fuer eingehende Verbindungen nicht eingehalten");
+            assert_eq!(node.status()["inbound"], 1);
+            std::fs::remove_dir_all(dir).unwrap();
+        });
     }
 
     #[test]

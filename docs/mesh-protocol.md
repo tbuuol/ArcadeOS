@@ -80,7 +80,7 @@ XChaCha20-Poly1305 (IETF), ohne zusätzliche Daten. Nonce = Rahmenzähler pro Ri
 | `addrs` `{a:[{h,p,id}]}` | Adressen, die eine Seite tatsächlich erreicht hat | Link-Schicht |
 | `sub` | signierte Liste der Räume eines Knotens (8-Byte-Fingerabdrücke), geflutet | Räume |
 | `pub` | Raumnachricht (msg/join/leave/here), signiert, entlang der SUB-Wege | Räume |
-| `dialback`, `dialback-said` | Erreichbarkeit der eigenen Adresse prüfen | später |
+| `dialback`, `dialback-said` | Erreichbarkeit der eigenen Adresse prüfen | meshd fragt über jede ausgehende TCP-Verbindung (Ergebnis: `meshd status` → `reachable`, `dialback`); beantwortet selbst noch nicht |
 | `cs` `cr` `ix` `op` `st` `dx` `iw` `lm` … | Erweiterungen der Arcade-Software (Core-Tunnel, geteilte Cores, Index-Vergleich, Betreiber, STUN, …) | ignorieren |
 
 Unbekannte Arten werden **ignoriert**, nicht als Fehler behandelt.
@@ -97,7 +97,7 @@ Unbekannte Arten werden **ignoriert**, nicht als Fehler behandelt.
 ## Grenzen (wie die Arcades)
 
 Nutzlast 512 Byte, 5 Nachrichten/s je Mitglied (Burst 10), Weiterleiter erlauben das Doppelte.
-6 ausgehende Verbindungen als Ziel, bis 32 eingehende.
+6 ausgehende Verbindungen als Ziel, bis 32 eingehende (meshd: TCP 8421, IPv6 und IPv4; `listen` im AUTH nennt den Port).
 
 ## Gemessen (2026-10-26, gegen Live-Arcades)
 

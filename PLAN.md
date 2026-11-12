@@ -153,7 +153,7 @@ Meilensteine:
 5. ~~Peers aus Chain-Ankündigungen~~ – **entfällt** (tbuuol 2026-10-26: kein Blockchain-Node, weder
    auf dem Server noch in der VM). Peers kommen aus einer Startliste (`/state/mesh/seeds`, Vorgabe:
    bekannte Live-Arcades) und dem Adressaustausch (`addrs`); keine eigene Chain-Ankündigung
-6. IPv6-„Meeting“, Dialback, optional Portfreigabe am Router (NAT-PMP)
+6. ✅ Eingehende Verbindungen (2026-11-12): `meshd` lauscht auf TCP 8421 (IPv6+IPv4, `/state/mesh/listen`, 0 = aus), bis 32 eingehende neben 6 ausgehenden, nennt den Port im AUTH; Adresse eingehender Knoten als Spur ins Adressbuch; fragt Arcades per Dialback, ob es von aussen erreichbar ist (live bestaetigt 2026-11-12: 10 eingehende Verbindungen). Offen: IPv6-„Meeting“, Dialback beantworten, optional Portfreigabe am Router (NAT-PMP)
 7. Buildroot-Paket, Init-Skript, Watchdog, agentd-Werkzeuge (Peers, Räume, RTT), Tests in QEMU
 
 Nebenbefund: auf diesem Server liefen 18 verwaiste Worker-Prozesse der Arcade (475 MB) von früheren

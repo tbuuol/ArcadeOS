@@ -91,6 +91,18 @@ rep('<span data-atl="Komm-Protokoll" data-oas="Chat-Feed">Komm-Protokoll</span><
 rep('<div class="fcode" id="fcode">NODE 07 · 42 ms</div>', '<div class="fcode" id="fcode">—</div>')
 rep('<footer class="foot panel">', '<footer class="foot panel" id="foot">')
 
+# Glyphenring: in ArcadeOS driftet er stetig und gleitet zur neuesten Verbindung (die Demo dreht ihn beim Waehlen
+# exakt auf die Symbole); die laufende Demo-Welle gibt es nicht, ArcadeOS zeigt die Netzkurve
+rep(""".ringdrift { position:absolute; inset:0; pointer-events:none; }
+""",
+    """.ringdrift { position:absolute; inset:0; pointer-events:none; animation:spin 300s linear infinite reverse; } /* Glyphenring -1,2°/s */
+.ringdrift .gl { transition:transform 2.5s cubic-bezier(.2, .7, .2, 1); }
+""")
+rep(""".wave-box.run { overflow:hidden; }   /* Demo: Welle laeuft per CSS durch (doppelt breit, um die Haelfte verschoben) */
+.wave-box canvas.run { width:200%; flex:none; height:100%; animation:waverun 6s linear infinite; will-change:transform; }
+@keyframes waverun { to { transform:translateX(-50%); } }
+""", "")
+
 # ---------------------------------------------------------------- Skript
 # Theme: nur noch Umschalten der Beschriftungen, keine erfundenen Texte
 a, b = section(M + "theme */", M + "header bits */")
@@ -194,9 +206,14 @@ function buildSectors(d) {
 
 # Netzverkehr-Kurve statt Sinuswellen: Empfang (pri) und Senden (acc) aus dem Verlauf
 a, b = section("/* waveform */", M + "city map */")
-s = s[:a] + """/* waveform: Netzverkehr der letzten Minuten */
+s = s[:a] + """/* waveform: Netzverkehr der letzten Minuten. Haengt nur an den Daten (alle 2 s), nicht an der Zeit:
+   neu gezeichnet nur bei neuen Daten, anderer Groesse oder anderem Theme. */
+let waveDrawn = null;
 function drawWave(t) {
   const [w, h] = sizeCanvas(waveC); if (w < 4 || h < 4) return;
+  const key = `${w}x${h}|${C.pri}|${C.acc}`;
+  if (waveDrawn && waveDrawn.d === D && waveDrawn.key === key) return;
+  waveDrawn = { d: D, key };
   wctx.clearRect(0, 0, w, h);
   wctx.strokeStyle = rgba(C.priRgb, .12); wctx.lineWidth = 1;
   for (let x = 0; x < w; x += 18 * dpr) { wctx.beginPath(); wctx.moveTo(x, 0); wctx.lineTo(x, h); wctx.stroke(); }
@@ -217,27 +234,65 @@ const waveC = $('#wave'), wctx = waveC.getContext('2d');
 """ + s[b:]
 
 # Prozesskarte: ein Punkt je Prozess (bis 60), abgebrochene Dienste als auffällige Punkte
-rep("const lifes = Array.from({ length: 34 }, (_, i) => { const r = rng(i + 99); return { a: r() * Math.PI * 2, d: .1 + r() * .75, v: (r() - .5) * .002, unk: i < 3 }; });",
+rep("""const lifes = Array.from({ length: 34 }, (_, i) => { const r = rng(i + 99); return { a: r() * Math.PI * 2, d: .1 + r() * .75, v: (r() - .5) * .002, unk: i < 3 }; });
+// Jeder Punkt kreist wie vorher um die Mitte (v rad je Bild bei 30 Bildern/s), jetzt als CSS-Drehung
+for (const p of lifes) {
+  const w = Math.abs(p.v) * 30, dur = clamp(w > 0 ? 2 * Math.PI / w : 3600, 20, 3600);
+  const rev = p.v < 0, frac = p.a / (2 * Math.PI);
+  const start = rev ? 1 - frac : frac; // Anteil der Umdrehung beim Start = Anfangswinkel
+  const o = document.createElement('div');
+  o.className = 'orb' + (p.unk ? ' unk' : '');
+  o.style.cssText = `--d:${p.d.toFixed(3)};--dur:${dur.toFixed(1)}s;--dir:${rev ? 'reverse' : 'normal'};--del:-${(start * dur).toFixed(2)}s`;
+  o.appendChild(document.createElement('i'));
+  lifeG.appendChild(o);
+}""",
     """let lifes = [];
 function setLifes(n, unk) {
   n = clamp(n, 0, 60);
   if (lifes.length === n && lifes.filter(p => p.unk).length === unk) return;
   lifes = Array.from({ length: n }, (_, i) => { const r = rng(i + 99); return { a: r() * Math.PI * 2, d: .1 + r() * .75, v: (r() - .5) * .002, unk: i < unk }; });
+  // Jeder Punkt kreist wie vorher um die Mitte (v rad je Bild bei 30 Bildern/s), jetzt als CSS-Drehung
+  lifeG.textContent = '';
+  for (const p of lifes) {
+    const w = Math.abs(p.v) * 30, dur = clamp(w > 0 ? 2 * Math.PI / w : 3600, 20, 3600);
+    const rev = p.v < 0, frac = p.a / (2 * Math.PI);
+    const start = rev ? 1 - frac : frac; // Anteil der Umdrehung beim Start = Anfangswinkel
+    const o = document.createElement('div');
+    o.className = 'orb' + (p.unk ? ' unk' : '');
+    o.style.cssText = `--d:${p.d.toFixed(3)};--dur:${dur.toFixed(1)}s;--dir:${rev ? 'reverse' : 'normal'};--del:-${(start * dur).toFixed(2)}s`;
+    o.appendChild(document.createElement('i'));
+    lifeG.appendChild(o);
+  }
 }""")
 
 # Radarpunkte: Mesh-Gegenstellen statt Zufallspunkten
-rep("""const blipG = el('g', {}, radar);
+rep("""// Radarpunkte: HTML mit Leuchten (box-shadow); hell, wenn der Strahl vorbeikommt (gleiche 5 s, versetzt um ihren Winkel)
+const blipG = hlayer('blips');
+const blipNow = performance.now() / 1000;
 const blips = Array.from({ length: 7 }, (_, i) => {
-  const r = rng(i + 7), a = r() * 360, d = 40 + r() * 125;
-  const c = el('circle', { class: 'blip' + (i % 3 ? ' f' : ''), r: i % 3 ? 3 : 4.2, cx: d * Math.sin(a * Math.PI / 180), cy: -d * Math.cos(a * Math.PI / 180), filter: 'url(#glow)' }, blipG);
+  const r = rng(i + 7), a = r() * 360, d = 40 + r() * 125, rr = i % 3 ? 3 : 4.2;
+  const x = d * Math.sin(a * Math.PI / 180), y = -d * Math.cos(a * Math.PI / 180);
+  const c = document.createElement('i');
+  c.className = 'blip' + (i % 3 ? ' f' : '');
+  const u = v => `calc(${v.toFixed(2)} * var(--u, 1px))`;
+  c.style.cssText = `left:${u(x - rr)};top:${u(y - rr)};width:${u(2 * rr)};height:${u(2 * rr)};animation-delay:-${((((blipNow - a / 72) % 5) + 5) % 5).toFixed(3)}s`;
+  blipG.appendChild(c);
   return { c, a };
-});""", """const blipG = el('g', {}, radar);
+});""", """// Radarpunkte: HTML mit Leuchten (box-shadow); hell, wenn der Strahl vorbeikommt (gleiche 5 s, versetzt um ihren Winkel)
+const blipG = hlayer('blips');
 let blips = [];
 function setBlips(links) {
-  blipG.innerHTML = '';
+  blipG.textContent = '';
+  const now = performance.now() / 1000;
   blips = links.map(l => {
     const a = hash(l.id) % 360, d = 40 + clamp((l.rtt_ms || 200) / 400, 0, 1) * 125;
-    const c = el('circle', { class: 'blip' + (l.transport === 'websocket' ? '' : ' f'), r: l.transport === 'websocket' ? 4.2 : 3.4, cx: d * Math.sin(a * Math.PI / 180), cy: -d * Math.cos(a * Math.PI / 180), filter: 'url(#glow)' }, blipG);
+    const ws = l.transport === 'websocket', r = ws ? 4.2 : 3.4;
+    const x = d * Math.sin(a * Math.PI / 180), y = -d * Math.cos(a * Math.PI / 180);
+    const c = document.createElement('i');
+    c.className = 'blip' + (ws ? '' : ' f');
+    const u = v => `calc(${v.toFixed(2)} * var(--u, 1px))`;
+    c.style.cssText = `left:${u(x - r)};top:${u(y - r)};width:${u(2 * r)};height:${u(2 * r)};animation-delay:-${((((now - a / 72) % 5) + 5) % 5).toFixed(3)}s`;
+    blipG.appendChild(c);
     return { c, a };
   });
 }""")
@@ -247,7 +302,7 @@ rep("const ctB = el('text', { class: 'ctext b', y: 14 }, ctr); ctB.textContent =
 # Wählvorgang: Ring dreht langsam, Chevrons/Adressfelder = Mesh-Verbindungen
 a, b = section(M + "dialing state machine */", M + "comm log */")
 s = s[:a] + M + """mesh display */
-let ringAngle = 0, sweepAngle = 0, ringTarget = 0;
+let ringAngle = 0, ringTarget = 0;
 const ORDER = [0, 1, 8, 2, 7, 3, 6, 4, 5];
 function setStatus(main, sub, ok) {
   $('#statusMain').textContent = main; $('#statusSub').textContent = sub;
@@ -267,7 +322,7 @@ function renderMesh(m) {
     else { el2.classList.remove('on'); el2.innerHTML = `<span>${i + 1}</span>`; el2.title = ''; }
   });
   if (key !== shownLinks) {
-    if (links.length) ringTarget = -(hash(links[links.length - 1].id) % 39) * 360 / 39 - 360;
+    if (links.length) { ringTarget = -(hash(links[links.length - 1].id) % 39) * 360 / 39 - 360; setRing(); }
     if (shownLinks !== '') {
       const before = shownLinks ? shownLinks.split(',') : [];
       for (const l of links) if (!before.includes(l.id)) addLog(`Verbindung zu ${l.id} (${l.transport}${l.rtt_ms != null ? ', ' + l.rtt_ms + ' ms' : ''})`, 'MESH', false);
@@ -276,6 +331,7 @@ function renderMesh(m) {
     shownLinks = key; setBlips(links);
   }
   eh.classList.toggle('on', links.length > 0);
+  rips.classList.toggle('on', links.length > 0);
   if (!m.running) { ctS.textContent = 'MESH'; ctB.textContent = 'AUS'; setStatus('Mesh aus', 'meshd läuft nicht'); }
   else if (!links.length) { ctS.textContent = 'MESH'; ctB.textContent = 'SUCHT'; setStatus('Suche', `${m.dialing || 0} Versuche · ${m.addrs_known || 0} Adr.`); }
   else { ctS.textContent = 'MESH-LINKS'; ctB.textContent = String(links.length); setStatus(theme === 'oasis' ? 'Portal offen' : 'Verbunden', `${links.length} Link${links.length === 1 ? '' : 's'}${avg != null ? ' · Ø ' + avg.toFixed(0) + ' ms' : ''}`, true); }
@@ -327,16 +383,57 @@ function buildTicker(d) {
   if (d.config_pending) items.push('<em>Konfigurationsänderung wartet auf Bestätigung</em>');
   const html = items.map(t => `<span>${t}</span>`).join('');
   if (html === tickerKey) return;
+  // Neuen Text erst einsetzen, wenn das Laufband von vorn beginnt: mitten im Lauf aendert eine andere Textlaenge
+  // die Breite und damit die Position (-50 %), das Band springt sichtbar (die Zahlen aendern sich alle 2 s).
+  const first = !tickerKey;
   tickerKey = html;
-  $('#ticker').innerHTML = html + html;
+  if (first || reduce) tickerEl.innerHTML = html + html;
+  else tickerNext = html;
 }
+const tickerEl = $('#ticker');
+let tickerNext = null;
+tickerEl.addEventListener('animationiteration', () => {
+  if (tickerNext) { tickerEl.innerHTML = tickerNext + tickerNext; tickerNext = null; }
+});
 
 """ + s[b:]
 
-# Hauptschleife: Ring dreht langsam weiter und gleitet zur neuesten Verbindung
-rep("  glyphRingEl.setAttribute('transform', `rotate(${ringAngle.toFixed(2)})`);",
-    """  if (!reduce) { ringTarget -= .02; ringAngle += (ringTarget - ringAngle) * .02; }
-  glyphRingEl.setAttribute('transform', `rotate(${ringAngle.toFixed(2)})`);""")
+# Bewegung: Ring driftet stetig und gleitet zur neuesten Verbindung; Gradzahl mit Drift
+a, b = section(M + "bewegung: nur CSS", M + "live numbers */")
+s = s[:a] + M + """bewegung: nur CSS
+   Es gibt keine Bild-fuer-Bild-Schleife mehr. Alles, was sich dreht oder blinkt, ist eine CSS-Animation auf einer
+   eigenen Ebene (Grafikkarte). JavaScript zieht nur zweimal pro Sekunde nach, was sich durch Daten, Groesse oder
+   Theme aendert: Hintergrund, Netzkurve und Karte zeichnen dabei nur, wenn sich wirklich etwas geaendert hat. */
+const tagRotEl = $('#tagRot');
+const DRIFT = -1.2; // °/s, wie die .ringdrift-Animation (300 s je Umdrehung rueckwaerts)
+const driftNow = () => DRIFT * performance.now() / 1000;
+// Glyphenring zum Ziel drehen (CSS-Uebergang); die stetige Drift macht die Huelle. Ziel so waehlen, dass der Ring
+// den kuerzeren Weg rueckwaerts nimmt und sich nach Stunden nicht viele Male herumdreht.
+function setRing() {
+  const want = ringTarget - driftNow();
+  let diff = ((want - ringAngle) % 360 + 360) % 360;
+  if (diff > 0) diff -= 360;
+  ringAngle += diff;
+  glyphLayer.style.transform = `rotate(${ringAngle.toFixed(2)}deg)`;
+}
+// Groesse des Tors in SVG-Einheiten fuer die HTML-Ebenen (Radarpunkte, Wellen)
+function ringUnits() {
+  const s = cssSize.get(ringWrap);
+  if (!s) { if (sizeObs) { cssSize.set(ringWrap, [ringWrap.clientWidth, ringWrap.clientHeight]); sizeObs.observe(ringWrap); } return; }
+  const u = (Math.min(s[0], s[1]) / 620).toFixed(4) + 'px';
+  if (ringWrap.style.getPropertyValue('--u') !== u) ringWrap.style.setProperty('--u', u);
+}
+let tagText = '';
+function paint() {
+  bg.drawStatic(0);
+  drawWave(0);
+  drawMap(0);
+  ringUnits();
+  const s = ((((ringAngle + driftNow()) % 360) + 360) % 360).toFixed(1) + '°';
+  if (s !== tagText) { tagRotEl.textContent = s; tagText = s; }
+}
+
+""" + s[b:]
 
 # Zahlen + Start: Daten abholen statt Zufall
 a, b = section(M + "live numbers */", "})();\n</script>")
@@ -417,16 +514,15 @@ async function poll() {
 /* ---------------------------------------------------------------- init */
 setTheme(theme, true);
 bg.resize();
-requestAnimationFrame(loop);
-if (reduce) requestAnimationFrame(() => { drawWave(0); drawMap(0); });
+requestAnimationFrame(paint);
 setTimeout(() => $('#app').classList.add('ready'), reduce ? 0 : 3400);
-setInterval(() => { if (reduce) { drawWave(0); drawMap(0); } }, 2000);
+setInterval(paint, 500);
 poll();
-addEventListener('resize', () => { if (reduce) requestAnimationFrame(loop); });
+addEventListener('resize', () => requestAnimationFrame(paint));
 """ + s[b:]
 
 # Reste, die es nicht mehr gibt
-for left in ["dialLoop", "prefillLog", "nextLog", "jitter", "TEXT[", "sWorld", "sPow"]:
+for left in ["dialLoop", "prefillLog", "nextLog", "jitter", "TEXT[", "sWorld", "sPow", "ringNow", "waverun", "tweenRing"]:
     if left in s:
         sys.exit(f"Rest gefunden: {left}")
 open(dst, "w", encoding="utf-8").write(s)

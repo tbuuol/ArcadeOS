@@ -1,0 +1,63 @@
+#!/bin/sh
+#
+# update-healthcheck – bestaetigt einen Probeboot selbst, wenn das neue System gesund ist.
+#
+# Gestartet von S95update (nur im unbestaetigten Probeboot, im Hintergrund). Prueft alle CHECK_EVERY s:
+#   - /state ist persistent eingebunden (/run/state.json)
+#   - SSH (dropbear) lauscht auf Port 22
+#   - meshd laeuft und schreibt seinen Status (ausser /state/mesh/disabled)
+#   - mit Netz (Default-Route): meshd hat mindestens eine Verbindung
+# Gelingt das HEALTHY_ROUNDS-mal hintereinander, ruft es 'arcadeos-update confirm' auf. Sonst tut es
+# nichts: die Frist von S95update laeuft ab und das System startet zurueck in den festen Slot.
+# Abschalten (dann wieder nur von Hand bestaetigen): echo 0 > /state/update/autoconfirm
+#
+
+. /usr/lib/arcadeos/common.sh
+
+CHECK_EVERY=15
+HEALTHY_ROUNDS=3
+GIVE_UP_S=480          # danach aufgeben (die Frist, Standard 600 s, macht den Rest)
+
+[ "$(cat /state/update/autoconfirm 2>/dev/null | tr -cd 0-9)" = 0 ] && exit 0
+
+log() { logger -t update-healthcheck "$*" 2>/dev/null || true; }
+
+# Eine Runde; gibt den ersten Grund aus, warum es (noch) nicht gesund ist
+check() {
+	grep -q '"mode":"persistent"' /run/state.json 2>/dev/null || { echo "state nicht persistent"; return 1; }
+	netstat -lnt 2>/dev/null | grep -q ':22 ' || { echo "SSH lauscht nicht"; return 1; }
+	if [ ! -f /state/mesh/disabled ]; then
+		pidof meshd >/dev/null || { echo "meshd laeuft nicht"; return 1; }
+		[ -f /run/meshd.json ] || { echo "kein meshd-Status"; return 1; }
+		age=$(( $(date +%s) - $(stat -c %Y /run/meshd.json) ))
+		[ "$age" -le 30 ] || { echo "meshd-Status veraltet (${age}s)"; return 1; }
+		if ip route 2>/dev/null | grep -q '^default'; then
+			grep -q '"links":\[{' /run/meshd.json || { echo "meshd ohne Verbindung"; return 1; }
+		fi
+	fi
+	return 0
+}
+
+start=$(uptime_s)
+ok=0
+why=""
+while [ $(( $(uptime_s) - start )) -lt $GIVE_UP_S ]; do
+	sleep $CHECK_EVERY
+	# schon bestaetigt (z.B. von Hand)? dann fertig
+	arcadeos-update status 2>/dev/null | grep -q '"trying":true' || exit 0
+	if why=$(check); then
+		ok=$((ok + 1))
+		if [ $ok -ge $HEALTHY_ROUNDS ]; then
+			log "Slot $(running_slot) gesund ($ok Runden), bestaetige"
+			audit update-autoconfirm "slot=$(running_slot) uptime=$(uptime_s)s"
+			arcadeos-update confirm >/dev/null 2>&1 && exit 0
+			log "confirm fehlgeschlagen"
+			ok=0
+		fi
+	else
+		ok=0
+	fi
+done
+log "Slot $(running_slot) nicht gesund ($why), keine Bestaetigung – Frist entscheidet"
+audit update-autoconfirm-failed "slot=$(running_slot) grund=$why"
+exit 0

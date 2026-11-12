@@ -41,7 +41,8 @@ uptime_s() {
 # audit <aktion> <detail>
 audit() {
 	[ -d /state/log ] || return 0
-	who=${SSH_CONNECTION%% *}
+	who=${SSH_CONNECTION:-}
+	who=${who%% *}
 	printf '{"t":"%s","uptime":%s,"slot":"%s","who":"%s","action":"%s","detail":"%s"}\n' \
 		"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(uptime_s)" "$(running_slot)" "${who:-local}" \
 		"$(printf %s "$1" | tr -d '"\\\n')" "$(printf %s "$2" | tr -d '"\\\n')" >> /state/log/audit.log

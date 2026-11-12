@@ -3,6 +3,7 @@
 # Probeboot-Frist: Laeuft das System in einem noch nicht bestaetigten Slot, startet es nach der
 # Frist neu (-> GRUB bootet wieder den festen Slot), sofern nicht vorher
 # 'arcadeos-update confirm' aufgerufen wurde. Frist: /state/update/confirm_timeout (Standard 600 s).
+# Die Bestaetigung uebernimmt update-healthcheck selbst, sobald das neue System gesund ist.
 #
 
 . /usr/lib/arcadeos/common.sh
@@ -28,7 +29,9 @@ start() {
 		reboot
 	) </dev/null >/dev/null 2>&1 &
 	echo $! > $TIMER_PID
-	echo "Probeboot Slot $(running_slot): bestaetigen mit 'arcadeos-update confirm' innerhalb ${t}s, sonst Neustart zurueck"
+	# Selbstpruefung: ist das neue System gesund, bestaetigt es sich selbst (update-healthcheck)
+	/usr/lib/arcadeos/update-healthcheck </dev/null >/dev/null 2>&1 &
+	echo "Probeboot Slot $(running_slot): Selbstpruefung laeuft (oder 'arcadeos-update confirm') innerhalb ${t}s, sonst Neustart zurueck"
 }
 
 stop() {

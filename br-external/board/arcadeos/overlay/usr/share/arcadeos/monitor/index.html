@@ -239,32 +239,32 @@ h1 em { font-style:normal; color:var(--pri); }
 .addr .status b { display:block; font-family:var(--head); font-weight:var(--head-weight); font-size:.95rem; letter-spacing:.16em; color:var(--acc); text-shadow:0 0 10px rgba(var(--acc-rgb), .6); }
 .addr .status.ok b { color:var(--ok); text-shadow:0 0 10px var(--ok); }
 
-.ring-wrap { flex:1; min-height:0; position:relative; display:grid; place-items:center; }
+.ring-wrap { flex:1; min-height:0; position:relative; display:grid; place-items:center; overflow:hidden; } /* gedrehte Ebenen ragen mit ihren Ecken hinaus: abschneiden, sonst Scrollbalken */
 #gate { position:absolute; inset:0; width:100%; height:100%; display:block; overflow:hidden; }
-#gate .ln { fill:none; stroke:var(--pri); }
-#gate .band { fill:none; stroke:rgba(var(--pri-rgb), .07); }
-#gate .tick { stroke:rgba(var(--pri-rgb), .45); }
-#gate .tick.l { stroke:var(--pri); }
-#gate .gly path { fill:none; stroke:rgba(var(--pri-rgb), .55); stroke-width:.9; stroke-linecap:round; stroke-linejoin:round; transition:stroke .3s; }
-#gate .gly.sel path { stroke:var(--acc); stroke-width:1.1; filter:drop-shadow(0 0 2px var(--acc)); }
-#gate .sep { stroke:rgba(var(--pri-rgb), .25); }
-#gate .chev .house { fill:rgba(0,0,0,.45); stroke:rgba(var(--pri-rgb), .5); stroke-width:1.2; }
-#gate .chev .v { fill:rgba(var(--acc-rgb), .14); stroke:rgba(var(--acc-rgb), .45); stroke-width:1; transition:fill .25s, stroke .25s; }
-#gate .chev .lamp { fill:rgba(var(--acc-rgb), .15); transition:fill .25s; }
-#gate .chev.lit .v { fill:var(--acc); stroke:#fff6; filter:url(#glow); }
-#gate .chev.lit .lamp { fill:var(--acc); filter:url(#glow); }
-#gate .chev.flash .v { fill:#fff; }
-#gate .grid { fill:none; stroke:rgba(var(--pri-rgb), .18); stroke-dasharray:2 5; }
-#gate .cross { stroke:rgba(var(--pri-rgb), .18); }
-#gate .deg { fill:var(--muted); font-family:var(--mono); font-size:9px; text-anchor:middle; dominant-baseline:central; }
-#gate .blip { fill:var(--acc); }
-#gate .blip.f { fill:var(--ok); }
-#gate .sweepline { stroke:var(--pri); stroke-width:1.5; filter:url(#glow); }
-#gate .arc { fill:none; stroke:var(--pri); stroke-width:2; opacity:.55; }
-#gate .arc2 { fill:none; stroke:var(--acc); stroke-width:1; opacity:.5; stroke-dasharray:3 6; }
-#gate .ctext { font-family:var(--head); text-anchor:middle; dominant-baseline:central; }
-#gate .ctext.s { fill:var(--muted); font-size:11px; letter-spacing:.3em; }
-#gate .ctext.b { fill:var(--text); font-size:22px; font-weight:700; letter-spacing:.18em; }
+.gl .ln { fill:none; stroke:var(--pri); }
+.gl .band { fill:none; stroke:rgba(var(--pri-rgb), .07); }
+.gl .tick { stroke:rgba(var(--pri-rgb), .45); }
+.gl .tick.l { stroke:var(--pri); }
+.gl .gly path { fill:none; stroke:rgba(var(--pri-rgb), .55); stroke-width:.9; stroke-linecap:round; stroke-linejoin:round; transition:stroke .3s; }
+.gl .gly.sel path { stroke:var(--acc); stroke-width:1.1; filter:drop-shadow(0 0 2px var(--acc)); }
+.gl .sep { stroke:rgba(var(--pri-rgb), .25); }
+.gl .chev .house { fill:rgba(0,0,0,.45); stroke:rgba(var(--pri-rgb), .5); stroke-width:1.2; }
+.gl .chev .v { fill:rgba(var(--acc-rgb), .14); stroke:rgba(var(--acc-rgb), .45); stroke-width:1; transition:fill .25s, stroke .25s; }
+.gl .chev .lamp { fill:rgba(var(--acc-rgb), .15); transition:fill .25s; }
+.gl .chev.lit .v { fill:var(--acc); stroke:#fff6; filter:url(#glow); }
+.gl .chev.lit .lamp { fill:var(--acc); filter:url(#glow); }
+.gl .chev.flash .v { fill:#fff; }
+.gl .grid { fill:none; stroke:rgba(var(--pri-rgb), .18); stroke-dasharray:2 5; }
+.gl .cross { stroke:rgba(var(--pri-rgb), .18); }
+.gl .deg { fill:var(--muted); font-family:var(--mono); font-size:9px; text-anchor:middle; dominant-baseline:central; }
+.gl .blip { fill:var(--acc); }
+.gl .blip.f { fill:var(--ok); }
+.gl .sweepline { stroke:var(--pri); stroke-width:1.5; filter:url(#glow); }
+.gl .arc { fill:none; stroke:var(--pri); stroke-width:2; opacity:.55; }
+.gl .arc2 { fill:none; stroke:var(--acc); stroke-width:1; opacity:.5; stroke-dasharray:3 6; }
+.gl .ctext { font-family:var(--head); text-anchor:middle; dominant-baseline:central; }
+.gl .ctext.s { fill:var(--muted); font-size:11px; letter-spacing:.3em; }
+.gl .ctext.b { fill:var(--text); font-size:22px; font-weight:700; letter-spacing:.18em; }
 #eh { opacity:0; transition:opacity 1.2s; }
 #eh.on { opacity:1; }
 #eh .rip { fill:none; stroke:rgba(255,255,255,.5); stroke-width:1.2; transform-box:fill-box; transform-origin:center; animation:ripple 3.2s ease-out infinite; }
@@ -288,7 +288,7 @@ h1 em { font-style:normal; color:var(--pri); }
 .spark.a i { background:var(--acc); box-shadow:0 0 6px var(--acc); }
 
 /* ------------------------------------------------------------------ right */
-.map-wrap { position:relative; width:min(100%, 34vh); aspect-ratio:1; margin:0 auto; flex:none; }
+.map-wrap { position:relative; width:min(100%, 34vh); aspect-ratio:1; margin:0 auto; flex:none; overflow:hidden; } /* der drehende Strahl ist ein Quadrat: seine Ecken liessen sonst den Scrollbalken der Spalte zucken */
 .map-wrap canvas { position:absolute; inset:0; width:100%; height:100%; }
 .map-wrap .corner { position:absolute; font-size:.62rem; color:var(--muted); letter-spacing:.12em; }
 .map-wrap .c1 { top:0; left:0; } .map-wrap .c2 { top:0; right:0; } .map-wrap .c3 { bottom:0; left:0; } .map-wrap .c4 { bottom:0; right:0; color:var(--acc); }
@@ -408,7 +408,52 @@ h1 em { font-style:normal; color:var(--pri); }
   .boot { display:none; }
   .tick-track { animation:none !important; }
 }
+/* ------------------------------------------------------------------ bewegte Ebenen (nur CSS)
+   Jeder bewegte Teil ist ein eigenes Element, das als Ganzes per CSS-Animation gedreht bzw. ein-/ausgeblendet
+   wird: das erledigt die Grafikkarte, ohne neu zu malen. (Vorher drehte JavaScript 60-mal pro Sekunde Gruppen
+   innerhalb eines SVG – Firefox malt dann jedes Mal das ganze Tor mit seinen Filtern neu.) */
+.gl { position:absolute; inset:0; width:100%; height:100%; display:block; overflow:hidden; pointer-events:none; }
+.gl.rotA, .gl.rotB, .gl.sweepL, .ringdrift { will-change:transform; }
+.gl.rotA { animation:spin 60s linear infinite; }              /* +6°/s */
+.gl.rotB { animation:spin 120s linear infinite reverse; }     /* -3°/s */
+.gl.sweepL { animation:spin 5s linear infinite; }             /* Radarstrahl 72°/s */
+.ringdrift { position:absolute; inset:0; pointer-events:none; animation:spin 300s linear infinite reverse; } /* Glyphenring -1,2°/s */
+.ringdrift .gl { transition:transform 2.5s cubic-bezier(.2, .7, .2, 1); }
+/* HTML-Ebenen im Tor: Ursprung = Mitte, Einheit --u = 1 SVG-Einheit in px (JS setzt --u) */
+.gu { position:absolute; left:50%; top:50%; width:0; height:0; pointer-events:none; }
+.gu .blip { position:absolute; border-radius:50%; background:var(--acc); box-shadow:0 0 calc(5 * var(--u, 1px)) var(--acc); animation:blipfade 5s linear infinite; will-change:opacity; }
+.gu .blip.f { background:var(--ok); box-shadow:0 0 calc(5 * var(--u, 1px)) var(--ok); }
+@keyframes blipfade { 0% { opacity:1; } 72% { opacity:.12; } 100% { opacity:.12; } }   /* hell, wenn der Strahl vorbeikommt */
+.gu.rips { opacity:0; transition:opacity 1.2s; }
+.gu.rips.on { opacity:1; }
+.gu .rip { position:absolute; left:calc(-175 * var(--u, 1px)); top:calc(-175 * var(--u, 1px)); width:calc(350 * var(--u, 1px)); height:calc(350 * var(--u, 1px));
+  box-sizing:border-box; border:calc(1.2 * var(--u, 1px)) solid rgba(255,255,255,.5); border-radius:50%; animation:ripple 3.2s ease-out infinite; will-change:transform, opacity; }
+.gu .rip:nth-child(2) { animation-delay:-1.06s; } .gu .rip:nth-child(3) { animation-delay:-2.13s; }
+/* Karte: Strahl und Lebenszeichen (--mr = Kartenradius in px, setzt JS) */
+.map-wrap .msweep { position:absolute; left:50%; top:50%; width:calc(2 * var(--mr, 50px)); height:calc(2 * var(--mr, 50px));
+  margin:calc(-1 * var(--mr, 50px)) 0 0 calc(-1 * var(--mr, 50px)); border-radius:50%; pointer-events:none; will-change:transform;
+  background:conic-gradient(rgba(var(--pri-rgb), 0) 0deg, rgba(var(--pri-rgb), .28) 51.5deg, rgba(var(--pri-rgb), 0) 51.5deg);
+  animation:spin 6.98s linear infinite; }
+.map-wrap .lifes { position:absolute; left:50%; top:50%; width:0; height:0; pointer-events:none; }
+.lifes .orb { position:absolute; left:0; top:0; width:0; height:0; will-change:transform;
+  animation:spin var(--dur, 60s) linear infinite var(--dir, normal); animation-delay:var(--del, 0s); }
+.lifes .orb i { position:absolute; left:calc(var(--d) * var(--mr, 50px) - 2px); top:-2px; width:4px; height:4px; border-radius:50%; background:var(--ok); box-shadow:0 0 6px var(--ok); }
+.lifes .orb.unk i { left:calc(var(--d) * var(--mr, 50px) - 3.2px); top:-3.2px; width:6.4px; height:6.4px; background:var(--acc); box-shadow:0 0 6px var(--acc);
+  animation:lifepulse 1.257s ease-in-out infinite; will-change:opacity; }
+.lifes .orb.unk::after { content:''; position:absolute; left:calc(var(--d) * var(--mr, 50px) - 10px); top:-10px; width:20px; height:20px; box-sizing:border-box;
+  border:1px solid var(--acc); border-radius:50%; box-shadow:0 0 6px var(--acc); animation:lifering .667s linear infinite; will-change:transform, opacity; }
+@keyframes lifepulse { 0%, 100% { opacity:1; } 50% { opacity:.2; } }
+@keyframes lifering { from { transform:scale(.6); opacity:.6; } to { transform:scale(1); opacity:0; } }
+
+/* Test-Schalter (?x=noblur,noscan,noclip,nocss,nojs): einzelne Effekte abschalten, um Ruckeln einzugrenzen */
+.x-noblur .panel { -webkit-backdrop-filter:none !important; backdrop-filter:none !important; }
+.x-noscan body::after { display:none !important; }
+.x-noclip .panel { clip-path:none !important; }
+.x-nocss *, .x-nocss *::before, .x-nocss *::after { animation:none !important; }
 </style>
+<script>
+for (const x of (new URLSearchParams(location.search).get('x') || '').split(',')) if (/^no[a-z]+$/.test(x)) document.documentElement.classList.add('x-' + x);
+</script>
 </head>
 <body>
 <canvas id="bg" aria-hidden="true"></canvas>
@@ -666,17 +711,32 @@ function buildSectors(d) {
 
 /* ---------------------------------------------------------------- canvases helpers */
 const dpr = Math.min(2, window.devicePixelRatio || 1);
+// Groesse der Canvas nicht in jedem Bild abfragen (getBoundingClientRect erzwingt ein Layout mitten in der
+// Animation): ResizeObserver merkt sie sich, sizeCanvas liest nur noch die gemerkte Groesse.
+const cssSize = new WeakMap();
+const sizeObs = 'ResizeObserver' in window ? new ResizeObserver(es => {
+  for (const e of es) { cssSize.set(e.target, [e.contentRect.width, e.contentRect.height]); e.target._dirty = true; }
+}) : null;
 function sizeCanvas(c) {
-  const r = c.getBoundingClientRect();
-  const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
-  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  let s = cssSize.get(c);
+  if (!s || !sizeObs) {
+    const r = c.getBoundingClientRect(); s = [r.width, r.height];
+    if (sizeObs) { cssSize.set(c, s); sizeObs.observe(c); }
+  }
+  const w = Math.max(1, Math.round(s[0] * dpr)), h = Math.max(1, Math.round(s[1] * dpr));
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; c._dirty = true; }
   return [c.width, c.height];
 }
 const rgba = (rgb, a) => `rgba(${rgb},${a})`;
 
-/* waveform: Netzverkehr der letzten Minuten */
+/* waveform: Netzverkehr der letzten Minuten. Haengt nur an den Daten (alle 2 s), nicht an der Zeit:
+   neu gezeichnet nur bei neuen Daten, anderer Groesse oder anderem Theme. */
+let waveDrawn = null;
 function drawWave(t) {
   const [w, h] = sizeCanvas(waveC); if (w < 4 || h < 4) return;
+  const key = `${w}x${h}|${C.pri}|${C.acc}`;
+  if (waveDrawn && waveDrawn.d === D && waveDrawn.key === key) return;
+  waveDrawn = { d: D, key };
   wctx.clearRect(0, 0, w, h);
   wctx.strokeStyle = rgba(C.priRgb, .12); wctx.lineWidth = 1;
   for (let x = 0; x < w; x += 18 * dpr) { wctx.beginPath(); wctx.moveTo(x, 0); wctx.lineTo(x, h); wctx.stroke(); }
@@ -696,11 +756,29 @@ const waveC = $('#wave'), wctx = waveC.getContext('2d');
 
 /* ---------------------------------------------------------------- city map */
 const mapC = $('#map'), mctx = mapC.getContext('2d');
+// Strahl und Lebenszeichen als HTML ueber der Karte, bewegt nur per CSS (siehe .msweep / .lifes im Stil)
+const mapWrap = mapC.parentNode;
+const mapSweep = document.createElement('div'); mapSweep.className = 'msweep';
+const lifeG = document.createElement('div'); lifeG.className = 'lifes';
+mapWrap.insertBefore(lifeG, mapC.nextSibling); mapWrap.insertBefore(mapSweep, lifeG);
+mapSweep.style.animationDelay = `-${((performance.now() / 1000) % 6.98).toFixed(3)}s`;
 let lifes = [];
 function setLifes(n, unk) {
   n = clamp(n, 0, 60);
   if (lifes.length === n && lifes.filter(p => p.unk).length === unk) return;
   lifes = Array.from({ length: n }, (_, i) => { const r = rng(i + 99); return { a: r() * Math.PI * 2, d: .1 + r() * .75, v: (r() - .5) * .002, unk: i < unk }; });
+  // Jeder Punkt kreist wie vorher um die Mitte (v rad je Bild bei 30 Bildern/s), jetzt als CSS-Drehung
+  lifeG.textContent = '';
+  for (const p of lifes) {
+    const w = Math.abs(p.v) * 30, dur = clamp(w > 0 ? 2 * Math.PI / w : 3600, 20, 3600);
+    const rev = p.v < 0, frac = p.a / (2 * Math.PI);
+    const start = rev ? 1 - frac : frac; // Anteil der Umdrehung beim Start = Anfangswinkel
+    const o = document.createElement('div');
+    o.className = 'orb' + (p.unk ? ' unk' : '');
+    o.style.cssText = `--d:${p.d.toFixed(3)};--dur:${dur.toFixed(1)}s;--dir:${rev ? 'reverse' : 'normal'};--del:-${(start * dur).toFixed(2)}s`;
+    o.appendChild(document.createElement('i'));
+    lifeG.appendChild(o);
+  }
 }
 function drawCity(ctx, R, t) {
   ctx.save();
@@ -720,42 +798,39 @@ function drawCity(ctx, R, t) {
   ctx.beginPath(); ctx.arc(0, 0, R * .08, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
 }
+// Was sich auf der Karte nicht bewegt (Ringe, Gitter, Stadt mit Leuchten), einmal je Groesse/Theme
+// vorzeichnen: shadowBlur ist teuer und muss nicht 30-mal pro Sekunde neu gerechnet werden.
+let mapStatic = null;
+function mapStaticLayer(w, h, R) {
+  const key = `${w}x${h}|${C.pri}`;
+  if (mapStatic && mapStatic.key === key) return mapStatic.c;
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const x = c.getContext('2d');
+  x.translate(w / 2, h / 2);
+  x.strokeStyle = rgba(C.priRgb, .2); x.lineWidth = 1 * dpr;
+  for (const f of [.33, .66, 1]) { x.beginPath(); x.arc(0, 0, R * f, 0, Math.PI * 2); x.stroke(); }
+  x.setLineDash([2 * dpr, 4 * dpr]);
+  x.beginPath(); x.moveTo(-R, 0); x.lineTo(R, 0); x.moveTo(0, -R); x.lineTo(0, R); x.stroke();
+  x.setLineDash([]);
+  x.strokeStyle = rgba(C.priRgb, .75); x.fillStyle = rgba(C.priRgb, .5); x.lineWidth = 1.6 * dpr;
+  x.shadowColor = C.pri; x.shadowBlur = 8 * dpr;
+  drawCity(x, R * .95, 0);
+  mapStatic = { key, c };
+  return c;
+}
+// Die Karte selbst ist jetzt statisch: neu gezeichnet nur bei anderer Groesse oder anderem Theme.
+let mapDrawn = '';
 function drawMap(t) {
   const [w, h] = sizeCanvas(mapC); if (w < 4) return;
   const R = Math.min(w, h) / 2 * .92;
+  // Radius fuer Strahl und Punkte (CSS-Pixel)
+  const mr = (R / dpr).toFixed(1) + 'px';
+  if (mapWrap.style.getPropertyValue('--mr') !== mr) mapWrap.style.setProperty('--mr', mr);
+  const key = `${w}x${h}|${C.pri}`;
+  if (mapDrawn === key) return;
+  mapDrawn = key;
   mctx.clearRect(0, 0, w, h);
-  mctx.save(); mctx.translate(w / 2, h / 2);
-  // rings and grid
-  mctx.strokeStyle = rgba(C.priRgb, .2); mctx.lineWidth = 1 * dpr;
-  for (const f of [.33, .66, 1]) { mctx.beginPath(); mctx.arc(0, 0, R * f, 0, Math.PI * 2); mctx.stroke(); }
-  mctx.setLineDash([2 * dpr, 4 * dpr]);
-  mctx.beginPath(); mctx.moveTo(-R, 0); mctx.lineTo(R, 0); mctx.moveTo(0, -R); mctx.lineTo(0, R); mctx.stroke();
-  mctx.setLineDash([]);
-  // city
-  mctx.strokeStyle = rgba(C.priRgb, .75); mctx.fillStyle = rgba(C.priRgb, .5); mctx.lineWidth = 1.6 * dpr;
-  mctx.shadowColor = C.pri; mctx.shadowBlur = 8 * dpr;
-  drawCity(mctx, R * .95, t);
-  mctx.shadowBlur = 0;
-  // sweep
-  const sa = (t * .9) % (Math.PI * 2);
-  const g = mctx.createConicGradient ? mctx.createConicGradient(sa - Math.PI / 2 - .9, 0, 0) : null;
-  if (g) {
-    g.addColorStop(0, rgba(C.priRgb, 0)); g.addColorStop(.143, rgba(C.priRgb, .28)); g.addColorStop(.1431, rgba(C.priRgb, 0)); g.addColorStop(1, rgba(C.priRgb, 0));
-    mctx.fillStyle = g; mctx.beginPath(); mctx.arc(0, 0, R, 0, Math.PI * 2); mctx.fill();
-  }
-  // life signs
-  for (const p of lifes) {
-    if (!reduce) { p.a += p.v; p.d += Math.sin(t * .5 + p.a * 3) * .0006; }
-    const x = Math.cos(p.a) * p.d * R, y = Math.sin(p.a) * p.d * R;
-    const col = p.unk ? C.acc : C.ok;
-    const pulse = p.unk ? .6 + .4 * Math.sin(t * 5) : 1;
-    mctx.fillStyle = col; mctx.shadowColor = col; mctx.shadowBlur = 6 * dpr; mctx.globalAlpha = pulse;
-    mctx.beginPath(); mctx.arc(x, y, (p.unk ? 3.2 : 2) * dpr, 0, Math.PI * 2); mctx.fill();
-    if (p.unk) { mctx.strokeStyle = col; mctx.lineWidth = 1 * dpr; mctx.beginPath(); mctx.arc(x, y, (6 + 4 * ((t * 1.5) % 1)) * dpr, 0, Math.PI * 2); mctx.globalAlpha = .6 * (1 - (t * 1.5) % 1); mctx.stroke(); }
-    mctx.globalAlpha = 1;
-  }
-  mctx.shadowBlur = 0;
-  mctx.restore();
+  mctx.drawImage(mapStaticLayer(w, h, R), 0, 0);
 }
 
 /* ---------------------------------------------------------------- gate / radar svg */
@@ -766,11 +841,23 @@ gate.innerHTML = `<defs>
   <radialGradient id="coreGrad"><stop offset="0" style="stop-color:var(--pri);stop-opacity:.10"/><stop offset="1" style="stop-color:var(--pri);stop-opacity:0"/></radialGradient>
   <linearGradient id="sweepGrad" gradientUnits="userSpaceOnUse" x1="-150" y1="-90" x2="0" y2="-185"><stop offset="0" style="stop-color:var(--pri);stop-opacity:0"/><stop offset="1" style="stop-color:var(--pri);stop-opacity:.38"/></linearGradient>
 </defs>`;
-const G = id => el('g', { id }, gate);
-// outer slow arcs
-const arcs = G('arcs');
+// Ebenen: #gate (unten) traegt die Definitionen und alles Statische; jedes bewegte Teil bekommt ein eigenes
+// SVG bzw. HTML-Element ueber #gate, das CSS als Ganzes dreht oder ausblendet (siehe .gl / .gu im Stil).
+// Die Phasen haengen an performance.now(), damit Strahl und Radarpunkte zusammenpassen.
+const ringWrap = gate.parentNode, ringTag = ringWrap.querySelector('.tag');
+gate.classList.add('gl');
+function layer(cls, parent) {
+  const s = el('svg', { viewBox: '-310 -310 620 620', class: ('gl ' + cls).trim(), 'aria-hidden': 'true' });
+  if (parent) parent.appendChild(s); else ringWrap.insertBefore(s, ringTag);
+  return s;
+}
+function hlayer(cls) { const d = document.createElement('div'); d.className = 'gu ' + cls; ringWrap.insertBefore(d, ringTag); return d; }
+const phase = period => `-${((performance.now() / 1000) % period).toFixed(3)}s`;
+const G = (id, parent) => el('g', { id }, parent || gate);
+// outer slow arcs: zwei eigene Ebenen, per CSS gedreht
 const arcPath = (r, a0, a1) => { const p = a => [r * Math.sin(a * Math.PI / 180), -r * Math.cos(a * Math.PI / 180)]; const [x0, y0] = p(a0), [x1, y1] = p(a1); return `M${x0},${y0}A${r},${r} 0 ${a1 - a0 > 180 ? 1 : 0} 1 ${x1},${y1}`; };
-const arcA = el('g', {}, arcs), arcB = el('g', {}, arcs);
+const arcA = layer('rotA'), arcB = layer('rotB');
+arcA.style.animationDelay = phase(60); arcB.style.animationDelay = phase(120);
 for (const [a0, a1] of [[10, 70], [130, 160], [200, 290], [320, 340]]) el('path', { class: 'arc', d: arcPath(302, a0, a1) }, arcA);
 el('circle', { class: 'arc2', r: 296 }, arcB);
 // tick ring
@@ -784,8 +871,12 @@ for (let i = 0; i < 120; i++) {
 el('circle', { class: 'band', r: 252, 'stroke-width': 36 }, ticks);
 el('circle', { class: 'ln', r: 234, 'stroke-width': 1.2, opacity: .7 }, ticks);
 el('circle', { class: 'ln', r: 268, 'stroke-width': 1.2, opacity: .7 }, ticks);
-// rotating glyph ring
-const glyphRing = G('glyphRing');
+// rotating glyph ring: eigene Ebene (dreht per Uebergang zum Ziel) in einer Huelle, die stetig driftet
+const ringDrift = document.createElement('div'); ringDrift.className = 'ringdrift';
+ringWrap.insertBefore(ringDrift, ringTag);
+ringDrift.style.animationDelay = phase(300);
+const glyphLayer = layer('', ringDrift);
+const glyphRing = G('glyphRing', glyphLayer);
 el('circle', { class: 'band', r: 207, 'stroke-width': 50 }, glyphRing);
 el('circle', { class: 'ln', r: 182, 'stroke-width': 1, opacity: .5 }, glyphRing);
 const glyphEls = [];
@@ -806,30 +897,44 @@ for (const [a, t] of [[0, '000'], [90, '090'], [180, '180'], [270, '270']]) {
   const r = 160, ra = a * Math.PI / 180;
   el('text', { class: 'deg', x: (r * Math.sin(ra)) + (a === 90 ? -6 : a === 270 ? 6 : 0), y: -r * Math.cos(ra) }, radar).textContent = t;
 }
-const sweep = el('g', {}, radar);
+// Radarstrahl: eigene Ebene, 5 s je Umdrehung (72°/s)
+const sweepL = layer('sweepL');
+sweepL.style.animationDelay = phase(5);
+const sweep = el('g', {}, sweepL);
 el('path', { d: 'M0,0L-137.9,-115.7A180,180 0 0,1 0,-180Z', fill: 'url(#sweepGrad)' }, sweep);
 el('line', { class: 'sweepline', x1: 0, y1: 0, x2: 0, y2: -180 }, sweep);
-const blipG = el('g', {}, radar);
+// Radarpunkte: HTML mit Leuchten (box-shadow); hell, wenn der Strahl vorbeikommt (gleiche 5 s, versetzt um ihren Winkel)
+const blipG = hlayer('blips');
 let blips = [];
 function setBlips(links) {
-  blipG.innerHTML = '';
+  blipG.textContent = '';
+  const now = performance.now() / 1000;
   blips = links.map(l => {
     const a = hash(l.id) % 360, d = 40 + clamp((l.rtt_ms || 200) / 400, 0, 1) * 125;
-    const c = el('circle', { class: 'blip' + (l.transport === 'websocket' ? '' : ' f'), r: l.transport === 'websocket' ? 4.2 : 3.4, cx: d * Math.sin(a * Math.PI / 180), cy: -d * Math.cos(a * Math.PI / 180), filter: 'url(#glow)' }, blipG);
+    const ws = l.transport === 'websocket', r = ws ? 4.2 : 3.4;
+    const x = d * Math.sin(a * Math.PI / 180), y = -d * Math.cos(a * Math.PI / 180);
+    const c = document.createElement('i');
+    c.className = 'blip' + (ws ? '' : ' f');
+    const u = v => `calc(${v.toFixed(2)} * var(--u, 1px))`;
+    c.style.cssText = `left:${u(x - r)};top:${u(y - r)};width:${u(2 * r)};height:${u(2 * r)};animation-delay:-${((((now - a / 72) % 5) + 5) % 5).toFixed(3)}s`;
+    blipG.appendChild(c);
     return { c, a };
   });
 }
-// event horizon
-const eh = G('eh');
+// event horizon: Flaeche statisch, Wellen als HTML-Ebene darueber
+const ehL = layer('');
+const eh = G('eh', ehL);
 el('circle', { r: 181, fill: 'url(#ehGrad)' }, eh);
 el('circle', { r: 181, fill: 'none', stroke: '#fff', 'stroke-opacity': .6, 'stroke-width': 2, filter: 'url(#glow)' }, eh);
-for (let i = 0; i < 3; i++) el('circle', { class: 'rip', r: 175 }, eh);
-// center text
-const ctr = G('ctr');
+const rips = hlayer('rips');
+for (let i = 0; i < 3; i++) rips.appendChild(document.createElement('i')).className = 'rip';
+// center text und Chevrons: oberste statische Ebene
+const topL = layer('');
+const ctr = G('ctr', topL);
 const ctS = el('text', { class: 'ctext s', y: -14 }, ctr); ctS.textContent = 'STATUS';
 const ctB = el('text', { class: 'ctext b', y: 14 }, ctr); ctB.textContent = '…';
 // chevrons
-const chevG = G('chevrons');
+const chevG = G('chevrons', topL);
 const chevs = [];
 for (let j = 0; j < 9; j++) {
   const g = el('g', { class: 'chev', transform: `rotate(${j * 40}) translate(0,-252)` }, chevG);
@@ -844,7 +949,7 @@ $('#slots').innerHTML = Array.from({ length: 7 }, (_, i) => `<div class="slot" d
 const slotEls = [...document.querySelectorAll('.slot')];
 
 /* ---------------------------------------------------------------- mesh display */
-let ringAngle = 0, sweepAngle = 0, ringTarget = 0;
+let ringAngle = 0, ringTarget = 0;
 const ORDER = [0, 1, 8, 2, 7, 3, 6, 4, 5];
 function setStatus(main, sub, ok) {
   $('#statusMain').textContent = main; $('#statusSub').textContent = sub;
@@ -864,7 +969,7 @@ function renderMesh(m) {
     else { el2.classList.remove('on'); el2.innerHTML = `<span>${i + 1}</span>`; el2.title = ''; }
   });
   if (key !== shownLinks) {
-    if (links.length) ringTarget = -(hash(links[links.length - 1].id) % 39) * 360 / 39 - 360;
+    if (links.length) { ringTarget = -(hash(links[links.length - 1].id) % 39) * 360 / 39 - 360; setRing(); }
     if (shownLinks !== '') {
       const before = shownLinks ? shownLinks.split(',') : [];
       for (const l of links) if (!before.includes(l.id)) addLog(`Verbindung zu ${l.id} (${l.transport}${l.rtt_ms != null ? ', ' + l.rtt_ms + ' ms' : ''})`, 'MESH', false);
@@ -873,6 +978,7 @@ function renderMesh(m) {
     shownLinks = key; setBlips(links);
   }
   eh.classList.toggle('on', links.length > 0);
+  rips.classList.toggle('on', links.length > 0);
   if (!m.running) { ctS.textContent = 'MESH'; ctB.textContent = 'AUS'; setStatus('Mesh aus', 'meshd läuft nicht'); }
   else if (!links.length) { ctS.textContent = 'MESH'; ctB.textContent = 'SUCHT'; setStatus('Suche', `${m.dialing || 0} Versuche · ${m.addrs_known || 0} Adr.`); }
   else { ctS.textContent = 'MESH-LINKS'; ctB.textContent = String(links.length); setStatus(theme === 'oasis' ? 'Portal offen' : 'Verbunden', `${links.length} Link${links.length === 1 ? '' : 's'}${avg != null ? ' · Ø ' + avg.toFixed(0) + ' ms' : ''}`, true); }
@@ -928,9 +1034,18 @@ function buildTicker(d) {
   if (d.config_pending) items.push('<em>Konfigurationsänderung wartet auf Bestätigung</em>');
   const html = items.map(t => `<span>${t}</span>`).join('');
   if (html === tickerKey) return;
+  // Neuen Text erst einsetzen, wenn das Laufband von vorn beginnt: mitten im Lauf aendert eine andere Textlaenge
+  // die Breite und damit die Position (-50 %), das Band springt sichtbar (die Zahlen aendern sich alle 2 s).
+  const first = !tickerKey;
   tickerKey = html;
-  $('#ticker').innerHTML = html + html;
+  if (first || reduce) tickerEl.innerHTML = html + html;
+  else tickerNext = html;
 }
+const tickerEl = $('#ticker');
+let tickerNext = null;
+tickerEl.addEventListener('animationiteration', () => {
+  if (tickerNext) { tickerEl.innerHTML = tickerNext + tickerNext; tickerNext = null; }
+});
 
 /* ---------------------------------------------------------------- background canvas */
 const bg = (() => {
@@ -940,7 +1055,9 @@ const bg = (() => {
     W = c.width = Math.round(innerWidth * dpr); H = c.height = Math.round(innerHeight * dpr);
     reset();
   }
+  let dirty = true; // statischer Hintergrund: nur nach Groessen- oder Theme-Wechsel neu zeichnen
   function reset() {
+    dirty = true;
     readColors();
     const n = Math.round(Math.min(140, W * H / (dpr * dpr) / 14000));
     const r = rng(42);
@@ -1001,12 +1118,13 @@ const bg = (() => {
     }
     ctx.restore();
   }
-  function frame(t) {
+  // k = vergangene Zeit in 60stel Sekunden: gleiche Geschwindigkeit, egal wie oft gezeichnet wird
+  function frame(t, k = 1) {
     ctx.clearRect(0, 0, W, H);
     if (hex) ctx.drawImage(hex, 0, 0);
     if (theme === 'oasis') synthGrid(t); else snowflake(t);
     for (const p of parts) {
-      if (!reduce) { p.y -= p.v; p.x += Math.sin(t * .6 + p.p) * .15 * dpr; if (p.y < -5) { p.y = H + 5; } }
+      if (!reduce) { p.y -= p.v * k; p.x += Math.sin(t * .6 + p.p) * .15 * dpr * k; if (p.y < -5) { p.y = H + 5; } }
       const a = .25 + .55 * (.5 + .5 * Math.sin(t * 1.4 + p.p * 3));
       const col = p.c ? C.accRgb : C.priRgb;
       ctx.fillStyle = rgba(col, a);
@@ -1015,28 +1133,41 @@ const bg = (() => {
     }
   }
   addEventListener('resize', resize);
-  return { resize, reset, frame };
+  function drawStatic(t) { if (dirty) { frame(t, 0); dirty = false; } }
+  return { resize, reset, frame, drawStatic };
 })();
 
-/* ---------------------------------------------------------------- main loop */
-const glyphRingEl = $('#glyphRing');
-let last = 0;
-function loop(now) {
-  const t = now / 1000;
-  if (!reduce) { ringTarget -= .02; ringAngle += (ringTarget - ringAngle) * .02; }
-  glyphRingEl.setAttribute('transform', `rotate(${ringAngle.toFixed(2)})`);
-  $('#tagRot').textContent = (((ringAngle % 360) + 360) % 360).toFixed(1) + '°';
-  if (!reduce) sweepAngle = (t * 72) % 360;
-  sweep.setAttribute('transform', `rotate(${sweepAngle.toFixed(2)})`);
-  for (const b of blips) {
-    const diff = ((sweepAngle - b.a) % 360 + 360) % 360;
-    b.c.setAttribute('opacity', (.12 + .88 * Math.max(0, 1 - diff / 260)).toFixed(2));
-  }
-  arcA.setAttribute('transform', `rotate(${(t * 6) % 360})`);
-  arcB.setAttribute('transform', `rotate(${(-t * 3) % 360})`);
-  bg.frame(t);
-  if (now - last > 33) { drawWave(t); drawMap(t); last = now; }
-  if (!reduce) requestAnimationFrame(loop);
+/* ---------------------------------------------------------------- bewegung: nur CSS
+   Es gibt keine Bild-fuer-Bild-Schleife mehr. Alles, was sich dreht oder blinkt, ist eine CSS-Animation auf einer
+   eigenen Ebene (Grafikkarte). JavaScript zieht nur zweimal pro Sekunde nach, was sich durch Daten, Groesse oder
+   Theme aendert: Hintergrund, Netzkurve und Karte zeichnen dabei nur, wenn sich wirklich etwas geaendert hat. */
+const tagRotEl = $('#tagRot');
+const DRIFT = -1.2; // °/s, wie die .ringdrift-Animation (300 s je Umdrehung rueckwaerts)
+const driftNow = () => DRIFT * performance.now() / 1000;
+// Glyphenring zum Ziel drehen (CSS-Uebergang); die stetige Drift macht die Huelle. Ziel so waehlen, dass der Ring
+// den kuerzeren Weg rueckwaerts nimmt und sich nach Stunden nicht viele Male herumdreht.
+function setRing() {
+  const want = ringTarget - driftNow();
+  let diff = ((want - ringAngle) % 360 + 360) % 360;
+  if (diff > 0) diff -= 360;
+  ringAngle += diff;
+  glyphLayer.style.transform = `rotate(${ringAngle.toFixed(2)}deg)`;
+}
+// Groesse des Tors in SVG-Einheiten fuer die HTML-Ebenen (Radarpunkte, Wellen)
+function ringUnits() {
+  const s = cssSize.get(ringWrap);
+  if (!s) { if (sizeObs) { cssSize.set(ringWrap, [ringWrap.clientWidth, ringWrap.clientHeight]); sizeObs.observe(ringWrap); } return; }
+  const u = (Math.min(s[0], s[1]) / 620).toFixed(4) + 'px';
+  if (ringWrap.style.getPropertyValue('--u') !== u) ringWrap.style.setProperty('--u', u);
+}
+let tagText = '';
+function paint() {
+  bg.drawStatic(0);
+  drawWave(0);
+  drawMap(0);
+  ringUnits();
+  const s = ((((ringAngle + driftNow()) % 360) + 360) % 360).toFixed(1) + '°';
+  if (s !== tagText) { tagRotEl.textContent = s; tagText = s; }
 }
 
 /* ---------------------------------------------------------------- live data */
@@ -1116,12 +1247,11 @@ async function poll() {
 /* ---------------------------------------------------------------- init */
 setTheme(theme, true);
 bg.resize();
-requestAnimationFrame(loop);
-if (reduce) requestAnimationFrame(() => { drawWave(0); drawMap(0); });
+requestAnimationFrame(paint);
 setTimeout(() => $('#app').classList.add('ready'), reduce ? 0 : 3400);
-setInterval(() => { if (reduce) { drawWave(0); drawMap(0); } }, 2000);
+setInterval(paint, 500);
 poll();
-addEventListener('resize', () => { if (reduce) requestAnimationFrame(loop); });
+addEventListener('resize', () => requestAnimationFrame(paint));
 })();
 </script>
 </body>

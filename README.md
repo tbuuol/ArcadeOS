@@ -137,6 +137,17 @@ Update-Pakete müssen signiert sein (minisign). Dev-Builds signiert die Build-Ma
 für echte Geräte (Release-Build) signierst du mit deinem eigenen Schlüssel – siehe
 [keys/README.md](keys/README.md) und `tools/sign-update.sh`.
 
+**Selbst bestätigen:** Im Probeboot prüft `update-healthcheck` alle 15 s, ob das neue System gesund ist
+(`/state` persistent, SSH lauscht, `meshd` läuft mit frischem Status und – mit Netz – mindestens einer
+Verbindung). Dreimal hintereinander gesund → es ruft selbst `arcadeos-update confirm` auf (typisch nach
+~50 s). Sonst greift die Frist wie oben. Nur noch von Hand bestätigen: `echo 0 > /state/update/autoconfirm`.
+
+**Updates auf dem Gerät bauen** (ohne Buildroot, z.B. für einen Agenten auf dem Gerät): `tools/box-update.sh
+<dateien-dir> <zusatz> --install` nimmt das System des laufenden Slots, legt die Dateien aus `<dateien-dir>`
+darüber, packt es neu, signiert mit dem Geräte-Schlüssel `/state/update/keys/box.key` (minisign) und spielt es
+in den inaktiven Slot. Der zugehörige Public Key gehört nach `keys/trusted/release/`, damit Images ihm vertrauen.
+Braucht die Build-Umgebung unter `/state/build` (Alpine-chroot mit Rust und squashfs-tools).
+
 ## Konfiguration
 
 ```sh
@@ -183,7 +194,13 @@ Werkzeuge: `system_status`, `logs` (Audit-Log/Syslog), `update_confirm`, `update
 
 ## Mesh
 
-Im Image läuft `meshd` und verbindet sich mit den Live-Arcades (nur ausgehend, keine Chain-Ankündigung).
+Im Image läuft `meshd` und verbindet sich mit den Live-Arcades (keine Chain-Ankündigung). Er nimmt auch
+Verbindungen an: TCP **8421** auf IPv6 und IPv4, bis 32 eingehende (zusätzlich zu den 6 ausgehenden), und nennt den
+Port im Handshake – so können andere Knoten ihn ohne Tunnel erreichen. Dafür am Router Port 8421 (TCP) an das
+Gerät freigeben (IPv4: Portweiterleitung; IPv6: Freigabe für das Gerät, z.B. Fritzbox „Portfreigaben“).
+Anderer Port: Zahl in `/state/mesh/listen`, `0` = nur ausgehend; danach `/etc/init.d/S60meshd restart`.
+Ob die Freigabe wirkt, prüfen die Arcades selbst: `meshd` bittet jede direkt erreichte Arcade um einen Rückruf
+(dialback); `meshd status` zeigt `reachable: true` und die Adresse, unter der sie das Gerät sehen (`seen_as`).
 
 ```sh
 ssh root@host meshd status                       # Verbindungen, Antwortzeiten (JSON)
