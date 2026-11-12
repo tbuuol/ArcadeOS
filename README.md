@@ -166,6 +166,21 @@ Verbindung abreißt oder das Gerät neu startet. Die SSH-Keys aus dem Image (Rec
 Das WLAN-Passwort steht nur in `/state/config/system.conf` (nur root); `show`, Audit-Log und die
 wpa_supplicant-Datei enthalten es nicht. `wifi.ssid=` (leer) schaltet das WLAN aus der Konfiguration ab.
 
+## Weitere Platten
+
+Zusätzliche Platten (Daten, Chains, Indizes) bindet `S12mounts` beim Start unter `/media/<name>` ein – immer über
+die UUID, mit `nosuid,nodev,noatime`, den Dateisystemtyp erkennt `mount` selbst. Eine Zeile je Platte in
+`/state/config/mounts`:
+
+```
+# <UUID>                              <name>  [rw|ro]
+33c7cd30-27c1-438a-b93d-f83989eaeeb6  hdd     rw
+```
+
+UUID finden: `blkid`. Sofort einbinden ohne Neustart: `/etc/init.d/S12mounts restart`. Fehlt eine Platte, startet das
+System normal weiter; Grund im Audit-Log (`disk-mount-failed`), Zustand in `/run/mounts.json`. Formatiert wird nie.
+Die Monitoring-Seite zeigt eingebundene Platten mit Belegung an.
+
 ## Monitoring-Seite
 
 Jedes Gerät zeigt unter `http://<IP>/` live, was los ist (Syfy-UI, Themes Atlantis/OASIS):

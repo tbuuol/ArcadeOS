@@ -1,0 +1,70 @@
+#!/bin/sh
+#
+# Weitere Platten einbinden (Daten, Chains, Indizes): unter /media/<name>, immer ueber die UUID.
+#
+# Konfiguration: /state/config/mounts, eine Zeile je Platte
+#     <UUID>  <name>  [rw|ro]
+#     33c7cd30-27c1-438a-b93d-f83989eaeeb6  hdd  rw
+# name: a-z 0-9 _ - (max 32). Ohne Angabe rw. Leerzeilen und # sind Kommentare.
+#
+# Eingebunden wird nur, was wirklich da ist und sich als Dateisystem erkennen laesst; fehlt eine Platte,
+# startet das System trotzdem normal (Grund im Audit-Log, Zustand in /run/mounts.json). Formatiert wird nie.
+# Optionen: nosuid,nodev,noatime. /media ist ein kleines tmpfs (das Root-Dateisystem ist read-only).
+#
+
+. /usr/lib/arcadeos/common.sh
+
+CONF=/state/config/mounts
+STATUS=/run/mounts.json
+
+# Geraet zur UUID (busybox blkid: /dev/sda1: UUID="..."; den Typ nennt es nicht, mount erkennt ihn selbst)
+dev_of() {
+	blkid 2>/dev/null | sed -n "s/^\([^:]*\):.* UUID=\"$1\".*/\1/p" | head -1
+}
+
+start() {
+	printf "Mounting disks: "
+	[ -f "$CONF" ] || { echo "keine ($CONF fehlt)"; echo '[]' > $STATUS; return 0; }
+	mountpoint -q /media || mount -t tmpfs -o mode=0755,nosuid,nodev,size=64k tmpfs /media
+	out=""
+	n=0
+	while read -r uuid name mode rest; do
+		case "$uuid" in ''|\#*) continue ;; esac
+		mode=${mode:-rw}
+		st=ok; dev=""; why=""
+		if ! printf %s "$uuid" | grep -qx '[0-9A-Fa-f-]\{4,36\}'; then st=fehler; why="UUID ungueltig"
+		elif ! printf %s "$name" | grep -qx '[a-z0-9_-]\{1,32\}'; then st=fehler; why="Name ungueltig"
+		elif [ "$mode" != rw ] && [ "$mode" != ro ]; then st=fehler; why="Modus $mode (rw|ro)"
+		else
+			dev=$(dev_of "$uuid")
+			if [ -z "$dev" ]; then st=fehlt; why="Platte nicht angeschlossen"
+			else
+				mkdir -p "/media/$name"
+				if mountpoint -q "/media/$name"; then st=ok
+				elif mount -o "$mode,nosuid,nodev,noatime" "$dev" "/media/$name" 2>/tmp/mount.err; then
+					n=$((n + 1)); audit disk-mount "$name ($dev, $(awk -v m="/media/$name" '$2 == m { print $3 }' /proc/mounts), $mode)"
+				else st=fehler; why="mount: $(tr -d '"\\\n' < /tmp/mount.err | cut -c1-120)"
+				fi
+				rm -f /tmp/mount.err
+			fi
+		fi
+		[ $st = ok ] || audit disk-mount-failed "$name: $why"
+		out="$out${out:+,}{\"name\":\"$name\",\"uuid\":\"$uuid\",\"device\":\"$dev\",\"mode\":\"$mode\",\"state\":\"$st\",\"reason\":\"$why\"}"
+	done < "$CONF"
+	echo "[$out]" > $STATUS
+	echo "$n eingebunden"
+}
+
+stop() {
+	printf "Unmounting disks: "
+	for m in /media/*; do
+		mountpoint -q "$m" && umount "$m" 2>/dev/null
+	done
+	echo "OK"
+}
+
+case "$1" in
+	start|stop) "$1";;
+	restart|reload) stop; start;;
+	*) echo "Usage: $0 {start|stop|restart|reload}"; exit 1;;
+esac
