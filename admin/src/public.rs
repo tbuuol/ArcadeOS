@@ -292,6 +292,59 @@ fn login(app: &App, p: &Pub, r: &Req) -> Out {
     (200, json!({"ok": true}), Some(tok))
 }
 
+/// Passwort vergessen: mit den 12 Woertern ein neues verschluesseltes Wallet setzen.
+/// Beweis: Login-Signatur (Ed25519) und Coin-Signatur (signmessage) ueber dieselbe Nachricht.
+/// Kennt die Box den Namen nicht, reicht es, dass die Adresse ihn laut Chain haelt.
+fn recover(app: &App, p: &Pub, r: &Req) -> Out {
+    if !p.limit(&format!("recover:{}", r.ip), 10, 3600) {
+        return bad(429, "zu viele Versuche von hier, bitte spaeter");
+    }
+    let b = r.body;
+    let (Some(tag), Some(pk), Some(addr), Some(coinpub), Some(nonce), Some(sig), Some(coinsig)) = (
+        b["tag"].as_str(), b["pubkey"].as_str(), b["address"].as_str(), b["coinpub"].as_str(),
+        b["nonce"].as_str(), b["sig"].as_str(), b["coinsig"].as_str(),
+    ) else {
+        return bad(400, "Angaben fehlen");
+    };
+    let Ok(tag) = validate_tag(tag) else { return bad(404, "kein Konto mit diesem Namen") };
+    if !is_hex(pk, 64) || !blob_ok(&b["blob"]) {
+        return bad(400, "Konto oder Wallet nicht im erwarteten Format");
+    }
+    let Ok(cp) = hex::decode(coinpub) else { return bad(400, "coinpub") };
+    if cp.len() != 33 || b58check(PKH, &hash160(&cp)) != addr {
+        return bad(400, "Adresse passt nicht zum Schluessel");
+    }
+    let m = login_message(p, nonce);
+    if !take_nonce(app, nonce) || !ed_verify(pk, &m, sig) || !verify_message(coinsig, &m, addr) {
+        return bad(400, "Signatur passt nicht (Seite neu laden)");
+    }
+    let holder = app.index.lock().unwrap().tags.get(&tag).map(|e| e.0.clone());
+    match p.by_tag(&tag) {
+        Some((known, a)) => {
+            if known != pk || a["address"].as_str() != Some(addr) {
+                return bad(403, "Diese 12 Woerter gehoeren nicht zu @".to_string() + &tag);
+            }
+            let mut acc = p.accounts.lock().unwrap();
+            acc[pk]["blob"] = b["blob"].clone();
+            acc[pk]["coinpub"] = json!(coinpub);
+        }
+        None => {
+            if holder.as_deref() != Some(addr) {
+                return bad(404, format!("@{tag} gehoert laut Chain nicht zu diesen 12 Woertern."));
+            }
+            if p.accounts.lock().unwrap().get(pk).is_some() {
+                return bad(409, "Dieses Konto ist hier unter einem anderen Namen angelegt.");
+            }
+            p.accounts.lock().unwrap()[pk] = json!({"tag": tag, "address": addr, "coinpub": coinpub, "blob": b["blob"],
+                "made": now(), "source": "words", "faucet": null, "pending": null});
+        }
+    }
+    p.save(app);
+    log(&format!("Konto @{tag}: neues Passwort mit den 12 Woertern"));
+    let tok = p.new_session(pk);
+    (200, json!({"ok": true}), Some(tok))
+}
+
 fn me(app: &App, p: &Pub, pk: &str) -> Out {
     let a = p.accounts.lock().unwrap().get(pk).cloned().unwrap_or(Value::Null);
     let addr = a["address"].as_str().unwrap_or("").to_string();
@@ -381,6 +434,7 @@ fn route(app: &App, p: &Pub, r: &Req) -> Out {
         }
         ("POST", "/api/signup") => signup(app, p, r),
         ("POST", "/api/login") => login(app, p, r),
+        ("POST", "/api/recover") => recover(app, p, r),
         ("POST", "/api/logout") => {
             p.end_session(&r.cookie);
             (200, json!({"ok": true}), Some(String::new()))

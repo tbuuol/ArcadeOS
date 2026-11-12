@@ -34,7 +34,9 @@ function signinPane() {
     <p class="muted">Mit deinem @name und Passwort – auch wenn du dein Konto in einer anderen Arcade angelegt hast.</p>
     <label for="tg">@name</label><div class="at"><input id="tg" autocomplete="username" autocapitalize="none" spellcheck="false"></div>
     <label for="pw">Passwort</label><input id="pw" type="password" autocomplete="current-password">
-    <div class="row"><button id="go">Anmelden</button></div></div>`;
+    <div class="row"><button id="go">Anmelden</button></div>
+    <div class="row"><button class="link" id="forgot">Passwort vergessen?</button></div></div>`;
+  $('#forgot').onclick = () => recoverPane(clean($('#tg').value));
   const go = async () => {
     const box = $('#go').closest('.box'), tag = clean($('#tg').value), pw = $('#pw').value;
     if (!tag || !pw) return msg(box, 'Bitte @name und Passwort eingeben.');
@@ -54,6 +56,38 @@ function signinPane() {
   };
   $('#go').onclick = go; $('#pw').onkeydown = (e) => { if (e.key === 'Enter') go(); };
   $('#tg').focus();
+}
+
+function recoverPane(tag0 = '') {
+  $('#pane').innerHTML = `<div class="box"><h2>Neues Passwort</h2>
+    <p class="muted">Mit deinen 12 Wörtern setzt du hier ein neues Passwort. Die Wörter bleiben in deinem Browser.</p>
+    <label for="tg">@name</label><div class="at"><input id="tg" autocomplete="username" autocapitalize="none" spellcheck="false" value="${esc(tag0)}"></div>
+    <label for="wd">Deine 12 Wörter</label><textarea id="wd" rows="3" autocomplete="off" autocapitalize="none" spellcheck="false"></textarea>
+    <label for="pw">Neues Passwort (mindestens ${C.MIN_PASSWORD} Zeichen)</label><input id="pw" type="password" autocomplete="new-password">
+    <label for="pw2">Neues Passwort wiederholen</label><input id="pw2" type="password" autocomplete="new-password">
+    <div class="row"><button id="go">Passwort setzen</button><button class="alt" id="back">Zurück</button></div></div>`;
+  $('#back').onclick = () => start('in');
+  $('#go').onclick = async () => {
+    const box = $('#go').closest('.box'), tag = clean($('#tg').value), pw = $('#pw').value;
+    const w = C.normaliseWords($('#wd').value);
+    if (!tag) return msg(box, 'Bitte deinen @name eingeben.');
+    if (!C.validWords(w)) return msg(box, 'Die 12 Wörter stimmen nicht (Rechtschreibung oder Reihenfolge).');
+    if ([...pw].length < C.MIN_PASSWORD) return msg(box, `Das Passwort braucht mindestens ${C.MIN_PASSWORD} Zeichen.`);
+    if (pw !== $('#pw2').value) return msg(box, 'Die Passwörter sind nicht gleich.');
+    busy($('#go'), true);
+    try {
+      msg(box, 'Verschlüssle dein Wallet neu (ein paar Sekunden) …', 'wait');
+      const a = C.fullAccount(w);
+      const blob = await C.arcadeSeal(a.words, pw);
+      if (await C.arcadeOpen(blob, pw) !== a.words) throw new Error('Verschlüsseln fehlgeschlagen.');
+      const ch = await api('/api/challenge');
+      await api('/api/recover', { tag, pubkey: a.login.pubkey, address: a.address, coinpub: a.pub, blob, nonce: ch.nonce,
+        sig: C.signLogin(a.login.secret, ch.message), coinsig: C.signMessage(a.priv, ch.message) });
+      acct = a;
+      home();
+    } catch (e) { msg(box, e.message); busy($('#go'), false); }
+  };
+  (tag0 ? $('#wd') : $('#tg')).focus();
 }
 
 function signupPane() {
