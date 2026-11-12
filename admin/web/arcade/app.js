@@ -1,7 +1,7 @@
 // Atlantis · Arcade (ArcadeOS). Konten wie in den Arcades: 12 Woerter, im Browser mit dem Passwort verschluesselt;
 // die Box bewahrt nur dieses verschluesselte Wallet unter dem @name auf und kann es nicht oeffnen. Anmelden mit
 // @name + Passwort, auch fuer Konten anderer Arcades (die Box holt das Wallet dort, wenn sie es nicht hat).
-import * as C from './crypto.js';
+import * as C from './crypto.js?v=3';
 
 const $ = (s) => document.querySelector(s);
 const view = $('#view');
@@ -174,13 +174,40 @@ async function home() {
   }
   $('#out').onclick = async () => { await api('/api/logout', {}).catch(() => {}); acct = null; forgetKeys(); inbox = { next: 0, mine: [], keys: {}, seen: new Set() }; start(); };
   messenger(me, bal);
-  timer = setInterval(() => { if (!document.hidden && !document.querySelector('#msgbox textarea:focus, #msgbox input:focus')) home(); }, 30000);
+  const sig = (m) => JSON.stringify([m.held, m.pending, m.confirmed, m.unconfirmed, m.faucet, m.msgkey]);
+  const was = sig(me);
+  timer = setInterval(async () => {
+    if (document.hidden || document.querySelector('.pwask') || busyNow) return;
+    try {
+      const now = await api('/api/me');
+      if (sig(now) !== was) home(); else pollMsgs(now);
+    } catch (e) { if (e.status === 401) start(); }
+  }, 30000);
+}
+let busyNow = false;   // waehrend Senden/Entsperren nichts neu zeichnen
+
+// Passwort im Kasten abfragen (verdeckt, nicht ueber prompt())
+function askPassword(box, why) {
+  box.querySelector('.pwask')?.remove();
+  return new Promise((resolve) => {
+    const d = document.createElement('div');
+    d.className = 'pwask';
+    d.innerHTML = `<label>${esc(why)}</label><input type="password" autocomplete="current-password">
+      <div class="row"><button>OK</button><button class="alt">Abbrechen</button></div>`;
+    box.prepend(d);
+    const i = d.querySelector('input');
+    const done = (v) => { d.remove(); resolve(v); };
+    d.querySelector('button').onclick = () => done(i.value);
+    d.querySelector('.alt').onclick = () => done(null);
+    i.onkeydown = (e) => { if (e.key === 'Enter') done(i.value); if (e.key === 'Escape') done(null); };
+    i.focus();
+  });
 }
 
 // Nach dem Neuladen sind die Schluessel weg (nur die Sitzung bleibt): einmal mit dem Passwort entsperren
 async function unlock(box, why = 'Zum Signieren brauche ich dein Passwort noch einmal:') {
   if (acct) return true;
-  const pw = prompt(why);
+  const pw = await askPassword(box, why);
   if (!pw) return false;
   try {
     msg(box, 'Entsperre …', 'wait');
@@ -245,7 +272,7 @@ async function messenger(me, bal) {
   const mk = msgKey(me);
   if (!mk) {
     box.innerHTML = `<h2>Nachrichten</h2><p class="muted">Zum Lesen brauchst du deinen Schlüssel – der bleibt in deinem Browser.</p><div class="row"><button id="un">Nachrichten öffnen</button></div>`;
-    $('#un').onclick = async () => { if (await unlock(box, 'Passwort, um deine Nachrichten zu öffnen:')) messenger(me, bal); };
+    $('#un').onclick = async () => { busyNow = true; const ok = await unlock(box, 'Passwort, um deine Nachrichten zu öffnen:'); busyNow = false; if (ok) messenger(me, bal); };
     return;
   }
   const mine = mk.pubkey, on = me.msgkey && me.msgkey.pubkey === mine;
@@ -271,7 +298,8 @@ async function messenger(me, bal) {
       if (await signAndSend(box, offer, 'Messenger-Schlüssel veröffentlichen?')) msg(box, 'Gesendet – ab dem nächsten Block kann man dir schreiben.', 'ok');
     } catch (e) { msg(box, e.message); }
   };
-  $('#snd').onclick = async () => {
+  $('#snd').onclick = async () => { busyNow = true; try { await sendNow(); } finally { busyNow = false; } };
+  const sendNow = async () => {
     const to = clean($('#to').value), text = $('#tx').value.trim();
     if (!to || !text) return msg(box, 'Bitte Empfänger und Text eingeben.');
     try {
@@ -291,6 +319,13 @@ async function messenger(me, bal) {
       showList(me);
     } catch (e) { msg(box, e.message); }
   };
+  await pollMsgs(me, true);
+}
+
+// Neue Nachrichten holen und probieren; die Liste nur neu zeichnen, wenn etwas dazukam
+async function pollMsgs(me, draw = false) {
+  const mk = msgKey(me);
+  if (!mk || !$('#list')) return;
   try {
     const r = await api(`/api/msgs?from=${inbox.next}`);
     for (const k of r.keys) inbox.keys[k.pubkey] = k;
@@ -298,11 +333,11 @@ async function messenger(me, bal) {
       if (inbox.seen.has(it.txid)) continue;
       inbox.seen.add(it.txid);
       const m = C.arcmOpen(mk, it.p);
-      if (m && !m.forged) inbox.mine.push({ ...m, h: it.h, txid: it.txid });
+      if (m && !m.forged) { inbox.mine.push({ ...m, h: it.h, txid: it.txid }); draw = true; }
     }
     inbox.next = r.next;
   } catch (e) { $('#list').innerHTML = `<p class="msg err">${esc(e.message)}</p>`; return; }
-  showList(me);
+  if (draw) showList(me);
 }
 
 // Einladungen in Gruppen (dogecoin-arcade group.py) kommen als "arcade-group/1" + JSON mit dem Gruppen-Geheimnis:

@@ -35,3 +35,4 @@ footer { margin-top:26px; text-align:center; }
 .mh { display:flex; justify-content:space-between; gap:8px; font-size:.82rem; color:var(--muted); } .mh b { color:var(--pri); font-weight:600; }
 .m.out .mh b { color:var(--acc); }
 .mt { white-space:pre-wrap; word-break:break-word; margin-top:4px; }
+.pwask { border:1px solid var(--pri); border-radius:10px; padding:10px; margin:0 0 12px; background:#0d2e44; } .pwask label { margin-top:0; }
