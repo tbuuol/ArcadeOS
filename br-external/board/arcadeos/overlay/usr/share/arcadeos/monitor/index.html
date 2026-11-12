@@ -210,7 +210,10 @@ h1 em { font-style:normal; color:var(--pri); }
 .bar.warn .segs i.on { background:var(--acc); box-shadow:0 0 6px var(--acc); }
 .bar.warn .row b { color:var(--acc); }
 
-.sectors { display:flex; flex-direction:column; gap:2px; }
+.sectors { display:grid; grid-template-columns:1fr 1fr; gap:2px; }
+.sectors .sector { min-width:0; gap:.5em; padding:.42em .5em; }
+.sectors .stt { font-size:.6rem; letter-spacing:.06em; }
+@media (max-height:860px) and (min-width:1001px) { .sectors .sector { padding:.22em .5em; font-size:.7rem; } }
 .sector { display:grid; grid-template-columns:auto 1fr auto; gap:.7em; align-items:center; font-size:.76rem; padding:.42em .6em; background:linear-gradient(90deg, rgba(var(--pri-rgb), .07), transparent); }
 .sector .dot { width:7px; height:7px; border-radius:50%; background:var(--ok); box-shadow:0 0 8px var(--ok); }
 .sector.w .dot { background:var(--acc); box-shadow:0 0 8px var(--acc); animation:blink 1.6s infinite; }
