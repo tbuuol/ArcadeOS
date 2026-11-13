@@ -203,6 +203,43 @@ local function node_sync(s, up, now)
 	return v
 end
 
+-- Kotia-Staking (nur wenn der Knoten laeuft), alle STAKE_EVERY s: Status aus getstakinginfo und die Stakes der
+-- letzten 24 h aus den Wallet-Buchungen (generated mit fee > 0 = Stake-Ertrag; pro Stake mehrere Eintraege, nach
+-- txid zusammengefasst). Nur Zahlen: keine Adressen, keine txids, kein Guthaben.
+local STAKE_EVERY = 60
+local stake_cache
+local function staking(now)
+	local kotia
+	for _, s in ipairs(SERVICES) do if s[2] == "kotiad" then kotia = s end end
+	if not kotia then return nil end
+	if stake_cache and now - stake_cache.t < STAKE_EVERY then return stake_cache.v end
+	local v
+	local ok, info = pcall(json.decode, sh("timeout 5 " .. kotia.cli .. " getstakinginfo") or "")
+	if ok and type(info) == "table" and info.enabled ~= nil then
+		local ok2, txs = pcall(json.decode, sh("timeout 15 " .. kotia.cli .. " listtransactions '*' 2000") or "")
+		local seen, hours, n, sum, last = {}, {}, 0, 0, nil
+		for i = 1, 24 do hours[i] = 0 end
+		if ok2 and type(txs) == "table" then
+			for _, x in ipairs(txs) do
+				local t, fee = tonumber(x.time), tonumber(x.fee)
+				if x.generated == true and fee and fee > 0 and t and now - t < 86400 and not seen[x.txid] then
+					seen[x.txid] = true
+					n, sum = n + 1, sum + fee
+					local h = math.floor(math.max(0, now - t) / 3600) + 1
+					hours[h] = hours[h] + 1
+					if not last or t > last then last = t end
+				end
+			end
+		end
+		local w, nw = tonumber(info.weight) or 0, tonumber(info.netstakeweight) or 0
+		v = { enabled = info.enabled == true, staking = info.staking == true,
+			share_pct = nw > 0 and round(100 * w / nw, 1) or nil, expected_s = tonumber(info.expectedtime),
+			count_24h = n, reward_24h = round(sum, 2), last_t = last, per_hour = hours }
+	end
+	stake_cache = { t = now, v = v }
+	return v
+end
+
 local function collect()
 	local now = os.time()
 	local sec = snapshot()
@@ -298,7 +335,7 @@ local function collect()
 		mem = mem, disks = disks, drives = drives, state_mode = state_mode or "?",
 		temp_c = temp and round(temp, 1) or nil, power = power(),
 		net = net, gateway = gw, rx_bps = round(rx_rate), tx_bps = round(tx_rate),
-		services = services, mesh = mesh(), audit = audit(14), hist = hist,
+		services = services, stake = staking(now), mesh = mesh(), audit = audit(14), hist = hist,
 	}
 end
 

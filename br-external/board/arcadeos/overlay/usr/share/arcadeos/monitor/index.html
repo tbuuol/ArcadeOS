@@ -300,6 +300,21 @@ h1 em { font-style:normal; color:var(--pri); }
 .mini .k { font-size:.62rem; letter-spacing:.12em; color:var(--muted); text-transform:uppercase; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .mini .v { font-family:var(--head); font-weight:var(--head-weight); font-size:1.25rem; }
 .mini .v.a { color:var(--acc); text-shadow:0 0 8px rgba(var(--acc-rgb), .6); }
+.stake { display:flex; flex-direction:column; gap:6px; flex:none; }
+.stake[hidden] { display:none; }
+.stake .mini div { padding:.35em .6em; }
+.stake .mini .v { font-size:1.1rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+/* mit Staking-Kachel: Prozess-Radar kleiner, damit das Protokoll sichtbar bleibt */
+.right:has(.stake:not([hidden])) .map-wrap { width:min(100%, 27vh); }
+/* niedrige Bildschirme: die Zahlenreihe unter dem Radar doppelt Radar-Ecken (Prozesse, ALLE OK) und Tor (Links) */
+@media (max-height:860px) and (min-width:1001px) { .right:has(.stake:not([hidden])) .mini:not(.stake .mini) { display:none; } }
+.stake .v small { font-size:.55em; color:var(--muted); margin-left:.25em; letter-spacing:.08em; }
+.stk-hist { display:grid; grid-template-columns:repeat(24, 1fr); gap:2px; align-items:end; height:clamp(22px, 3.6vh, 40px); padding:3px 0 0; border-bottom:1px solid var(--edge-soft); }
+.stk-hist i { display:block; min-height:2px; background:var(--pri); box-shadow:0 0 6px rgba(var(--pri-rgb), .6); opacity:.85; }
+.stk-hist i.z { background:rgba(var(--pri-rgb), .15); box-shadow:none; }
+.stk-hist i:last-child { background:var(--acc); box-shadow:0 0 6px rgba(var(--acc-rgb), .7); }
+.stk-foot { display:flex; justify-content:space-between; font-size:.62rem; letter-spacing:.12em; color:var(--muted); text-transform:uppercase; }
+.stk-foot #stakeLast { color:var(--text); }
 .log-box { flex:1; min-height:130px; display:flex; flex-direction:column; gap:6px; }
 .log { flex:1; min-height:0; overflow:auto; margin:0; padding:0 4px 0 0; list-style:none; font-size:.76rem; line-height:1.45; }
 .log li { padding:.35em 0 .35em .7em; border-left:1px solid var(--edge-soft); margin-bottom:2px; animation:logIn .3s ease-out; }
@@ -521,7 +536,7 @@ for (const x of (new URLSearchParams(location.search).get('x') || '').split(',')
         <div class="zpms" id="zpms" style="margin-top:10px"></div>
       </div>
       <div>
-        <div class="sh">Sensoren<span class="code" id="loadCode">LAST</span></div>
+        <div class="sh">Sensoren</div>
         <div class="bars" id="bars" style="margin-top:10px"></div>
       </div>
       <div>
@@ -567,6 +582,16 @@ for (const x of (new URLSearchParams(location.search).get('x') || '').split(',')
         <div><div class="k">Prozesse</div><div class="v" id="life">—</div></div>
         <div><div class="k">Dienste aus</div><div class="v a" id="unk">—</div></div>
         <div><div class="k">Mesh-Links</div><div class="v" id="jump">—</div></div>
+      </div>
+      <div class="stake" id="stakeBox" hidden>
+        <div class="sh"><span>Staking</span><span class="code" id="stakeCode">KOTIA</span></div>
+        <div class="mini">
+          <div><div class="k">Stakes 24 h</div><div class="v" id="stakeN">—</div></div>
+          <div><div class="k">Ertrag 24 h</div><div class="v a" id="stakeSum">—</div></div>
+          <div><div class="k">Netzanteil</div><div class="v" id="stakeShare">—</div></div>
+        </div>
+        <div class="stk-hist" id="stakeHist" title="Stakes pro Stunde, letzte 24 h"></div>
+        <div class="stk-foot"><span>−24 h</span><span id="stakeLast">—</span><span>jetzt</span></div>
       </div>
       <div class="log-box">
         <div class="sh"><span data-atl="Protokoll" data-oas="Feed">Protokoll</span><span class="code">AUDIT</span></div>
@@ -691,19 +716,37 @@ function bar(n, v, txt, warn) {
 function wifiPct(dbm) { return clamp(2 * (dbm + 100), 0, 100); }
 function buildBars(d) {
   const out = [];
-  out.push(d.temp_c != null ? bar('Temperatur', d.temp_c, d.temp_c.toFixed(0) + ' °C', d.temp_c >= 80) : bar('Temperatur', 0, 'kein Sensor'));
+  // Reihenfolge: System (/) zuerst, dann Akku, Temperatur, die uebrigen Partitionen. Die CPU-Last steht schon oben im Ring.
+  // System (/) ist schreibgeschuetzt und immer voll: nur die Datenpartition kann volllaufen
+  const disk = x => bar(`${x.name} ${x.mount}`, pct(x.used_kb, x.total_kb), `${kb(x.used_kb)} / ${kb(x.total_kb)}`, x.mount !== '/' && pct(x.used_kb, x.total_kb) > 90);
+  for (const x of d.disks) if (x.mount === '/') out.push(disk(x));
   const bat = d.power && d.power.battery;
   if (bat) out.push(bar('Akku', bat.pct, `${bat.pct} % · ${({ Charging: 'lädt', Discharging: 'entlädt', Full: 'voll', 'Not charging': 'hält' })[bat.status] || bat.status || ''}`, bat.pct <= 20 && !d.power.ac));
   // Ohne Akku laeuft das Geraet am Netz (Desktop-PCs melden meist auch kein Netzteil): voller Balken
   else out.push(bar('Akku', 100, d.power && d.power.ac === true ? 'Netzteil' : 'Netzbetrieb'));
-  const l1 = d.cpu.load && d.cpu.load[0];
-  if (l1 != null) out.push(bar('Last (1 min)', 100 * l1 / Math.max(1, d.cpu.cores), l1.toFixed(2), l1 > d.cpu.cores));
-  // System (/) ist schreibgeschuetzt und immer voll: nur die Datenpartition kann volllaufen
-  for (const x of d.disks) out.push(bar(`${x.name} ${x.mount}`, pct(x.used_kb, x.total_kb), `${kb(x.used_kb)} / ${kb(x.total_kb)}`, x.mount !== '/' && pct(x.used_kb, x.total_kb) > 90));
+  out.push(d.temp_c != null ? bar('Temperatur', d.temp_c, d.temp_c.toFixed(0) + ' °C', d.temp_c >= 80) : bar('Temperatur', 0, 'kein Sensor'));
+  for (const x of d.disks) if (x.mount !== '/') out.push(disk(x));
   const w = d.net.find(n => n.type === 'wifi' && n.wifi);
   if (w) out.push(w.wifi.signal_dbm != null ? bar('WLAN-Signal', wifiPct(w.wifi.signal_dbm), `${w.wifi.signal_dbm} dBm`, w.wifi.signal_dbm < -75)
                                             : bar('WLAN-Signal', 0, w.wifi.state === 'off' ? 'aus' : 'sucht', w.wifi.state !== 'off'));
   $('#bars').innerHTML = out.join('');
+}
+// Kotia-Staking (vom Sammler alle 60 s): Stakes und Ertrag der letzten 24 h, Anteil am Netz, Stakes pro Stunde
+function buildStake(d) {
+  const k = d.stake, box = $('#stakeBox');
+  box.hidden = !k;
+  if (!k) return;
+  const n = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 });
+  $('#stakeCode').textContent = k.staking ? 'KOTIA · AKTIV' : k.enabled ? 'KOTIA · WARTET' : 'KOTIA · AUS';
+  $('#stakeCode').style.color = k.staking ? '' : 'var(--acc)';
+  $('#stakeN').textContent = n.format(k.count_24h || 0);
+  $('#stakeSum').innerHTML = `${esc(n.format(k.reward_24h || 0))}<small>KOT</small>`;
+  $('#stakeShare').textContent = k.share_pct != null ? `${k.share_pct.toFixed(1).replace('.', ',')} %` : '—';
+  const h = (k.per_hour || []).slice().reverse(), max = Math.max(1, ...h);
+  $('#stakeHist').innerHTML = h.map((c, i) => `<i class="${c ? '' : 'z'}" style="height:${c ? Math.max(8, 100 * c / max) : 4}%" title="${24 - i} h zurück: ${c} Stake${c === 1 ? '' : 's'}"></i>`).join('');
+  const ago = k.last_t ? Math.max(0, d.t - k.last_t) : null;
+  $('#stakeLast').textContent = (ago == null ? 'noch keiner' : ago < 60 ? 'letzter gerade eben' : `letzter vor ${ago < 3600 ? Math.floor(ago / 60) + ' min' : dur(ago)}`) +
+    (k.expected_s ? ` · Ø alle ${Math.round(k.expected_s / 60)} min` : '');
 }
 function buildSectors(d) {
   const wifiOn = d.net.some(n => n.type === 'wifi' && n.wifi && n.wifi.state !== 'off');
@@ -1199,9 +1242,7 @@ function render(d) {
   $('#navVer').textContent = (d.version || '?').replace(/^(\d{8})\.\d{4}-/, '$1 ');
   $('#cpuModel').textContent = d.cpu.cores + '×CPU';
   $('#kernel').textContent = 'LINUX ' + (d.kernel || '');
-  const l = d.cpu.load || [];
-  $('#loadCode').textContent = l.length ? l.map(x => x.toFixed(2)).join(' ') : '—';
-  buildZpms(d); buildBars(d);
+  buildZpms(d); buildBars(d); buildStake(d);
   const down = buildSectors(d);
   $('#freq').textContent = `↓ ${bytes(d.rx_bps)}/s ↑ ${bytes(d.tx_bps)}/s`;
   renderMesh(d.mesh);
