@@ -185,7 +185,10 @@ h1 em { font-style:normal; color:var(--pri); }
 }
 
 /* ------------------------------------------------------------------ gauges */
-.zpms { display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; }
+.zpms { display:grid; grid-template-columns:repeat(var(--n, 3), 1fr); gap:4px; }
+.zpms .zpm .lbl { font-size:.7rem; letter-spacing:.1em; }
+.zpms .zpm .st { font-size:.56rem; letter-spacing:.04em; white-space:nowrap; }
+.zpms .zpm .pct { font-size:21px; }
 .zpm { text-align:center; }
 .zpm svg { width:100%; max-width:110px; aspect-ratio:1; display:block; margin:0 auto; overflow:visible; }
 .zpm .track { fill:none; stroke:rgba(var(--pri-rgb), .12); stroke-width:6; }
@@ -213,6 +216,8 @@ h1 em { font-style:normal; color:var(--pri); }
 .sectors { display:grid; grid-template-columns:1fr 1fr; gap:2px; }
 .sectors .sector { min-width:0; gap:.5em; padding:.42em .5em; }
 .sectors .stt { font-size:.6rem; letter-spacing:.06em; }
+.sectors .grp { grid-column:1/-1; display:flex; justify-content:space-between; margin-top:.55em; padding:0 .3em .2em; border-bottom:1px solid rgba(var(--pri-rgb), .28); font-size:.6rem; letter-spacing:.18em; text-transform:uppercase; color:var(--pri); }
+.sectors .grp span:last-child { color:var(--muted); letter-spacing:.08em; }
 @media (max-height:860px) and (min-width:1001px) { .sectors .sector { padding:.22em .5em; font-size:.7rem; } }
 .sector { display:grid; grid-template-columns:auto 1fr auto; gap:.7em; align-items:center; font-size:.76rem; padding:.42em .6em; background:linear-gradient(90deg, rgba(var(--pri-rgb), .07), transparent); }
 .sector .dot { width:7px; height:7px; border-radius:50%; background:var(--ok); box-shadow:0 0 8px var(--ok); }
@@ -700,14 +705,23 @@ function ring(v, label, st, cls) {
   return `<div class="zpm ${cls}"><svg viewBox="0 0 100 100" aria-hidden="true"><g class="ticks">${ticks}</g><circle class="track" cx="50" cy="50" r="38"/><circle class="val" cx="50" cy="50" r="38" transform="rotate(-90 50 50)" stroke-dasharray="${circ * val / 100} ${circ}"/><polygon class="hex" points="${hex}"/><text class="pct" x="50" y="50">${v == null ? '–' : Math.round(v) + '%'}</text></svg><div class="lbl">${esc(label)}</div><div class="st">${esc(st).toUpperCase()}</div></div>`;
 }
 const level = (v, hi, crit) => v == null ? '' : v >= crit ? 'dead' : v >= hi ? 'low' : '';
+// Oben die Auslastung: CPU, GPU, RAM und je Laufwerk, wie viel Zeit es gerade arbeitet (nicht wie voll es ist;
+// der Fuellstand steht bei den Sensoren)
+const bps = b => b == null ? '–' : b >= 1e6 ? (b / 1e6).toFixed(b >= 1e7 ? 0 : 1) + 'M' : b >= 1e3 ? Math.round(b / 1e3) + 'k' : Math.round(b) + 'B';
 function buildZpms(d) {
-  const data = d.disks.find(x => x.mount === '/state') || d.disks[0];
-  const dp = data ? pct(data.used_kb, data.total_kb) : null;
   const mp = pct(d.mem.used_kb, d.mem.total_kb);
-  $('#zpms').innerHTML =
-    ring(d.cpu.pct, 'CPU', `${d.cpu.cores} Kern${d.cpu.cores === 1 ? '' : 'e'}`, level(d.cpu.pct, 70, 90)) +
-    ring(mp, 'RAM', `${(d.mem.used_kb * 1024 / 1e9).toFixed(1)}/${kb(d.mem.total_kb)}`, level(mp, 75, 90)) +
-    ring(dp, 'Disk', data ? `${data.name} ${kb(data.total_kb)}` : 'nur RAM', level(dp, 80, 95));
+  const out = [
+    ring(d.cpu.pct, 'CPU', `${d.cpu.cores} Kern${d.cpu.cores === 1 ? '' : 'e'}`, level(d.cpu.pct, 70, 90)),
+    ring(d.gpu ? d.gpu.pct : null, 'GPU', d.gpu ? 'Grafik' : 'keine', level(d.gpu && d.gpu.pct, 70, 90)),
+    ring(mp, 'RAM', `${(d.mem.used_kb * 1024 / 1e9).toFixed(1)}/${kb(d.mem.total_kb)}`, level(mp, 75, 90)),
+  ];
+  for (const x of (d.drives || []).filter(x => !x.removable)) {
+    const kind = /^nvme/.test(x.name) ? 'NVMe' : x.rotational ? 'HDD' : 'SSD';
+    out.push(ring(x.busy, kind, x.read_bps == null ? "–" : `${bps((x.read_bps || 0) + (x.write_bps || 0))}/s`, level(x.busy, 70, 95)));
+  }
+  const el = $('#zpms');
+  el.style.setProperty('--n', out.length);
+  el.innerHTML = out.join('');
 }
 function bar(n, v, txt, warn) {
   const on = Math.round(clamp(v || 0, 0, 100) / 100 * 24);
@@ -751,7 +765,11 @@ function buildStake(d) {
 function buildSectors(d) {
   const wifiOn = d.net.some(n => n.type === 'wifi' && n.wifi && n.wifi.state !== 'off');
   let down = 0;
-  $('#sectors').innerHTML = d.services.map(sv => {
+  // Chain-Knoten in zwei Gruppen (Mainnet / Testnet) unter den Systemdiensten; Testnet-Knoten am Prozess erkennbar,
+  // sonst an der Chain, die der Knoten meldet
+  const NODES = { litecoind: 'main', dogecoind: 'main', 'pepecoind-main': 'main', kotiad: 'main', 'litecoind-test': 'test', pepecoind: 'test' };
+  const netOf = sv => (sv.sync && sv.sync.chain && sv.sync.chain !== 'main') ? 'test' : NODES[sv.proc] || (sv.sync ? 'main' : null);
+  const cell = sv => {
     const optional = (sv.proc === 'wpa_supplicant' && !wifiOn) || (sv.proc === 'meshd' && !d.mesh.running && !sv.up);
     const cls = sv.up ? '' : optional ? 'o' : 'a';
     if (cls === 'a') down++;
@@ -766,7 +784,16 @@ function buildSectors(d) {
       stt = sy.ibd ? `sync ${pct.toFixed(1)} %` : 'synchron';
     }
     return `<div class="sector ${cls}${more}"${attrs}><i class="dot"></i><span class="nm">${esc(sv.name)}</span><span class="stt">${stt}</span></div>`;
-  }).join('');
+  };
+  const sys = d.services.filter(sv => !netOf(sv));
+  const grp = (net, label) => {
+    const list = d.services.filter(sv => netOf(sv) === net);
+    if (!list.length) return '';
+    const up = list.filter(x => x.up).length;
+    return `<div class="grp"><span>${label}</span><span>${up}/${list.length}</span></div>` +
+      list.map(sv => cell(net === 'test' ? Object.assign({}, sv, { name: sv.name.replace(/ Test$/, '') }) : sv)).join('');
+  };
+  $('#sectors').innerHTML = sys.map(cell).join('') + grp('main', 'Mainnet') + grp('test', 'Testnet');
   $('#svcCode').textContent = `${d.services.filter(x => x.up).length}/${d.services.length}`;
   return down;
 }

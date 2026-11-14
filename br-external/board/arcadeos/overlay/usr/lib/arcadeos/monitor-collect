@@ -51,7 +51,9 @@ for _ in (read("/proc/cpuinfo") or ""):gmatch("\nprocessor") do cores = cores + 
 if (read("/proc/cpuinfo") or ""):match("^processor") then cores = cores + 1 end
 
 local prev_cpu, prev_net, prev_t = nil, {}, nil
-local hist = { cpu = {}, mem = {}, rx = {}, tx = {}, temp = {} }
+-- Auslastung der Laufwerke: Millisekunden, in denen das Laufwerk arbeitete (io_ticks), je Zeitspanne (Uptime, genau)
+local prev_io, prev_up = {}, nil
+local hist = { cpu = {}, mem = {}, rx = {}, tx = {}, temp = {}, gpu = {} }
 
 local function cpu_times()
 	local u, n, s, i, w, q, sq, st = (read("/proc/stat") or ""):match("^cpu%s+(%d+)%s+(%d+)%s+(%d+)%s+(%d+)%s+(%d+)%s+(%d+)%s+(%d+)%s+(%d+)")
@@ -93,7 +95,8 @@ echo @net; for d in /sys/class/net/*; do [ -e "$d/device" ] || continue; n=${d##
 echo @ip; ip -o -4 addr show scope global
 echo @df; df -k / /state /media/* 2>/dev/null
 echo @temp; cat /sys/class/hwmon/hwmon*/temp*_input /sys/class/thermal/thermal_zone*/temp 2>/dev/null
-echo @disk; for b in /sys/block/*; do case ${b##*/} in loop*|ram*|zram*) continue;; esac; echo "${b##*/} $(cat $b/size) $(cat $b/removable)"; done
+echo @disk; for b in /sys/block/*; do case ${b##*/} in loop*|ram*|zram*) continue;; esac; echo "${b##*/} $(cat $b/size) $(cat $b/removable) $(cat $b/queue/rotational 2>/dev/null || echo 0) $(cat $b/stat)"; done
+echo @gpu; cat /sys/class/drm/card*/device/gpu_busy_percent 2>/dev/null
 echo @comm; cat /proc/[0-9]*/comm
 echo @end]])
 	local sec, cur = {}, nil
@@ -299,10 +302,28 @@ local function collect()
 		end
 	end
 	local drives = {}
+	local up = tonumber((read("/proc/uptime") or ""):match("^(%S+)"))
+	local span = (up and prev_up) and (up - prev_up) or 0
 	for _, l in ipairs(sec.disk or {}) do
-		local n, sz, rm = l:match("^(%S+) (%d+) (%d)")
-		if n and tonumber(sz) > 0 then drives[#drives + 1] = { name = n, size_gb = round(tonumber(sz) * 512 / 1e9, 1), removable = rm == "1" } end
+		local n, sz, rm, rot, rest = l:match("^(%S+) (%d+) (%d) (%d)%s*(.*)$")
+		if n and tonumber(sz) > 0 then
+			local f = {}
+			for v in (rest or ""):gmatch("%d+") do f[#f + 1] = tonumber(v) end
+			-- /sys/block/<n>/stat: 3 gelesene Sektoren, 7 geschriebene, 10 io_ticks (ms)
+			local d = { name = n, size_gb = round(tonumber(sz) * 512 / 1e9, 1), removable = rm == "1", rotational = rot == "1" }
+			local p = prev_io[n]
+			if f[10] and p and span > 0 then
+				d.busy = round(math.min(100, math.max(0, (f[10] - p.ticks) / (span * 10))), 1)
+				d.read_bps = round(math.max(0, (f[3] - p.rd) * 512 / span))
+				d.write_bps = round(math.max(0, (f[7] - p.wr) * 512 / span))
+			end
+			if f[10] then prev_io[n] = { ticks = f[10], rd = f[3], wr = f[7] } end
+			drives[#drives + 1] = d
+		end
 	end
+	prev_up = up
+	local gpu
+	for _, l in ipairs(sec.gpu or {}) do local v = tonumber(l); if v then gpu = math.max(gpu or 0, v) end end
 	local st = read("/run/state.json") or ""
 	local state_mode = st:match('"mode":"(%w+)"')
 
@@ -327,6 +348,7 @@ local function collect()
 	push(hist.mem, mem.total_kb > 0 and round(100 * mem.used_kb / mem.total_kb, 1) or 0)
 	if dt > 0 then push(hist.rx, round(rx_rate)); push(hist.tx, round(tx_rate)) end
 	if temp then push(hist.temp, round(temp, 1)) end
+	if gpu then push(hist.gpu, gpu) end
 	prev_t = now
 
 	local ntp = read("/run/ntp.json") or ""
@@ -339,6 +361,7 @@ local function collect()
 		config_pending = io.open("/state/config/.pending", "r") ~= nil,
 		installed = io.open("/state/installed.json", "r") ~= nil,
 		cpu = { pct = cpu_pct, cores = cores, model = cpu_model, load = { tonumber(la1), tonumber(la5), tonumber(la15) }, procs = procs },
+		gpu = gpu and { pct = gpu } or nil,
 		mem = mem, disks = disks, drives = drives, state_mode = state_mode or "?",
 		temp_c = temp and round(temp, 1) or nil, power = power(),
 		net = net, gateway = gw, rx_bps = round(rx_rate), tx_bps = round(tx_rate),
