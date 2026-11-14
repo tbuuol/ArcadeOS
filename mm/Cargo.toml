@@ -1,0 +1,36 @@
+[package]
+name = "arcadeos-mm"
+version = "0.1.0"
+edition = "2021"
+description = "ArcadeOS Merge-Mining: Solo-Stratum fuer Litecoin mit Dogecoin/Pepecoin (AuxPoW) und ein GPU-Miner (OpenCL)"
+license = "MIT"
+publish = false
+
+[lib]
+name = "mm"
+path = "src/lib.rs"
+
+[[bin]]
+name = "arcadeos-mm"
+path = "src/main.rs"
+
+# GPU-Miner: braucht libOpenCL (laeuft in der Build-Umgebung mit Mesa/rusticl)
+[[bin]]
+name = "mm-gpu"
+path = "src/gpu.rs"
+
+[dependencies]
+serde_json = "1"
+sha2 = "0.10"
+scrypt = { version = "0.11", default-features = false }
+bs58 = { version = "0.5", features = ["check"] }
+bech32 = "0.9"
+hex = "0.4"
+base64 = "0.22"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

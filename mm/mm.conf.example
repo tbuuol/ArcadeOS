@@ -1,0 +1,14 @@
+# arcadeos-mm (Merge-Mining): /state/mm/mm.conf
+# Stratum fuer ASICs und mm-gpu (nur im LAN erreichbar machen)
+bind=0.0.0.0:3333
+status=/run/mm/status.json
+tag=/ArcadeOS/
+# Vardiff: Startschwierigkeit, Grenzen, angestrebte Sekunden zwischen zwei Shares eines Miners
+diff=16
+mindiff=0.01
+maxdiff=1e12
+shareinterval=5
+# name,rpc,auth,zmq,auszahlungsadresse   auth: user:passwort (rpcauth) oder cookie:/pfad/.cookie
+parent=litecoin,127.0.0.1:9332,cookie:/media/hdd/arcadeos/litecoin/.cookie,127.0.0.1:28332,<LTC-Adresse>
+aux=dogecoin,127.0.0.1:22555,cookie:/media/hdd/arcadeos/dogecoin/.cookie,127.0.0.1:28532,<DOGE-Adresse>
+aux=pepecoin,127.0.0.1:33873,cookie:/media/hdd/arcadeos/pepecoin-main/.cookie,127.0.0.1:28632,<PEP-Adresse>
