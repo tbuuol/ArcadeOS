@@ -199,6 +199,9 @@ local function node_sync(s, up, now)
 		local pct = headers > 0 and 100 * blocks / headers or 0
 		if ibd then pct = math.min(pct, 99.9) end
 		v = { blocks = blocks, headers = headers, pct = round(pct, 1), ibd = ibd, chain = tostring(d.chain or "") }
+	elseif c and c.v and c.v.blocks then
+		-- Knoten laeuft, antwortet aber gerade nicht in 5 s (im Sync oft beschaeftigt): letzten Stand behalten
+		v = c.v
 	else
 		v = { starting = true }   -- RPC noch nicht bereit (Knoten laedt seine Datenbank)
 	end
