@@ -169,12 +169,14 @@ local SERVICES = {
 	{ "SSH", "dropbear" }, { "Mesh", "meshd" }, { "Zeit (NTP)", "ntpd" }, { "WLAN", "wpa_supplicant" },
 	{ "Watchdog", "watchdog" }, { "Syslog", "syslogd" }, { "Cron", "crond" }, { "Webserver", "httpd" }, { "Web", "caddy" },
 }
--- Chain-Knoten nur, wenn auf diesem Geraet eingerichtet (/etc/init.d/S64litecoin, S65kotia, S66pepecoin): Name, Prozess,
+-- Chain-Knoten nur, wenn auf diesem Geraet eingerichtet (/etc/init.d/S62dogecoin, S63pepecoin-main, S64litecoin, S65kotia, S66pepecoin): Name, Prozess,
 -- Startskript, RPC-Programm (fuer den Sync-Stand)
 local NODES = {
+	{ "Dogecoin", "dogecoind", "/state/dogecoin/dogecoind", "/state/dogecoin/dogecoin-cli" },
+	{ "Pepecoin", "pepecoind-main", "/state/pepecoin-main/pepecoind", "/state/pepecoin-main/pepecoin-cli" },
 	{ "Litecoin", "litecoind", "/state/litecoin/litecoind", "/state/litecoin/litecoin-cli" },
 	{ "Kotia", "kotiad", "/state/kotia/kotiad", "/state/kotia/kotia-cli" },
-	{ "Pepecoin", "pepecoind", "/state/pepecoin/pepecoind", "/state/pepecoin/pepecoin-cli" },
+	{ "Pepecoin Test", "pepecoind", "/state/pepecoin/pepecoind", "/state/pepecoin/pepecoin-cli" },
 }
 for _, n in ipairs(NODES) do
 	local f = io.open(n[3]) if f then f:close(); SERVICES[#SERVICES + 1] = { n[1], n[2], cli = n[4] } end
