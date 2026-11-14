@@ -174,6 +174,7 @@ struct SpentCoin {
     script: Vec<u8>,
     height: u32,
     coinbase: bool,
+    pegout: bool,
 }
 
 struct Entry {
@@ -182,9 +183,10 @@ struct Entry {
     fresh: bool,
 }
 
-pub fn is_unspendable(script: &[u8]) -> bool {
-    // as Core 0.14 (CScript::IsUnspendable): OP_RETURN outputs never enter the coin set
-    script.first() == Some(&0x6a)
+pub fn is_unspendable(p: &ChainParams, script: &[u8]) -> bool {
+    // as Core (CScript::IsUnspendable): OP_RETURN outputs never enter the coin set; from 0.15-based nodes on
+    // (here: the SegWit chains) neither do scripts over MAX_SCRIPT_SIZE
+    script.first() == Some(&0x6a) || (p.format.segwit && script.len() > 10_000)
 }
 
 pub struct Connector {
@@ -432,7 +434,7 @@ impl Connector {
                     if wallet_on {
                         spent_keys.push(k);
                     }
-                    sp.push(SpentCoin { value: c.value, script: c.script.clone(), height: c.height, coinbase: c.coinbase });
+                    sp.push(SpentCoin { value: c.value, script: c.script.clone(), height: c.height, coinbase: c.coinbase, pegout: c.pegout });
                     if c.height != height {
                         undo.push((k, c));
                     }
@@ -447,12 +449,12 @@ impl Connector {
                 }
             }
             for (v, o) in tx.outputs.iter().enumerate() {
-                if is_unspendable(&o.script_pubkey) {
+                if is_unspendable(p, &o.script_pubkey) {
                     continue;
                 }
                 let k = outkey(&tx.txid, v as u32);
                 let fresh = !self.cache.contains_key(&k);
-                let coin = Coin { value: o.value, height, coinbase: tx.is_coinbase() || tx.is_coinstake(), script: o.script_pubkey.clone() };
+                let coin = Coin { value: o.value, height, coinbase: tx.is_coinbase() || tx.is_coinstake(), script: o.script_pubkey.clone(), pegout: tx.hogex && v > 0 };
                 if wallet_on && self.sh.wallet.lock().unwrap().as_ref().is_some_and(|w| w.mine(&coin.script)) {
                     created_mine.push((k, coin.clone()));
                 }
@@ -463,7 +465,7 @@ impl Connector {
         {
             let refs: Vec<Vec<Spent>> = spent
                 .iter()
-                .map(|v| v.iter().map(|s| Spent { value: s.value, script: &s.script, height: s.height, coinbase: s.coinbase, pegout: false }).collect())
+                .map(|v| v.iter().map(|s| Spent { value: s.value, script: &s.script, height: s.height, coinbase: s.coinbase, pegout: s.pegout }).collect())
                 .collect();
             let st = self.store();
             let mtp = |h: u32| -> Option<u32> {
@@ -500,7 +502,7 @@ impl Connector {
                 let (tx, counter) = (self.tx.clone(), self.scripts_checked.clone());
                 rayon::spawn(move || {
                     let r = b.txs.par_iter().zip(spent.par_iter()).skip(1).try_for_each(|(t, sp)| {
-                        let refs: Vec<Spent> = sp.iter().map(|s| Spent { value: s.value, script: &s.script, height: s.height, coinbase: s.coinbase, pegout: false }).collect();
+                        let refs: Vec<Spent> = sp.iter().map(|s| Spent { value: s.value, script: &s.script, height: s.height, coinbase: s.coinbase, pegout: s.pegout }).collect();
                         counter.fetch_add(refs.len() as u64, Ordering::Relaxed);
                         rules::tx_scripts(p, t, &refs, height, flags)
                     });

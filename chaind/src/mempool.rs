@@ -32,7 +32,7 @@ impl Mempool {
         let vout = u32::from_be_bytes(k[32..].try_into().unwrap());
         let t = self.txs.get(&txid)?;
         let o = t.tx.outputs.get(vout as usize)?;
-        Some(Coin { value: o.value, height: u32::MAX, coinbase: false, script: o.script_pubkey.clone() })
+        Some(Coin { value: o.value, height: u32::MAX, coinbase: false, script: o.script_pubkey.clone(), pegout: false })
     }
 
     pub fn spends(&self, k: &OutKey) -> Option<Hash256> {
@@ -141,7 +141,7 @@ pub fn accept(sh: &Shared, raw: &[u8]) -> Result<Hash256, String> {
         return Err("non-final".into());
     }
     if let Some(flags) = rules::script_flags(p, height, true) {
-        let sp: Vec<Spent> = coins.iter().map(|c| Spent { value: c.value, script: &c.script, height: c.height.min(tip), coinbase: c.coinbase, pegout: false }).collect();
+        let sp: Vec<Spent> = coins.iter().map(|c| Spent { value: c.value, script: &c.script, height: c.height.min(tip), coinbase: c.coinbase, pegout: c.pegout }).collect();
         rules::tx_scripts(p, &tx, &sp, height, flags).map_err(|e| format!("mandatory-script-verify-flag-failed ({})", e.why))?;
     }
     let txid = tx.txid;

@@ -51,6 +51,45 @@ pub struct Stats {
     pub hash: Hash256,
 }
 
+/// Core 0.15+ (Bitcoin/Litecoin 0.21: hash_serialized_2), per txid: the txid, VARINT(1) (Core's operator-precedence
+/// slip makes "height*2+coinbase ? 1 : 0" always 1), then per output VARINT(n+1), the script, VARINT(value), then
+/// VARINT(0).
+pub fn stats_v2(st: &Store) -> Result<Stats, String> {
+    let r = st.env.read_txn().map_err(|e| e.to_string())?;
+    let height = st.meta.get(&r, b"tip").map_err(|e| e.to_string())?.map(|v| u32::from_le_bytes(v.try_into().unwrap())).unwrap_or(0);
+    let best = st.id_at(height).ok_or("no tip")?;
+    let mut h = Sha256::new();
+    h.update(best.0);
+    let (mut transactions, mut txouts, mut total) = (0u64, 0u64, 0u128);
+    let mut cur: Option<[u8; 32]> = None;
+    for item in st.coins.iter(&r).map_err(|e| e.to_string())? {
+        let (k, v) = item.map_err(|e| e.to_string())?;
+        let txid: [u8; 32] = k[..32].try_into().unwrap();
+        let vout = u32::from_be_bytes(k[32..36].try_into().unwrap());
+        if cur != Some(txid) {
+            if cur.is_some() {
+                btc_varint(&mut h, 0);
+            }
+            h.update(txid);
+            btc_varint(&mut h, 1);
+            transactions += 1;
+            cur = Some(txid);
+        }
+        let c = Coin::decode(v).ok_or("bad coin record")?;
+        btc_varint(&mut h, vout as u64 + 1);
+        compact(&mut h, c.script.len() as u64);
+        h.update(&c.script);
+        btc_varint(&mut h, c.value);
+        txouts += 1;
+        total += c.value as u128;
+    }
+    if cur.is_some() {
+        btc_varint(&mut h, 0);
+    }
+    let first = h.finalize();
+    Ok(Stats { height, best, transactions, txouts, total, hash: Hash256(Sha256::digest(first).into()) })
+}
+
 pub fn stats(st: &Store) -> Result<Stats, String> {
     let r = st.env.read_txn().map_err(|e| e.to_string())?;
     let height = st.meta.get(&r, b"tip").map_err(|e| e.to_string())?.map(|v| u32::from_le_bytes(v.try_into().unwrap())).unwrap_or(0);

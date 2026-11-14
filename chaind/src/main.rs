@@ -10,7 +10,8 @@
 //!   CHAIND_DIR         data directory                                            (required)
 //!   CHAIND_RPC         RPC address, cookie in <dir>/.cookie                      (127.0.0.1:44880)
 //!   CHAIND_PEERS       peers, comma-separated                    (the chain's known peers)
-//!   CHAIND_DOWNLOADERS download threads                                          (3)
+//!   CHAIND_DOWNLOADERS download threads                                          (6)
+//!   CHAIND_BATCH       blocks per download request                               (64)
 //!   CHAIND_SYNC_MB     memory for the pipeline while syncing                     (256)
 //!   CHAIND_ASSUME_VALID=1  skip scripts below the newest checkpoint              (off: all scripts checked)
 //!   CHAIND_COOKIE      where to write the RPC cookie                             (<dir>/.cookie)
@@ -112,11 +113,24 @@ fn main() {
         eprintln!("chaind: {e}");
         std::process::exit(1)
     })));
+    // the workers run libbitcoinconsensus and secp256k1, which keep big buffers on the stack: 16 MB each
+    // (std's 2 MB overflowed on a Litecoin testnet block); it is address space, only what is touched is memory
+    let _ = rayon::ThreadPoolBuilder::new().stack_size(16 << 20).thread_name(|i| format!("work{i}")).build_global();
     let sync_mb: u64 = env("CHAIND_SYNC_MB", "256").parse().unwrap_or(256);
     let budget = node::Budget { inflight_bytes: (sync_mb / 4) << 20, cache_bytes: ((sync_mb * 3 / 4) << 20) as usize, script_window: 2000 };
     let peers: Vec<String> = match std::env::var("CHAIND_PEERS") {
         Ok(p) => p.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
-        Err(_) => params.fixed_peers.iter().map(|s| s.to_string()).collect(),
+        Err(_) => {
+            let mut v: Vec<String> = params.fixed_peers.iter().map(|s| s.to_string()).collect();
+            for seed in params.dns_seeds {
+                use std::net::ToSocketAddrs;
+                if let Ok(a) = (*seed, params.p2p_port).to_socket_addrs() {
+                    v.extend(a.filter(|x| x.is_ipv4()).take(12).map(|x| x.to_string()));
+                }
+            }
+            v.dedup();
+            v
+        }
     };
     // genesis first, so the shared state starts from what is on disk
     {
@@ -176,7 +190,7 @@ fn main() {
         let (sh, tx) = (sh.clone(), tx.clone());
         std::thread::spawn(move || net::header_thread(params, sh, tx));
     }
-    let n: usize = env("CHAIND_DOWNLOADERS", "3").parse().unwrap_or(3);
+    let n: usize = env("CHAIND_DOWNLOADERS", "6").parse().unwrap_or(6);
     for i in 0..n {
         let (sh, tx) = (sh.clone(), tx.clone());
         std::thread::spawn(move || net::download_thread(params, sh, i, tx));

@@ -352,9 +352,9 @@ fn call(sh: &Shared, m: &str, p: &[Value], tn: &Sender<Msg>) -> R {
             let (s, r) = crossbeam_channel::bounded(1);
             let _ = tn.send(Msg::Flush(s));
             let _ = r.recv_timeout(std::time::Duration::from_secs(600));
-            let s = crate::utxo::stats(st).map_err(|e| (-1, e))?;
+            let s = if sh.params.format.segwit { crate::utxo::stats_v2(st) } else { crate::utxo::stats(st) }.map_err(|e| (-1, e))?;
             Ok(json!({"height": s.height, "bestblock": s.best.to_hex(), "transactions": s.transactions, "txouts": s.txouts,
-                      "hash_serialized": s.hash.to_hex(), "total_amount": s.total as f64 / 1e8}))
+                      "hash_serialized": s.hash.to_hex(), "hash_serialized_2": s.hash.to_hex(), "total_amount": s.total as f64 / 1e8}))
         }
         "uptime" => Ok(json!(sh.started.elapsed().as_secs())),
         "stop" => {

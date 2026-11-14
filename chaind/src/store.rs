@@ -27,12 +27,16 @@ pub struct Coin {
     pub height: u32,
     pub coinbase: bool,
     pub script: Vec<u8>,
+    /// a Litecoin MWEB peg-out (a HogEx output after the first): it matures too, sooner
+    pub pegout: bool,
 }
+
+const PEGOUT_BIT: u64 = 1 << 31;
 
 impl Coin {
     pub fn encode(&self) -> Vec<u8> {
         let mut v = Vec::with_capacity(self.script.len() + 12);
-        put_varint(&mut v, (self.height as u64) << 1 | self.coinbase as u64);
+        put_varint(&mut v, ((self.height as u64) | if self.pegout { PEGOUT_BIT } else { 0 }) << 1 | self.coinbase as u64);
         put_varint(&mut v, self.value);
         v.extend_from_slice(&self.script);
         v
@@ -40,7 +44,8 @@ impl Coin {
     pub fn decode(b: &[u8]) -> Option<Coin> {
         let (hc, n1) = get_varint(b)?;
         let (value, n2) = get_varint(&b[n1..])?;
-        Some(Coin { value, height: (hc >> 1) as u32, coinbase: hc & 1 == 1, script: b[n1 + n2..].to_vec() })
+        let h = hc >> 1;
+        Some(Coin { value, height: (h & !PEGOUT_BIT) as u32, coinbase: hc & 1 == 1, script: b[n1 + n2..].to_vec(), pegout: h & PEGOUT_BIT != 0 })
     }
 }
 

@@ -57,7 +57,7 @@ fn connect(params: &ChainParams, sh: &Shared, start: usize) -> Option<Peer> {
 pub fn header_thread(params: &'static ChainParams, sh: Arc<Shared>, to_node: Sender<Msg>) {
     // all cores: while headers come, the blocks behind them are few and light
     let n = rayon::current_num_threads();
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(n).thread_name(|i| format!("pow{i}")).build().unwrap();
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(n).stack_size(16 << 20).thread_name(|i| format!("pow{i}")).build().unwrap();
     let mut start = 0;
     while !sh.stop.load(Ordering::Relaxed) {
         let Some(mut peer) = connect(params, &sh, start) else {
@@ -125,13 +125,15 @@ pub fn header_thread(params: &'static ChainParams, sh: Arc<Shared>, to_node: Sen
 /// Download blocks the scheduler hands out, from one peer at a time; on trouble, give the work back and try the next.
 pub fn download_thread(params: &'static ChainParams, sh: Arc<Shared>, no: usize, to_node: Sender<Msg>) {
     let mut start = no;
+    // blocks per request: far peers answer in one round trip what would otherwise take many
+    let batch: u32 = std::env::var("CHAIND_BATCH").ok().and_then(|v| v.parse().ok()).unwrap_or(64);
     while !sh.stop.load(Ordering::Relaxed) {
         let Some(mut peer) = connect(params, &sh, start) else {
             std::thread::sleep(Duration::from_secs(10));
             continue;
         };
         loop {
-            let Some(task) = sh.next_task(16) else { return };
+            let Some(task) = sh.next_task(batch) else { return };
             let ids: Vec<Hash256> = task.iter().map(|t| t.1).collect();
             match peer.get_blocks(&ids) {
                 Ok(raws) => {
