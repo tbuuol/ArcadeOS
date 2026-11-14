@@ -8,7 +8,7 @@
 #
 
 NAME=litecoin PROC=litecoind START=/state/litecoin/litecoind
-STOP_WAIT=120   # Sekunden, die der Knoten zum Schliessen seiner Datenbanken bekommt
+STOP_WAIT=900   # Sekunden zum Schliessen der Datenbanken: im Sync schreibt litecoind bis zu dbcache (1,5 GB) auf die HDD
 
 start() {
 	printf "Starting %s: " $NAME
