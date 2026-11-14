@@ -1,0 +1,18 @@
+[package]
+name = "outboxd"
+version = "0.1.0"
+edition = "2021"
+description = "ArcadeOS approval tray: prepared, signed transactions go out only after the owner approves them with a PIN"
+license = "MIT"
+publish = false
+
+[dependencies]
+serde_json = "1"
+sha2 = "0.10"
+hex = "0.4"
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+strip = true

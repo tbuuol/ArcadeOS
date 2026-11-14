@@ -1,0 +1,29 @@
+#!/bin/sh
+#
+# Freigabe-Fach (outboxd): vorbereitete, signierte Transaktionen gehen erst raus, wenn der Besitzer sie unter
+# http://<box>/freigabe/ (Caddy, nur LAN) mit seiner PIN freigibt. Dienst nur auf 127.0.0.1:8093.
+# Programm und Daten unter /state/outbox (nur root); laeuft, wenn /state/outbox/bin/outboxd da ist.
+# Abschalten: Datei /state/outbox/disabled anlegen.
+#
+
+BIN=/state/outbox/bin/outboxd
+
+start() {
+	printf "Starting outbox: "
+	[ -x $BIN ] || { echo "nicht eingerichtet ($BIN)"; return 0; }
+	[ -f /state/outbox/disabled ] && { echo "abgeschaltet (/state/outbox/disabled)"; return 0; }
+	start-stop-daemon -S -b -m -p /run/outbox.pid -x /bin/sh -- -c "exec $BIN serve >> /state/outbox/serve.log 2>&1" && echo "OK" || echo "FAIL"
+}
+
+stop() {
+	printf "Stopping outbox: "
+	start-stop-daemon -K -q -p /run/outbox.pid
+	killall outboxd 2>/dev/null
+	echo "OK"
+}
+
+case "$1" in
+	start|stop) "$1";;
+	restart|reload) stop; start;;
+	*) echo "Usage: $0 {start|stop|restart|reload}"; exit 1;;
+esac

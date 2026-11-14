@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Freigabe-Fach</title>
+<style>
+:root{--bg:#0b0f14;--card:#141b24;--line:#233041;--txt:#e6edf3;--dim:#8b9bb0;--ok:#2ea043;--bad:#da3633;--warn:#d29922;--acc:#58a6ff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font:16px/1.45 system-ui,sans-serif;padding:16px;max-width:720px;margin:auto}
+h1{font-size:22px;margin:4px 0 2px}.sub{color:var(--dim);margin:0 0 18px;font-size:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:12px 0}
+.t{font-weight:650;font-size:18px}.why{color:var(--dim);margin:4px 0 10px}
+dl{display:grid;grid-template-columns:max-content 1fr;gap:4px 12px;margin:0 0 12px;font-size:14px}dt{color:var(--dim)}dd{margin:0;word-break:break-all;font-family:ui-monospace,monospace}
+.amt{font-size:24px;font-weight:700;margin:6px 0}
+.row{display:flex;gap:10px;flex-wrap:wrap}button{flex:1;min-width:120px;font:inherit;font-weight:650;padding:14px;border-radius:10px;border:0;cursor:pointer}
+.send{background:var(--ok);color:#fff}.drop{background:#2a3442;color:var(--txt)}button:disabled{opacity:.5}
+input{font:inherit;font-size:20px;letter-spacing:4px;width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:#0e141b;color:var(--txt);margin:6px 0 10px}
+.msg{padding:10px 12px;border-radius:8px;margin:10px 0;font-size:15px}.err{background:#3b1416;color:#ffb3b0}.good{background:#12301b;color:#9be9a8}
+.tag{display:inline-block;font-size:12px;padding:2px 8px;border-radius:99px;background:#22303f;color:var(--dim);margin-left:6px}
+.exp{border-color:var(--warn)}.done{opacity:.85}.empty{color:var(--dim);text-align:center;padding:24px}
+label{color:var(--dim);font-size:14px;display:flex;gap:8px;align-items:center}h2{font-size:16px;color:var(--dim);margin:26px 0 4px}
+</style></head><body>
+<h1>Freigabe-Fach</h1>
+<p class="sub">Hier liegen Transaktionen, die Claude vorbereitet und signiert hat. Gesendet wird nur, was du hier freigibst.</p>
+<div id="pinbox" class="card" style="display:none">
+  <div class="t">PIN festlegen</div>
+  <p class="why">Mit dieser PIN gibst du Aufträge frei. Mindestens 6 Ziffern. Nur du kennst sie.</p>
+  <input id="newpin" type="password" inputmode="numeric" autocomplete="new-password" placeholder="neue PIN">
+  <button class="send" onclick="setPin()">PIN speichern</button>
+</div>
+<div id="unlock" class="card" style="display:none">
+  <input id="pin" type="password" inputmode="numeric" autocomplete="off" placeholder="PIN">
+  <label><input id="remember" type="checkbox" style="width:auto;margin:0"> auf diesem Gerät merken</label>
+</div>
+<div id="msg"></div>
+<div id="pending"></div>
+<h2>Erledigt</h2>
+<div id="done"></div>
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let saved='';try{saved=localStorage.getItem('outbox-pin')||''}catch(e){}
+if(saved){$('pin').value=saved;$('remember').checked=true}
+function say(t,ok){$('msg').innerHTML=t?`<div class="msg ${ok?'good':'err'}">${esc(t)}</div>`:''}
+function ago(t){const s=Math.floor(Date.now()/1000)-t;return s<90?'gerade eben':s<5400?Math.round(s/60)+' min':Math.round(s/3600)+' h'}
+function unit(r){return r.chain==='kotia'?'KOT':r.chain&&r.chain.startsWith('pepecoin')?'PEP':r.chain&&r.chain.startsWith('litecoin')?'LTC':r.chain==='dogecoin'?'DOGE':''}
+async function load(){
+  try{
+    const d=await (await fetch('api/list',{cache:'no-store'})).json();
+    $('pinbox').style.display=d.pin_set?'none':'block';
+    $('unlock').style.display=d.pin_set&&d.pending.length?'block':'none';
+    $('pending').innerHTML=d.pending.length?d.pending.map(r=>`
+      <div class="card ${r.expired?'exp':''}">
+        <div class="t">${esc(r.title)}<span class="tag">${esc(r.chain)}</span>${r.expired?'<span class="tag">abgelaufen</span>':''}</div>
+        ${r.why?`<div class="why">${esc(r.why)}</div>`:''}
+        <div class="amt">${esc(r.amount)} ${unit(r)}</div>
+        <dl><dt>an</dt><dd>${esc(r.to)}</dd><dt>von</dt><dd>${esc(r.from)}</dd><dt>Gebühr</dt><dd>${esc(r.fee)} ${unit(r)}</dd>
+        ${r.data?`<dt>Daten</dt><dd>${esc(r.data)}</dd>`:''}<dt>vorbereitet</dt><dd>vor ${ago(r.created)}</dd></dl>
+        <div class="row"><button class="send" ${r.expired?'disabled':''} onclick="decide('${r.id}',true,this)">Senden</button>
+        <button class="drop" onclick="decide('${r.id}',false,this)">Verwerfen</button></div>
+      </div>`).join(''):'<div class="empty">Nichts wartet auf Freigabe.</div>';
+    $('done').innerHTML=d.done.length?d.done.map(r=>`
+      <div class="card done"><div class="t">${esc(r.title)}<span class="tag">${esc(r.state)}</span></div>
+      <dl><dt>Betrag</dt><dd>${esc(r.amount)} ${unit(r)} an ${esc(r.to)}</dd>${r.txid&&r.state==='gesendet'?`<dt>txid</dt><dd>${esc(r.txid)}</dd>`:''}
+      ${r.error?`<dt>Fehler</dt><dd>${esc(r.error)}</dd>`:''}<dt>entschieden</dt><dd>vor ${ago(r.decided||r.created)}</dd></dl></div>`).join(''):'<div class="empty">Noch nichts.</div>';
+  }catch(e){say('Das Freigabe-Fach antwortet nicht.')}
+}
+async function post(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});return [r.ok,await r.json()]}
+async function decide(id,yes,btn){
+  const pin=$('pin').value.trim();if(!pin){say('Bitte zuerst die PIN eingeben.');return}
+  if(yes&&!confirm('Diese Transaktion jetzt senden? Das lässt sich nicht rückgängig machen.'))return;
+  btn.disabled=true;
+  const [ok,r]=await post(yes?'api/approve':'api/reject',{id,pin});
+  if(ok){try{$('remember').checked?localStorage.setItem('outbox-pin',pin):localStorage.removeItem('outbox-pin')}catch(e){}
+    say(yes?(r.state==='gesendet'?'Gesendet: '+r.txid:'Senden fehlgeschlagen: '+(r.error||'')):'Verworfen.',r.state!=='fehlgeschlagen')}
+  else{say(r.error||'Fehler');btn.disabled=false}
+  load();
+}
+async function setPin(){const [ok,r]=await post('api/pin',{new:$('newpin').value.trim()});say(ok?'PIN gespeichert.':(r.error||'Fehler'),ok);load()}
+load();setInterval(load,10000);
+</script></body></html>
