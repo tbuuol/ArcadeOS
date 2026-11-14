@@ -8,6 +8,11 @@ DATADIR=$(sed -n 's/^DATADIR=//p' $CONF 2>/dev/null)
 U=$(stat -c %u "$DATADIR"); G=$(stat -c %g "$DATADIR")
 [ "$U" -gt 0 ] || { logger -t admin "$DATADIR gehoert root - der Dienst laeuft nicht als root"; exit 1; }
 install -d -m 750 -o "$U" -g "$G" /state/arcade
+# Nur der Dienst selbst liest seine Dateien (Konten, Sessions, Schluessel-Index). Ausnahme about.json: die liest
+# meshd ueber die Gruppe (op/me). umask gilt auch fuer alles, was arcadeos-admin neu schreibt.
+umask 077
+for f in /state/arcade/*; do [ -f "$f" ] && [ "${f##*/}" != about.json ] && chmod go-rwx "$f"; done
+[ -f /state/arcade/about.json ] && chmod 640 /state/arcade/about.json
 export ADMIN_COOKIE="$DATADIR/testnet3/.cookie"
 child=""
 trap '[ -n "$child" ] && kill -TERM "$child" 2>/dev/null; exit 0' TERM INT

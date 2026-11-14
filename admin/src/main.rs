@@ -321,6 +321,9 @@ impl App {
         let p = self.cfg.state.join("about.json");
         let tmp = p.with_extension("new");
         if std::fs::write(&tmp, about.to_string()).is_ok() {
+            // meshd (group of this service) reads about.json for op/me; everything else stays 0600 (umask 077)
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o640));
             let _ = std::fs::rename(&tmp, &p);
         }
     }
