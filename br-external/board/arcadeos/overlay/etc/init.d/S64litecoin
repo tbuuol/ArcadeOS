@@ -4,11 +4,10 @@
 # z.B. Litecoin-Mainnet mit txindex als Basis fuer omnilite-standalone:
 # Programm, Datenverzeichnis, Nutzer; startet litecoind im Vordergrund und gibt 3 zurueck, wenn die Daten fehlen).
 # Abschalten: Datei /state/litecoin/disabled anlegen. Ueberwachung und Neustart: /usr/lib/arcadeos/node-supervise.
-# Beim Herunterfahren wird litecoind sauber beendet, bevor die Platten ausgehaengt werden (rcK stoppt rueckwaerts).
+# Beim Herunterfahren (zuerst, alle Knoten gleichzeitig, rcK) wird litecoind sauber beendet, bevor die Platten ausgehaengt werden (rcK stoppt rueckwaerts).
 #
 
 NAME=litecoin PROC=litecoind START=/state/litecoin/litecoind
-STOP_WAIT=900   # Sekunden zum Schliessen der Datenbanken: im Sync schreibt litecoind bis zu dbcache (1,5 GB) auf die HDD
 
 start() {
 	printf "Starting %s: " $NAME
@@ -20,11 +19,7 @@ start() {
 
 stop() {
 	printf "Stopping %s: " $NAME
-	touch /run/$NAME.stop
-	start-stop-daemon -K -q -p /run/$NAME-supervise.pid
-	i=0
-	while pidof $PROC >/dev/null && [ $i -lt $STOP_WAIT ]; do sleep 1; i=$((i + 1)); done
-	if pidof $PROC >/dev/null; then killall -KILL $PROC 2>/dev/null; echo "nach ${STOP_WAIT}s hart beendet"; else echo "OK (${i}s)"; fi
+	/usr/lib/arcadeos/node-stop $NAME $PROC
 }
 
 case "$1" in

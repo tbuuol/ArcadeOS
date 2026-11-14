@@ -1,0 +1,24 @@
+#!/bin/sh
+#
+# node-stop NAME PROC [HANG]: einen Chain-Knoten sauber beenden und warten, bis er wirklich zu ist (der Prozess
+# endet erst nach "Shutdown: done", wenn alles geschrieben ist). Kein festes Zeitlimit: solange der Knoten noch
+# arbeitet (er liest oder schreibt, /proc/<pid>/io aendert sich), wird gewartet. Hart beendet wird er nur, wenn er
+# HANG Sekunden (Vorgabe 300) lang gar nichts mehr tut, also haengt.
+#
+NAME=$1 PROC=$2 HANG=${3:-300}
+touch /run/$NAME.stop
+start-stop-daemon -K -q -p /run/$NAME-supervise.pid   # der Waechter beendet den Knoten mit SIGTERM
+t0=$(date +%s)
+last=$t0 seen=""
+while pid=$(pidof $PROC); do
+	io=$(cat /proc/${pid%% *}/io 2>/dev/null | grep -E '^(rchar|wchar)' | tr -d '\n')
+	now=$(date +%s)
+	if [ "$io" != "$seen" ]; then seen=$io; last=$now; fi
+	if [ $((now - last)) -ge $HANG ]; then
+		killall -KILL $PROC 2>/dev/null
+		echo "haengt seit ${HANG}s, hart beendet"
+		exit 1
+	fi
+	sleep 1
+done
+echo "OK ($(( $(date +%s) - t0 ))s)"

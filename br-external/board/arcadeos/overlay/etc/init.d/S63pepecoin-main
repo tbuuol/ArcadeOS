@@ -4,11 +4,10 @@
 # z.B. Pepecoin-Mainnet pruned als Merge-Mining-Ziel:
 # Programm, Datenverzeichnis, Nutzer; startet pepecoind im Vordergrund und gibt 3 zurueck, wenn die Daten fehlen).
 # Abschalten: Datei /state/pepecoin-main/disabled anlegen. Ueberwachung und Neustart: /usr/lib/arcadeos/node-supervise.
-# Beim Herunterfahren wird pepecoind-main sauber beendet, bevor die Platten ausgehaengt werden (rcK stoppt rueckwaerts).
+# Beim Herunterfahren (zuerst, alle Knoten gleichzeitig, rcK) wird pepecoind-main sauber beendet, bevor die Platten ausgehaengt werden (rcK stoppt rueckwaerts).
 #
 
 NAME=pepecoin-main PROC=pepecoind-main START=/state/pepecoin-main/pepecoind
-STOP_WAIT=120   # Sekunden, die der Knoten zum Schliessen seiner Datenbanken bekommt
 
 start() {
 	printf "Starting %s: " $NAME
@@ -20,11 +19,7 @@ start() {
 
 stop() {
 	printf "Stopping %s: " $NAME
-	touch /run/$NAME.stop
-	start-stop-daemon -K -q -p /run/$NAME-supervise.pid
-	i=0
-	while pidof $PROC >/dev/null && [ $i -lt $STOP_WAIT ]; do sleep 1; i=$((i + 1)); done
-	if pidof $PROC >/dev/null; then killall -KILL $PROC 2>/dev/null; echo "nach ${STOP_WAIT}s hart beendet"; else echo "OK (${i}s)"; fi
+	/usr/lib/arcadeos/node-stop $NAME $PROC
 }
 
 case "$1" in
