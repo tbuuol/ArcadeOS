@@ -67,7 +67,8 @@ inline int set_error(bitcoinconsensus_error* ret, bitcoinconsensus_error serror)
 /** Check that all specified flags are part of the libconsensus interface. */
 static bool verify_flags(unsigned int flags)
 {
-    return (flags & ~(bitcoinconsensus_SCRIPT_FLAGS_VERIFY_ALL)) == 0;
+    // ARCADE PATCH: also LOW_S (1 << 3) and Kotia's DERKEY (1 << 29)
+    return (flags & ~(bitcoinconsensus_SCRIPT_FLAGS_VERIFY_ALL | (1U << 3) | (1U << 29))) == 0;
 }
 
 static int verify_script(const unsigned char *scriptPubKey, unsigned int scriptPubKeyLen, CAmount amount,

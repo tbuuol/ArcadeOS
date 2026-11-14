@@ -142,6 +142,23 @@ pub fn verify_with_flags_and_sighash_prefix(
     r
 }
 
+/// [`verify_with_flags_and_sighash_prefix`] for a PPCoin-style transaction (Kotia): `spending_transaction` in
+/// Bitcoin's layout (without its time), `tx_time` its time, hashed after the version into every signature.
+/// Extra flags: LOW_S (1 << 3) and Kotia's DERKEY (1 << 29).
+pub fn verify_with_flags_and_tx_time(
+    spent_output_script: &[u8],
+    amount: u64,
+    spending_transaction: &[u8],
+    input_index: usize,
+    flags: u32,
+    tx_time: u32,
+) -> Result<(), Error> {
+    unsafe { ffi::arcade_set_tx_time(1, tx_time) };
+    let r = verify_with_flags(spent_output_script, amount, spending_transaction, None, input_index, flags);
+    unsafe { ffi::arcade_set_tx_time(0, 0) };
+    r
+}
+
 /// Same as verify but with flags that turn past soft fork features on or off.
 pub fn verify_with_flags(
     spent_output_script: &[u8],
@@ -214,6 +231,9 @@ pub mod ffi {
     extern "C" {
         /// ARCADE PATCH: set (or, with null, clear) this thread's 32-byte signature-hash prefix.
         pub fn arcade_set_sighash_prefix(prefix32: *const c_uchar);
+
+        /// ARCADE PATCH (chaind): set (set != 0) or clear this thread's transaction time (Kotia).
+        pub fn arcade_set_tx_time(set: c_int, t: u32);
 
         /// Returns `libbitcoinconsensus` version.
         pub fn bitcoinconsensus_version() -> c_int;

@@ -173,6 +173,7 @@ impl Shared {
 /// A coin a connected-but-unchecked block spends, owned (its scripts run on another thread).
 #[derive(Clone)]
 struct SpentCoin {
+    time: u32,
     value: u64,
     script: Vec<u8>,
     height: u32,
@@ -190,6 +191,12 @@ pub fn is_unspendable(p: &ChainParams, script: &[u8]) -> bool {
     // as Core (CScript::IsUnspendable): OP_RETURN outputs never enter the coin set; from 0.15-based nodes on
     // (here: the SegWit chains) neither do scripts over MAX_SCRIPT_SIZE
     script.first() == Some(&0x6a) || (p.format.segwit && script.len() > 10_000)
+}
+
+/// [`is_unspendable`] for an output: PPCoin-style chains (Kotia, CTxOut::IsUnspendable) also drop empty outputs
+/// (value 0, no script: the empty first output of every coinstake and the coinbase of a staked block).
+pub fn output_unspendable(p: &ChainParams, value: u64, script: &[u8]) -> bool {
+    is_unspendable(p, script) || (p.format.tx_time && value == 0 && script.is_empty())
 }
 
 pub struct Connector {
@@ -214,6 +221,8 @@ pub struct Connector {
     moved_tip: u32,
     stalls: u64,
     script_sizes: HashMap<u32, u64>,
+    /// Kotia: stake modifier and last blocks of each kind
+    pos: Option<crate::kotia::PosState>,
 }
 
 fn header_rules(p: &ChainParams, h: &Header, parent: &Header, height: u32, below: &[Header]) -> Result<(), String> {
@@ -286,6 +295,7 @@ impl Connector {
             moved_tip: 0,
             stalls: 0,
             script_sizes: HashMap::new(),
+            pos: None,
         }
     }
 
@@ -437,7 +447,7 @@ impl Connector {
                     if wallet_on {
                         spent_keys.push(k);
                     }
-                    sp.push(SpentCoin { value: c.value, script: c.script.clone(), height: c.height, coinbase: c.coinbase, pegout: c.pegout });
+                    sp.push(SpentCoin { time: c.time, value: c.value, script: c.script.clone(), height: c.height, coinbase: c.coinbase, pegout: c.pegout });
                     if c.height != height {
                         undo.push((k, c));
                     }
@@ -452,12 +462,12 @@ impl Connector {
                 }
             }
             for (v, o) in tx.outputs.iter().enumerate() {
-                if is_unspendable(p, &o.script_pubkey) {
+                if output_unspendable(p, o.value, &o.script_pubkey) {
                     continue;
                 }
                 let k = outkey(&tx.txid, v as u32);
                 let fresh = !self.cache.contains_key(&k);
-                let coin = Coin { value: o.value, height, coinbase: tx.is_coinbase() || tx.is_coinstake(), script: o.script_pubkey.clone(), pegout: tx.hogex && v > 0 };
+                let coin = Coin { value: o.value, height, coinbase: tx.is_coinbase() || tx.is_coinstake(), script: o.script_pubkey.clone(), pegout: tx.hogex && v > 0, time: tx.time.unwrap_or(0) };
                 if wallet_on && self.sh.wallet.lock().unwrap().as_ref().is_some_and(|w| w.mine(&coin.script)) {
                     created_mine.push((k, coin.clone()));
                 }
@@ -477,6 +487,16 @@ impl Connector {
                 t.get(t.len() / 2).copied()
             };
             rules::check_info(p, &b, height, &refs, None, &mtp).map_err(|e| format!("tx {}: {}", e.tx.to_hex(), e.why))?;
+        }
+        // Kotia: stake, signature, difficulty, time stamps; the modifier moves on
+        if p.format.tx_time {
+            if self.pos.is_none() {
+                self.pos = Some(crate::kotia::PosState::load(self.store(), height - 1));
+            }
+            let kernel = b.is_proof_of_stake().then(|| spent.get(1).and_then(|v| v.first())).flatten()
+                .map(|s| crate::kotia::Kernel { value: s.value, height: s.height, tx_time: s.time });
+            let staked = self.pos.as_mut().unwrap().check_and_step(p, &b, height, kernel)?;
+            self.store().put_modifier(height, &self.pos.as_ref().unwrap().modifier, staked);
         }
         // the mempool loses what this block confirms or makes void; the wallet follows its coins
         self.sh.mempool.lock().unwrap().block_connected(&b.txs);
@@ -498,7 +518,8 @@ impl Connector {
         self.inputs_seen += spent.iter().map(|s| s.len() as u64).sum::<u64>();
         self.sh.ctip.store(height, Ordering::SeqCst);
         let _ = id;
-        match rules::script_flags(p, height, rules::verify_all_scripts()) {
+        let flags = if p.format.tx_time { Some(crate::kotia::script_flags(b.header.time)) } else { rules::script_flags(p, height, rules::verify_all_scripts()) };
+        match flags {
             Some(flags) => {
                 let bytes: u64 = spent.iter().flatten().map(|s| s.script.len() as u64 + 48).sum::<u64>() + raw_len;
                 self.script_sizes.insert(height, bytes);
@@ -608,6 +629,7 @@ impl Connector {
                 self.sh.inflight.fetch_sub(raw.len() as u64, Ordering::SeqCst);
             }
         }
+        self.pos = None;   // read again from the store at the next block
         self.sh.mempool.lock().unwrap().clear();
         if let Some(w) = self.sh.wallet.lock().unwrap().as_mut() {
             let _ = w.rescan(st);

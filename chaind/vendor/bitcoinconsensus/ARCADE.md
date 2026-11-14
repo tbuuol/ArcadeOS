@@ -10,3 +10,10 @@ marked `ARCADE PATCH`:
 
 With no prefix set every hash is Bitcoin's own. Wired in by `[patch.crates-io]` in the workspace
 Cargo.toml.
+
+## chaind additions (ArcadeOS)
+
+- `interpreter.cpp`: `arcade_set_tx_time`, a per-thread transaction time written after `nVersion` in the legacy
+  signature hash (Kotia, PPCoin-style transactions); `ARCADE_VERIFY_DERKEY` (1 << 29), Kotia's pubkey encoding rule.
+- `bitcoinconsensus.cpp`: the flag check also lets LOW_S (1 << 3) and DERKEY (1 << 29) through.
+- `src/lib.rs`: `verify_with_flags_and_tx_time`.

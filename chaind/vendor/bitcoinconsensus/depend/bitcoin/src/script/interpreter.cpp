@@ -216,8 +216,11 @@ bool CheckSignatureEncoding(const std::vector<unsigned char> &vchSig, unsigned i
     return true;
 }
 
+// ARCADE PATCH (chaind): Kotia's SCRIPT_VERIFY_DERKEY, the pubkey half of STRICTENC (no hash-type check)
+#define ARCADE_VERIFY_DERKEY (1U << 29)
+
 bool static CheckPubKeyEncoding(const valtype &vchPubKey, unsigned int flags, const SigVersion &sigversion, ScriptError* serror) {
-    if ((flags & SCRIPT_VERIFY_STRICTENC) != 0 && !IsCompressedOrUncompressedPubKey(vchPubKey)) {
+    if ((flags & (SCRIPT_VERIFY_STRICTENC | ARCADE_VERIFY_DERKEY)) != 0 && !IsCompressedOrUncompressedPubKey(vchPubKey)) {
         return set_error(serror, SCRIPT_ERR_PUBKEYTYPE);
     }
     // Only compressed keys are accepted in segwit
@@ -1247,6 +1250,18 @@ namespace {
  * Wrapper that serializes like CTransaction, but with the modifications
  *  required for the signature hash done in-place
  */
+// ARCADE PATCH (chaind): PPCoin-style chains (Kotia) carry a time after the transaction's version and
+// hash it into every signature (Kotia Core CTransactionSignatureSerializer). The transaction handed to
+// the verifier is in Bitcoin's layout; its time is set per thread by arcade_set_tx_time around a verify.
+static thread_local bool g_arcade_txtime_set = false;
+static thread_local uint32_t g_arcade_txtime = 0;
+
+extern "C" void arcade_set_tx_time(int set, uint32_t t)
+{
+    g_arcade_txtime_set = set != 0;
+    g_arcade_txtime = t;
+}
+
 template <class T>
 class CTransactionSignatureSerializer
 {
@@ -1325,6 +1340,8 @@ public:
     void Serialize(S &s) const {
         // Serialize nVersion
         ::Serialize(s, txTo.nVersion);
+        // ARCADE PATCH: the transaction's time (Kotia), when set for this thread
+        if (g_arcade_txtime_set) ::Serialize(s, g_arcade_txtime);
         // Serialize vin
         unsigned int nInputs = fAnyoneCanPay ? 1 : txTo.vin.size();
         ::WriteCompactSize(s, nInputs);

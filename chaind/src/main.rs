@@ -20,6 +20,7 @@
 //! Built on arcade-chain and libbitcoinconsensus from Martin Seeger's arcade-v1 (MIT, see vendor/).
 
 mod addr;
+mod kotia;
 mod mempool;
 mod net;
 mod relay;
@@ -116,6 +117,7 @@ fn main() {
         "ltctest" => &LITECOIN_TEST,
         "ltcmain" => &LITECOIN_MAIN,
         "dogemain" => &DOGECOIN_MAIN,
+        "kotia" => &arcade_chain::params::KOTIA_MAIN,
         c => {
             eprintln!("chaind: unknown chain {c}");
             std::process::exit(1);
@@ -125,6 +127,7 @@ fn main() {
         eprintln!("chaind: set CHAIND_DIR");
         std::process::exit(1)
     }));
+    store::TXTIME.store(params.format.tx_time, std::sync::atomic::Ordering::Relaxed);
     let store: &'static store::Store = Box::leak(Box::new(store::Store::open(&dir).unwrap_or_else(|e| {
         eprintln!("chaind: {e}");
         std::process::exit(1)

@@ -32,7 +32,7 @@ impl Mempool {
         let vout = u32::from_be_bytes(k[32..].try_into().unwrap());
         let t = self.txs.get(&txid)?;
         let o = t.tx.outputs.get(vout as usize)?;
-        Some(Coin { value: o.value, height: u32::MAX, coinbase: false, script: o.script_pubkey.clone(), pegout: false })
+        Some(Coin { value: o.value, height: u32::MAX, coinbase: false, script: o.script_pubkey.clone(), pegout: false, time: t.tx.time.unwrap_or(0) })
     }
 
     pub fn spends(&self, k: &OutKey) -> Option<Hash256> {

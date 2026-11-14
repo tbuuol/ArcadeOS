@@ -286,6 +286,18 @@ pub fn check_info(params: &ChainParams, blk: &Block, height: u32, spent: &[Vec<S
 /// The scripts of one transaction (not the coinbase), against the coins it spends: the script part
 /// of [`check_info`], for a worker thread.
 pub fn tx_scripts(params: &ChainParams, tx: &Tx, sp: &[Spent], height: u32, flags: u32) -> Result<(), Broken> {
+    // PPCoin-style (Kotia): the verifier reads Bitcoin's layout; the time goes into the signature hash separately
+    if let Some(time) = tx.time {
+        let mut plain = tx.clone();
+        plain.time = None;
+        let bytes = plain.encode_legacy();
+        for (i, s) in sp.iter().enumerate() {
+            if let Err(e) = bitcoinconsensus::verify_with_flags_and_tx_time(s.script, s.value, &bytes, i, flags, time) {
+                return Err(Broken { tx: tx.txid, why: format!("input {i}: script check failed ({e:?}) (mandatory-script-verify-flag-failed)") });
+            }
+        }
+        return Ok(());
+    }
     let Some(br) = params.block_rules else { return Ok(()) };
     let prefix = (br.sighash_prefix)(height);
     let bytes = script_bytes(tx);

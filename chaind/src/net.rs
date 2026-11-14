@@ -30,6 +30,8 @@ pub fn pow_ok(params: &ChainParams, id: &Hash256, e: &HeaderEntry) -> Result<(),
     let Some(algo) = algo else { return Ok(()) };
     match try_pow_hash(algo, &h.encode()) {
         Some(ph) if meets_target(&ph, h.bits) => Ok(()),
+        // proof of stake (Kotia): the block decides (kernel, signature), not the header's hash
+        Some(_) if matches!(params.pow, arcade_chain::pow::PowRule::PowThenStake { .. }) => Ok(()),
         Some(_) => Err("proof of work misses its target".into()),
         None => Ok(()),
     }

@@ -29,6 +29,14 @@ pub struct Coin {
     pub script: Vec<u8>,
     /// a Litecoin MWEB peg-out (a HogEx output after the first): it matures too, sooner
     pub pegout: bool,
+    /// the time of the transaction that made it (PPCoin-style chains, Kotia: the stake kernel hashes it); 0 elsewhere
+    pub time: u32,
+}
+
+/// The chain has transaction times (Kotia): coins carry them. Set at start from the chain's format.
+pub static TXTIME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn txtime() -> bool {
+    TXTIME.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 const PEGOUT_BIT: u64 = 1 << 31;
@@ -127,6 +135,9 @@ impl Coin {
     pub fn encode(&self) -> Vec<u8> {
         let mut v = Vec::with_capacity(self.script.len() + 12);
         put_varint(&mut v, ((self.height as u64) | if self.pegout { PEGOUT_BIT } else { 0 }) << 1 | self.coinbase as u64);
+        if txtime() {
+            put_varint(&mut v, self.time as u64);
+        }
         if fmt() >= 2 {
             put_varint(&mut v, compress_amount(self.value));
             compress_script(&self.script, &mut v);
@@ -137,11 +148,17 @@ impl Coin {
         v
     }
     pub fn decode(b: &[u8]) -> Option<Coin> {
-        let (hc, n1) = get_varint(b)?;
+        let (hc, mut n1) = get_varint(b)?;
+        let mut time = 0;
+        if txtime() {
+            let (t, n) = get_varint(&b[n1..])?;
+            time = t as u32;
+            n1 += n;
+        }
         let (value, n2) = get_varint(&b[n1..])?;
         let h = hc >> 1;
         let (value, script) = if fmt() >= 2 { (decompress_amount(value), decompress_script(&b[n1 + n2..])?) } else { (value, b[n1 + n2..].to_vec()) };
-        Some(Coin { value, height: (h & !PEGOUT_BIT) as u32, coinbase: hc & 1 == 1, script, pegout: h & PEGOUT_BIT != 0 })
+        Some(Coin { value, height: (h & !PEGOUT_BIT) as u32, coinbase: hc & 1 == 1, script, pegout: h & PEGOUT_BIT != 0, time })
     }
 }
 
@@ -190,6 +207,8 @@ pub struct Store {
     blkpos: File,
     undo: File,
     undopos: File,
+    /// Kotia: per height the stake modifier after the block and whether it was staked (33 bytes)
+    modifiers: File,
     pub blocks_len: std::sync::atomic::AtomicU64,
     pub undo_len: std::sync::atomic::AtomicU64,
     /// block id (first 8 bytes) -> height on the best chain; rebuilt from headers.dat at start (a random-key
@@ -245,6 +264,7 @@ impl Store {
             blkpos: f("blkpos.dat")?,
             undo,
             undopos: f("undopos.dat")?,
+            modifiers: f("modifiers.dat")?,
             blocks_len: bl.into(),
             undo_len: ul.into(),
             ids: RwLock::new(HashMap::new()),
@@ -306,6 +326,17 @@ impl Store {
         self.blocks.read_exact_at(&mut v, off + from as u64).ok()?;
         Some(v)
     }
+    pub fn put_modifier(&self, height: u32, m: &Hash256, staked: bool) {
+        let mut r = [0u8; 33];
+        r[..32].copy_from_slice(&m.0);
+        r[32] = staked as u8;
+        self.modifiers.write_all_at(&r, height as u64 * 33).expect("modifiers.dat write");
+    }
+    pub fn modifier(&self, height: u32) -> Option<(Hash256, bool)> {
+        let mut r = [0u8; 33];
+        self.modifiers.read_exact_at(&mut r, height as u64 * 33).ok()?;
+        Some((Hash256(r[..32].try_into().unwrap()), r[32] == 1))
+    }
     pub fn put_undo(&self, height: u32, data: &[u8]) {
         Self::append(&self.undo, &self.undo_len, &self.undopos, height, data)
     }
@@ -315,7 +346,7 @@ impl Store {
 
     /// Everything written to the files reaches the disk (before LMDB says the coins are at that tip).
     pub fn sync_files(&self) {
-        for f in [&self.headers, &self.blocks, &self.blkpos, &self.undo, &self.undopos] {
+        for f in [&self.headers, &self.blocks, &self.blkpos, &self.undo, &self.undopos, &self.modifiers] {
             let _ = f.sync_data();
         }
     }
