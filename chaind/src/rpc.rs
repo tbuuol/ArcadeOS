@@ -205,6 +205,15 @@ pub fn find_tx(sh: &Shared, txid: &Hash256) -> Option<(Vec<u8>, u32)> {
         if height > tip {
             continue;
         }
+        if crate::store::fmt() >= 2 {
+            // only the block's height is indexed: find the transaction in it
+            let raw = st.block(height)?;
+            let b = arcade_chain::Block::parse_with(&raw, &sh.params.format).ok()?;
+            if let Some(t) = b.txs.into_iter().find(|t| t.txid == *txid) {
+                return Some((t.raw, height));
+            }
+            continue;
+        }
         let off = u32::from_le_bytes(v[..4].try_into().ok()?);
         let len = u32::from_le_bytes(v[4..8].try_into().ok()?);
         let raw = st.block_part(height, off, len)?;

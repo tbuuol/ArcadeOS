@@ -62,6 +62,8 @@ pub struct Shared {
     pub wallet: Mutex<Option<crate::wallet::Wallet>>,
     /// bytes held by blocks whose scripts are running (their spent coins)
     pub script_bytes: AtomicU64,
+    /// blocks of another chaind directory, used before the network (CHAIND_IMPORT)
+    pub import: Option<crate::store::Import>,
 }
 
 impl Shared {
@@ -88,6 +90,7 @@ impl Shared {
             block_hint: false.into(),
             wallet: Mutex::new(None),
             script_bytes: 0.into(),
+            import: std::env::var("CHAIND_IMPORT").ok().and_then(|d| crate::store::Import::open(std::path::Path::new(&d)).ok()),
         }
     }
 
@@ -197,7 +200,7 @@ pub struct Connector {
     retries: HashMap<u32, u32>,
     cache: HashMap<OutKey, Entry>,
     cache_bytes: usize,
-    txi_put: Vec<([u8; 14], [u8; 8])>,
+    txi_put: Vec<([u8; 14], u8, [u8; 8], u8)>,
     done: std::collections::BTreeSet<u32>,
     draining: bool,
     rtxn: Option<heed::RoTxn<'static>>,
@@ -488,7 +491,8 @@ impl Connector {
             let mut v = [0u8; 8];
             v[..4].copy_from_slice(&off.to_le_bytes());
             v[4..].copy_from_slice(&len.to_le_bytes());
-            self.txi_put.push((txi_key(&tx.txid, height, i as u16), v));
+            let (k, kl) = txi_key(&tx.txid, height, i as u16);
+            self.txi_put.push((k, kl as u8, v, if store::fmt() >= 2 { 0 } else { 8 }));
         }
         self.cache_bytes += b.txs.len() * 40;
         self.inputs_seen += spent.iter().map(|s| s.len() as u64).sum::<u64>();
@@ -549,8 +553,8 @@ impl Connector {
             }
         }
         self.txi_put.sort_unstable();
-        for (k, v) in &self.txi_put {
-            st.txi.put(&mut w, k, v).unwrap();
+        for (k, kl, v, vl) in &self.txi_put {
+            st.txi.put(&mut w, &k[..*kl as usize], &v[..*vl as usize]).unwrap();
         }
         let ntx = self.txi_put.len();
         self.txi_put.clear();
@@ -585,7 +589,8 @@ impl Connector {
                 for v in 0..tx.outputs.len() as u32 {
                     let _ = st.coins.delete(&mut w, &outkey(&tx.txid, v));
                 }
-                let _ = st.txi.delete(&mut w, &txi_key(&tx.txid, h, i as u16));
+                let (k, kl) = txi_key(&tx.txid, h, i as u16);
+                let _ = st.txi.delete(&mut w, &k[..kl]);
             }
             for (k, c) in &undo {
                 st.coins.put(&mut w, k, &c.encode()).unwrap();

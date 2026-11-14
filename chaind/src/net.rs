@@ -124,6 +124,29 @@ pub fn header_thread(params: &'static ChainParams, sh: Arc<Shared>, to_node: Sen
 
 /// Download blocks the scheduler hands out, from one peer at a time; on trouble, give the work back and try the next.
 pub fn download_thread(params: &'static ChainParams, sh: Arc<Shared>, no: usize, to_node: Sender<Msg>) {
+    // first from another chaind directory, as far as it has the blocks of our headers (checked like any block)
+    if let Some(imp) = &sh.import {
+        while let Some(task) = sh.next_task(64) {
+            let mut missed = Vec::new();
+            for (height, id) in task {
+                match imp.block(height).filter(|raw| raw.len() >= 80 && params.block_id(&Header::parse(raw[..80].try_into().unwrap())) == id) {
+                    Some(raw) => {
+                        sh.inflight.fetch_add(raw.len() as u64, Ordering::SeqCst);
+                        let tx = to_node.clone();
+                        rayon::spawn(move || {
+                            let r = prep(params, id, &raw);
+                            let _ = tx.send(Msg::Block(height, id, r, raw));
+                        });
+                    }
+                    None => missed.push((height, id)),
+                }
+            }
+            if !missed.is_empty() {
+                sh.requeue(missed);
+                break;
+            }
+        }
+    }
     let mut start = no;
     // blocks per request: far peers answer in one round trip what would otherwise take many
     let batch: u32 = std::env::var("CHAIND_BATCH").ok().and_then(|v| v.parse().ok()).unwrap_or(64);

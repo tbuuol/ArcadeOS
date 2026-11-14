@@ -94,6 +94,22 @@ fn main() {
     if args.get(1).map(|s| s.as_str()) == Some("cli") {
         cli(&args[2..]);
     }
+    // `chaind dbinfo <dir>`: what LMDB really holds (the file only ever grows to its high-water mark)
+    if args.get(1).map(|s| s.as_str()) == Some("dbinfo") {
+        let st = store::Store::open(std::path::Path::new(&args[2])).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(1) });
+        let r = st.env.read_txn().unwrap();
+        let mut total = 0u64;
+        for (name, db) in [("coins", &st.coins), ("txi", &st.txi), ("meta", &st.meta)] {
+            let s = db.stat(&r).unwrap();
+            let pages = (s.branch_pages + s.leaf_pages + s.overflow_pages) as u64;
+            total += pages * s.page_size as u64;
+            println!("{name:6} {:>10} entries {:>8} pages = {:>6} MB  ({:.1} bytes per entry)", s.entries, pages, pages * s.page_size as u64 >> 20,
+                pages as f64 * s.page_size as f64 / s.entries.max(1) as f64);
+        }
+        let i = st.env.info();
+        println!("format {}, data {} MB, file high-water mark {} MB", store::fmt(), total >> 20, (i.last_page_number as u64 * 4096) >> 20);
+        std::process::exit(0);
+    }
     let params: &'static ChainParams = match env("CHAIND_CHAIN", "peptest").as_str() {
         "peptest" => &PEPECOIN_TEST,
         "pepmain" => &PEPECOIN_MAIN,

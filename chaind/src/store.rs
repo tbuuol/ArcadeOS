@@ -33,19 +33,115 @@ pub struct Coin {
 
 const PEGOUT_BIT: u64 = 1 << 31;
 
+/// The record format of this directory: 1 = coins as they are, tx index with positions (the first chaind);
+/// 2 = coins compressed as Core does it, tx index of txid prefix + height only. Set once, when the directory is new.
+pub static FORMAT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
+pub fn fmt() -> u8 {
+    FORMAT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Core's CompressAmount: trailing zeros as an exponent (1.00000000 coins -> a byte or two)
+pub fn compress_amount(mut n: u64) -> u64 {
+    if n == 0 {
+        return 0;
+    }
+    let mut e = 0;
+    while n % 10 == 0 && e < 9 {
+        n /= 10;
+        e += 1;
+    }
+    if e < 9 {
+        let d = n % 10;
+        n /= 10;
+        1 + (n * 9 + d - 1) * 10 + e
+    } else {
+        1 + (n - 1) * 10 + 9
+    }
+}
+
+pub fn decompress_amount(x: u64) -> u64 {
+    if x == 0 {
+        return 0;
+    }
+    let mut x = x - 1;
+    let e = x % 10;
+    x /= 10;
+    let mut n = if e < 9 {
+        let d = x % 9 + 1;
+        x /= 9;
+        x * 10 + d
+    } else {
+        x + 1
+    };
+    for _ in 0..e {
+        n *= 10;
+    }
+    n
+}
+
+/// Standard scripts as a tag and their hash or key (as Core's ScriptCompression, with SegWit, Taproot and MWEB
+/// programs added); anything else whole after 0xff.
+pub fn compress_script(s: &[u8], v: &mut Vec<u8>) {
+    let tag = match s {
+        [0x76, 0xa9, 20, .., 0x88, 0xac] if s.len() == 25 => Some((0u8, &s[3..23])),
+        [0xa9, 20, .., 0x87] if s.len() == 23 => Some((1, &s[2..22])),
+        [33, p, .., 0xac] if s.len() == 35 && (*p == 2 || *p == 3) => Some((*p, &s[2..34])),
+        [0x00, 20, ..] if s.len() == 22 => Some((4, &s[2..22])),
+        [0x00, 32, ..] if s.len() == 34 => Some((5, &s[2..34])),
+        [0x51, 32, ..] if s.len() == 34 => Some((6, &s[2..34])),
+        [0x58, 32, ..] if s.len() == 34 => Some((7, &s[2..34])),
+        [0x59, 32, ..] if s.len() == 34 => Some((8, &s[2..34])),
+        _ => None,
+    };
+    match tag {
+        Some((t, d)) => {
+            v.push(t);
+            v.extend_from_slice(d);
+        }
+        None => {
+            v.push(0xff);
+            v.extend_from_slice(s);
+        }
+    }
+}
+
+pub fn decompress_script(b: &[u8]) -> Option<Vec<u8>> {
+    let (t, d) = b.split_first()?;
+    let mut s = Vec::with_capacity(d.len() + 6);
+    match (*t, d.len()) {
+        (0, 20) => { s.extend([0x76, 0xa9, 20]); s.extend_from_slice(d); s.extend([0x88, 0xac]); }
+        (1, 20) => { s.extend([0xa9, 20]); s.extend_from_slice(d); s.push(0x87); }
+        (2 | 3, 32) => { s.extend([33, *t]); s.extend_from_slice(d); s.push(0xac); }
+        (4, 20) => { s.extend([0x00, 20]); s.extend_from_slice(d); }
+        (5, 32) => { s.extend([0x00, 32]); s.extend_from_slice(d); }
+        (6, 32) => { s.extend([0x51, 32]); s.extend_from_slice(d); }
+        (7, 32) => { s.extend([0x58, 32]); s.extend_from_slice(d); }
+        (8, 32) => { s.extend([0x59, 32]); s.extend_from_slice(d); }
+        (0xff, _) => s.extend_from_slice(d),
+        _ => return None,
+    }
+    Some(s)
+}
+
 impl Coin {
     pub fn encode(&self) -> Vec<u8> {
         let mut v = Vec::with_capacity(self.script.len() + 12);
         put_varint(&mut v, ((self.height as u64) | if self.pegout { PEGOUT_BIT } else { 0 }) << 1 | self.coinbase as u64);
-        put_varint(&mut v, self.value);
-        v.extend_from_slice(&self.script);
+        if fmt() >= 2 {
+            put_varint(&mut v, compress_amount(self.value));
+            compress_script(&self.script, &mut v);
+        } else {
+            put_varint(&mut v, self.value);
+            v.extend_from_slice(&self.script);
+        }
         v
     }
     pub fn decode(b: &[u8]) -> Option<Coin> {
         let (hc, n1) = get_varint(b)?;
         let (value, n2) = get_varint(&b[n1..])?;
         let h = hc >> 1;
-        Some(Coin { value, height: (h & !PEGOUT_BIT) as u32, coinbase: hc & 1 == 1, script: b[n1 + n2..].to_vec(), pegout: h & PEGOUT_BIT != 0 })
+        let (value, script) = if fmt() >= 2 { (decompress_amount(value), decompress_script(&b[n1 + n2..])?) } else { (value, b[n1 + n2..].to_vec()) };
+        Some(Coin { value, height: (h & !PEGOUT_BIT) as u32, coinbase: hc & 1 == 1, script, pegout: h & PEGOUT_BIT != 0 })
     }
 }
 
@@ -118,10 +214,21 @@ impl Store {
         }
             .map_err(|e| format!("lmdb: {e}"))?;
         let mut w = env.write_txn().map_err(|e| e.to_string())?;
-        let meta = env.create_database(&mut w, Some("meta")).map_err(|e| e.to_string())?;
+        let meta: Database<Bytes, Bytes> = env.create_database(&mut w, Some("meta")).map_err(|e| e.to_string())?;
         let hidx = env.create_database(&mut w, Some("hidx")).map_err(|e| e.to_string())?;
         let coins = env.create_database(&mut w, Some("coins")).map_err(|e| e.to_string())?;
         let txi = env.create_database(&mut w, Some("txi")).map_err(|e| e.to_string())?;
+        // the record format: what the directory has, 2 for a new one
+        let f_now = match meta.get(&w, b"fmt").map_err(|e| e.to_string())? {
+            Some(v) => v.first().copied().unwrap_or(1),
+            None if meta.get(&w, b"tip").map_err(|e| e.to_string())?.is_some() => 1,
+            None => {
+                let want: u8 = std::env::var("CHAIND_FORMAT").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+                meta.put(&mut w, b"fmt", &[want]).map_err(|e| e.to_string())?;
+                want
+            }
+        };
+        FORMAT.store(f_now, std::sync::atomic::Ordering::Relaxed);
         w.commit().map_err(|e| e.to_string())?;
         let f = |n| open(dir, n).map_err(|e| format!("{n}: {e}"));
         let (blocks, undo) = (f("blocks.dat")?, f("undo.dat")?);
@@ -255,13 +362,30 @@ fn pfx(id: &Hash256) -> u64 {
     u64::from_le_bytes(id.0[..8].try_into().unwrap())
 }
 
-/// The key of a transaction in `txi`: the first 8 bytes of its txid, the block height and its position.
-pub fn txi_key(txid: &Hash256, height: u32, pos: u16) -> [u8; 14] {
+/// The key of a transaction in `txi`: the first 8 bytes of its txid and the block height (format 2: the block is
+/// read to find the transaction in it), and in format 1 also its position.
+pub fn txi_key(txid: &Hash256, height: u32, pos: u16) -> ([u8; 14], usize) {
     let mut k = [0u8; 14];
     k[..8].copy_from_slice(&txid.0[..8]);
     k[8..12].copy_from_slice(&height.to_be_bytes());
     k[12..].copy_from_slice(&pos.to_be_bytes());
-    k
+    (k, if fmt() >= 2 { 12 } else { 14 })
+}
+
+/// Blocks of another chaind directory, read-only (to rebuild a chain without downloading it again).
+pub struct Import {
+    blocks: File,
+    blkpos: File,
+}
+
+impl Import {
+    pub fn open(dir: &Path) -> Result<Import, String> {
+        let f = |n: &str| File::open(dir.join(n)).map_err(|e| format!("{}: {e}", dir.join(n).display()));
+        Ok(Import { blocks: f("blocks.dat")?, blkpos: f("blkpos.dat")? })
+    }
+    pub fn block(&self, height: u32) -> Option<Vec<u8>> {
+        Store::read(&self.blocks, &self.blkpos, height)
+    }
 }
 
 /// Undo record of a block: the coins it spent, in input order.
