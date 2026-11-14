@@ -2,7 +2,7 @@
 # Stratum fuer ASICs und mm-gpu (nur im LAN erreichbar machen)
 bind=0.0.0.0:3333
 status=/run/mm/status.json
-tag=/ArcadeOS/
+tag=Mono was here
 # Vardiff: Startschwierigkeit, Grenzen, angestrebte Sekunden zwischen zwei Shares eines Miners
 diff=16
 mindiff=0.01

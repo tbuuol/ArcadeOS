@@ -9,7 +9,7 @@
 //! Konfiguration: Datei (Vorgabe /state/mm/mm.conf, sonst MM_CONF), Zeilen `schluessel=wert`:
 //!   bind=0.0.0.0:3333            Stratum
 //!   status=/run/mm/status.json   Statusdatei (Monitor)
-//!   tag=/ArcadeOS/               Kennung in der Coinbase
+//!   tag=Mono was here            Kennung in der Coinbase (hoechstens etwa 40 Zeichen)
 //!   diff=16  mindiff=0.01  maxdiff=1e9  shareinterval=5   Vardiff (Sekunden zwischen Shares)
 //!   parent=litecoin,127.0.0.1:9332,<auth>,127.0.0.1:28332,<LTC-Adresse>
 //!   aux=dogecoin,127.0.0.1:22555,<auth>,127.0.0.1:28532,<DOGE-Adresse>
@@ -106,11 +106,15 @@ fn load_cfg() -> Result<Cfg, String> {
         kv.get(k).map(|v| v.parse::<f64>().map_err(|e| format!("{k}: {e}"))).unwrap_or(Ok(d))
     };
     let parent = parent.ok_or("parent=... fehlt")?;
+    // scriptSig der Coinbase: hoechstens 100 Byte (Hoehe, Merge-Mining-Eintrag, Extranonce, Kennung)
+    if kv.get("tag").map_or(false, |t| t.len() > 40) {
+        return Err("tag: hoechstens 40 Zeichen".into());
+    }
     ltc_address_script(&parent.address)?;
     Ok(Cfg {
         bind: kv.get("bind").cloned().unwrap_or_else(|| "0.0.0.0:3333".into()),
         status: kv.get("status").cloned().unwrap_or_else(|| "/run/mm/status.json".into()),
-        tag: kv.get("tag").cloned().unwrap_or_else(|| "/ArcadeOS/".into()),
+        tag: kv.get("tag").cloned().unwrap_or_else(|| "Mono was here".into()),
         diff: num("diff", 16.0)?,
         min_diff: num("mindiff", 0.01)?,
         max_diff: num("maxdiff", 1e12)?,
