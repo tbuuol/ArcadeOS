@@ -1,0 +1,16 @@
+[package]
+name = "arcade-chain"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+hex = "0.4.3"
+ripemd = "0.2.0"
+scrypt = "0.12.0"
+sha2 = "0.11.1"
+skein = "0.1"
+thiserror = "1"
+
+[dev-dependencies]
+hex = "0.4.3"

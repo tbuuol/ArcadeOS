@@ -1,0 +1,25 @@
+[package]
+name = "chaind"
+version = "0.1.0"
+edition = "2021"
+description = "ArcadeOS: a lean, fully validating chain node (one chain per process), Core-compatible RPC subset"
+license = "MIT"
+publish = false
+
+[dependencies]
+arcade-chain = { path = "vendor/arcade-chain" }
+bitcoinconsensus = { path = "vendor/bitcoinconsensus" }
+heed = "0.20"
+rayon = "1"
+crossbeam-channel = "0.5"
+serde_json = "1"
+hex = "0.4"
+sha2 = "0.10"
+signal-hook = "0.3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+panic = "abort"
+debug = false
