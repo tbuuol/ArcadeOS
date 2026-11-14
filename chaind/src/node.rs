@@ -55,6 +55,13 @@ pub struct Shared {
     cv: Condvar,
     peers: Mutex<Vec<String>>,
     pub started: Instant,
+    pub mempool: Mutex<crate::mempool::Mempool>,
+    pub relay: Mutex<Vec<crate::relay::Writer>>,
+    /// a peer told of a new block: look for headers now
+    pub block_hint: AtomicBool,
+    pub wallet: Mutex<Option<crate::wallet::Wallet>>,
+    /// bytes held by blocks whose scripts are running (their spent coins)
+    pub script_bytes: AtomicU64,
 }
 
 impl Shared {
@@ -76,6 +83,11 @@ impl Shared {
             cv: Condvar::new(),
             peers: Mutex::new(peers),
             started: Instant::now(),
+            mempool: Mutex::new(Default::default()),
+            relay: Mutex::new(Vec::new()),
+            block_hint: false.into(),
+            wallet: Mutex::new(None),
+            script_bytes: 0.into(),
         }
     }
 
@@ -196,6 +208,7 @@ pub struct Connector {
     moved_at: Instant,
     moved_tip: u32,
     stalls: u64,
+    script_sizes: HashMap<u32, u64>,
 }
 
 fn header_rules(p: &ChainParams, h: &Header, parent: &Header, height: u32, below: &[Header]) -> Result<(), String> {
@@ -267,6 +280,7 @@ impl Connector {
             moved_at: Instant::now(),
             moved_tip: 0,
             stalls: 0,
+            script_sizes: HashMap::new(),
         }
     }
 
@@ -400,6 +414,9 @@ impl Connector {
         let bip34 = p.block_rules.map_or(0, |r| r.bip34_height);
         let mut spent: Vec<Vec<SpentCoin>> = Vec::with_capacity(b.txs.len());
         let mut undo: Vec<(OutKey, Coin)> = Vec::new();
+        let mut spent_keys: Vec<OutKey> = Vec::new();
+        let mut created_mine: Vec<(OutKey, Coin)> = Vec::new();
+        let wallet_on = self.sh.wallet.lock().unwrap().is_some();
         for tx in &b.txs {
             let mut sp = Vec::with_capacity(tx.inputs.len());
             if !tx.is_coinbase() {
@@ -411,6 +428,9 @@ impl Connector {
                             self.cache.remove(&k);
                         }
                         _ => self.cache_put(k, Entry { coin: None, fresh: false }),
+                    }
+                    if wallet_on {
+                        spent_keys.push(k);
                     }
                     sp.push(SpentCoin { value: c.value, script: c.script.clone(), height: c.height, coinbase: c.coinbase });
                     if c.height != height {
@@ -432,7 +452,11 @@ impl Connector {
                 }
                 let k = outkey(&tx.txid, v as u32);
                 let fresh = !self.cache.contains_key(&k);
-                self.cache_put(k, Entry { coin: Some(Coin { value: o.value, height, coinbase: tx.is_coinbase() || tx.is_coinstake(), script: o.script_pubkey.clone() }), fresh });
+                let coin = Coin { value: o.value, height, coinbase: tx.is_coinbase() || tx.is_coinstake(), script: o.script_pubkey.clone() };
+                if wallet_on && self.sh.wallet.lock().unwrap().as_ref().is_some_and(|w| w.mine(&coin.script)) {
+                    created_mine.push((k, coin.clone()));
+                }
+                self.cache_put(k, Entry { coin: Some(coin), fresh });
             }
             spent.push(sp);
         }
@@ -449,6 +473,12 @@ impl Connector {
             };
             rules::check_info(p, &b, height, &refs, None, &mtp).map_err(|e| format!("tx {}: {}", e.tx.to_hex(), e.why))?;
         }
+        // the mempool loses what this block confirms or makes void; the wallet follows its coins
+        self.sh.mempool.lock().unwrap().block_connected(&b.txs);
+        if let Some(w) = self.sh.wallet.lock().unwrap().as_mut() {
+            w.block(&spent_keys, created_mine);
+        }
+        let raw_len = raw.len() as u64;
         let st = self.store();
         st.put_block(height, &raw);
         st.put_undo(height, &encode_undo(&undo));
@@ -464,6 +494,9 @@ impl Connector {
         let _ = id;
         match rules::script_flags(p, height, rules::verify_all_scripts()) {
             Some(flags) => {
+                let bytes: u64 = spent.iter().flatten().map(|s| s.script.len() as u64 + 48).sum::<u64>() + raw_len;
+                self.script_sizes.insert(height, bytes);
+                self.sh.script_bytes.fetch_add(bytes, Ordering::SeqCst);
                 let (tx, counter) = (self.tx.clone(), self.scripts_checked.clone());
                 rayon::spawn(move || {
                     let r = b.txs.par_iter().zip(spent.par_iter()).skip(1).try_for_each(|(t, sp)| {
@@ -568,6 +601,10 @@ impl Connector {
                 self.sh.inflight.fetch_sub(raw.len() as u64, Ordering::SeqCst);
             }
         }
+        self.sh.mempool.lock().unwrap().clear();
+        if let Some(w) = self.sh.wallet.lock().unwrap().as_mut() {
+            let _ = w.rescan(st);
+        }
         self.sh.log(&format!("took blocks back to {to}"));
     }
 
@@ -579,6 +616,9 @@ impl Connector {
                         self.fatal(h, &format!("tx {}: {}", e.tx.to_hex(), e.why));
                     }
                     self.done.insert(h);
+                    if let Some(b) = self.script_sizes.remove(&h) {
+                        self.sh.script_bytes.fetch_sub(b, Ordering::SeqCst);
+                    }
                     self.advance_verified();
                 }
                 Ok(Msg::Block(h, id, Ok(b), raw)) => self.take_block(h, id, b, raw),
@@ -623,7 +663,8 @@ impl Connector {
             // connect what is next, while the script window and the coin cache allow
             loop {
                 let (ctip, vtip) = (self.sh.ctip.load(Ordering::SeqCst), self.sh.vtip.load(Ordering::SeqCst));
-                if self.draining || ctip - vtip >= self.sh.budget.script_window || self.cache_bytes >= self.sh.budget.cache_bytes {
+                let scripts_full = ctip > vtip && self.sh.script_bytes.load(Ordering::SeqCst) as usize >= self.sh.budget.cache_bytes / 2;
+                if self.draining || ctip - vtip >= self.sh.budget.script_window || scripts_full || self.cache_bytes >= self.sh.budget.cache_bytes {
                     break;
                 }
                 let Some((id, b, raw)) = self.pending.remove(&(ctip + 1)) else { break };
@@ -666,7 +707,9 @@ impl Connector {
                 }
                 self.moved_at = Instant::now();
             }
-            if self.last_log.elapsed() >= Duration::from_secs(15) {
+            // every 15 s while catching up, every 5 minutes at the tip
+            let every = if ctip + 6 >= htip && flushed == ctip { 300 } else { 15 };
+            if self.last_log.elapsed() >= Duration::from_secs(every) {
                 let secs = self.last_log.elapsed().as_secs_f64();
                 self.sh.log(&format!(
                     "headers {htip} | connected {ctip} ({:.0}/s) | scripts ok {vtip} | on disk {flushed} | cache {} MB | waiting {} blocks ({} MB) | inputs {} checked {} | {}",
@@ -702,6 +745,9 @@ impl Connector {
                         self.fatal(h, &format!("tx {}: {}", e.tx.to_hex(), e.why));
                     }
                     self.done.insert(h);
+                    if let Some(b) = self.script_sizes.remove(&h) {
+                        self.sh.script_bytes.fetch_sub(b, Ordering::SeqCst);
+                    }
                     self.advance_verified();
                 }
                 Ok(Msg::Flush(s)) => self.want_flush.push(s),

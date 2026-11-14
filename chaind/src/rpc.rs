@@ -59,6 +59,8 @@ fn handle(sh: &Shared, s: TcpStream, auth: &str, tn: &Sender<Msg>) -> std::io::R
             return Ok(());
         }
         let (mut len, mut ok) = (0usize, false);
+        // HTTP/1.0 or Connection: close: answer, then close (clients that read to the end wait for it)
+        let mut close = line.contains("HTTP/1.0");
         loop {
             let mut h = String::new();
             r.read_line(&mut h)?;
@@ -70,6 +72,7 @@ fn handle(sh: &Shared, s: TcpStream, auth: &str, tn: &Sender<Msg>) -> std::io::R
             match k.to_ascii_lowercase().as_str() {
                 "content-length" => len = v.trim().parse().unwrap_or(0),
                 "authorization" => ok = v.trim() == auth,
+                "connection" => close = v.trim().eq_ignore_ascii_case("close"),
                 _ => {}
             }
         }
@@ -88,8 +91,11 @@ fn handle(sh: &Shared, s: TcpStream, auth: &str, tn: &Sender<Msg>) -> std::io::R
             }
         };
         let reason = match code { 200 => "OK", 401 => "Unauthorized", 400 => "Bad Request", _ => "Internal Server Error" };
-        write!(w, "HTTP/1.1 {code} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{out}", out.len())?;
+        write!(w, "HTTP/1.1 {code} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{}\r\n{out}", out.len(), if close { "Connection: close\r\n" } else { "" })?;
         w.flush()?;
+        if close {
+            return Ok(());
+        }
     }
 }
 
@@ -263,6 +269,13 @@ fn call(sh: &Shared, m: &str, p: &[Value], tn: &Sender<Msg>) -> R {
         }
         "getrawtransaction" => {
             let txid = hash_param(p.first().unwrap_or(&Value::Null))?;
+            let mem = sh.mempool.lock().unwrap().txs.get(&txid).map(|t| t.tx.clone());
+            if let Some(t) = mem {
+                if verbosity(p.get(1), 0) == 0 {
+                    return Ok(json!(hex::encode(&t.raw)));
+                }
+                return Ok(tx_json(sh, &t));
+            }
             let (raw, h) = find_tx(sh, &txid).ok_or((-5, "No such mempool or blockchain transaction. Use gettransaction for wallet transactions.".to_string()))?;
             if verbosity(p.get(1), 0) == 0 {
                 return Ok(json!(hex::encode(&raw)));
@@ -281,7 +294,59 @@ fn call(sh: &Shared, m: &str, p: &[Value], tn: &Sender<Msg>) -> R {
             let t = Tx::parse_with(&raw, &sh.params.format).map_err(|_| (-22, "TX decode failed".to_string()))?;
             Ok(tx_json(sh, &t))
         }
-        "getrawmempool" => Ok(json!([])),
+        "getrawmempool" => {
+            let mp = sh.mempool.lock().unwrap();
+            if verbosity(p.first(), 0) == 0 {
+                return Ok(json!(mp.order.iter().map(|t| t.to_hex()).collect::<Vec<_>>()));
+            }
+            let mut o = serde_json::Map::new();
+            for id in &mp.order {
+                let t = &mp.txs[id];
+                o.insert(id.to_hex(), json!({"size": t.tx.raw.len(), "fee": t.fee as f64 / 1e8, "time": t.time, "height": tip}));
+            }
+            Ok(Value::Object(o))
+        }
+        "getmempoolinfo" => {
+            let mp = sh.mempool.lock().unwrap();
+            Ok(json!({"size": mp.txs.len(), "bytes": mp.txs.values().map(|t| t.tx.raw.len()).sum::<usize>(), "mempoolminfee": 0.0}))
+        }
+        "getnetworkinfo" => Ok(json!({"version": 10000, "subversion": "/chaind:0.1.0/", "protocolversion": sh.params.protocol_version,
+            "connections": sh.relay.lock().unwrap().len(), "relayfee": crate::mempool::MIN_FEE_PER_KB as f64 / 1e8})),
+        "sendrawtransaction" => {
+            let raw = p.first().and_then(|v| v.as_str()).and_then(|s| hex::decode(s).ok()).ok_or((-22, "TX decode failed".to_string()))?;
+            let txid = crate::mempool::accept(sh, &raw).map_err(|e| (-26, e))?;
+            crate::relay::announce(sh, txid);
+            Ok(json!(txid.to_hex()))
+        }
+        "getbalance" => {
+            let w = sh.wallet.lock().unwrap();
+            let w = w.as_ref().ok_or((-18, "No wallet is loaded".to_string()))?;
+            Ok(json!(w.balance(tip, sh.params).0 as f64 / 1e8))
+        }
+        "getwalletinfo" => {
+            let w = sh.wallet.lock().unwrap();
+            let w = w.as_ref().ok_or((-18, "No wallet is loaded".to_string()))?;
+            let (ok, imm) = w.balance(tip, sh.params);
+            Ok(json!({"walletname": "chaind", "balance": ok as f64 / 1e8, "immature_balance": imm as f64 / 1e8, "unconfirmed_balance": 0.0,
+                      "txcount": w.coins.len(), "keypoolsize": w.keys()}))
+        }
+        "sendtoaddress" => {
+            let addr = p.first().and_then(|v| v.as_str()).ok_or((-5, "Invalid address".to_string()))?;
+            let script = crate::wallet::address_script(sh.params, addr).ok_or((-5, "Invalid address".to_string()))?;
+            let amount = p.get(1).and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))).ok_or((-3, "Invalid amount".to_string()))?;
+            if !(amount > 0.0 && amount < 1e9) {
+                return err(-3, "Invalid amount");
+            }
+            let sats = (amount * 1e8).round() as u64;
+            let mut w = sh.wallet.lock().unwrap();
+            let w = w.as_mut().ok_or((-18, "No wallet is loaded".to_string()))?;
+            let (raw, used) = w.pay(sh.params, tip, script, sats).map_err(|e| (-6, e))?;
+            let txid = crate::mempool::accept(sh, &raw).map_err(|e| (-4, format!("Transaction rejected: {e}")))?;
+            w.lock(&used);
+            crate::relay::announce(sh, txid);
+            sh.log(&format!("sent {amount} to {addr}: {}", txid.to_hex()));
+            Ok(json!(txid.to_hex()))
+        }
         "gettxoutsetinfo" => {
             // write the coins out first, so the set read is that of one block
             let (s, r) = crossbeam_channel::bounded(1);

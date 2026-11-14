@@ -78,8 +78,13 @@ pub fn header_thread(params: &'static ChainParams, sh: Arc<Shared>, to_node: Sen
                 }
             };
             if entries.is_empty() {
-                // caught up: look again in a while (a new block every minute or so)
-                std::thread::sleep(Duration::from_secs(10));
+                // caught up: look again in a while, or as soon as a peer tells of a new block
+                for _ in 0..20 {
+                    if sh.block_hint.swap(false, Ordering::SeqCst) || sh.stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(500));
+                }
                 continue;
             }
             let checked: Result<Vec<(Hash256, HeaderEntry)>, String> = pool.install(|| entries
