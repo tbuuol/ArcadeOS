@@ -169,12 +169,13 @@ local SERVICES = {
 	{ "SSH", "dropbear" }, { "Mesh", "meshd" }, { "Zeit (NTP)", "ntpd" }, { "WLAN", "wpa_supplicant" },
 	{ "Watchdog", "watchdog" }, { "Syslog", "syslogd" }, { "Cron", "crond" }, { "Webserver", "httpd" }, { "Web", "caddy" },
 }
--- Chain-Knoten nur, wenn auf diesem Geraet eingerichtet (/etc/init.d/S62dogecoin, S63pepecoin-main, S64litecoin, S65kotia, S66pepecoin): Name, Prozess,
+-- Chain-Knoten nur, wenn auf diesem Geraet eingerichtet (/etc/init.d/S61litecoin-test, S62dogecoin, S63pepecoin-main, S64litecoin, S65kotia, S66pepecoin): Name, Prozess,
 -- Startskript, RPC-Programm (fuer den Sync-Stand)
 local NODES = {
 	{ "Dogecoin", "dogecoind", "/state/dogecoin/dogecoind", "/state/dogecoin/dogecoin-cli" },
 	{ "Pepecoin", "pepecoind-main", "/state/pepecoin-main/pepecoind", "/state/pepecoin-main/pepecoin-cli" },
 	{ "Litecoin", "litecoind", "/state/litecoin/litecoind", "/state/litecoin/litecoin-cli" },
+	{ "Litecoin Test", "litecoind-test", "/state/litecoin-test/litecoind", "/state/litecoin-test/litecoin-cli" },
 	{ "Kotia", "kotiad", "/state/kotia/kotiad", "/state/kotia/kotia-cli" },
 	{ "Pepecoin Test", "pepecoind", "/state/pepecoin/pepecoind", "/state/pepecoin/pepecoin-cli" },
 }
