@@ -15,6 +15,7 @@
 //!   CHAIND_SYNC_MB     memory for the pipeline while syncing                     (256)
 //!   CHAIND_ASSUME_VALID=1  skip scripts below the newest checkpoint              (off: all scripts checked)
 //!   CHAIND_COOKIE      where to write the RPC cookie                             (<dir>/.cookie)
+//!   CHAIND_STAKE_WATCH file of scriptPubKeys (hex) to stake as a dry run (Kotia)  (off)
 //!   CHAIND_WALLET      file of WIF keys for sendtoaddress / getbalance           (no wallet)
 //!
 //! Built on arcade-chain and libbitcoinconsensus from Martin Seeger's arcade-v1 (MIT, see vendor/).
@@ -28,6 +29,7 @@ mod wallet;
 mod node;
 mod rpc;
 mod rules;
+mod stake;
 mod store;
 mod utxo;
 
@@ -217,6 +219,11 @@ fn main() {
     for i in 0..2 {
         let sh = sh.clone();
         std::thread::spawn(move || relay::relay_thread(params, sh, i));
+    }
+    // Kotia: staking as a dry run (only logs what it would stake)
+    if let Ok(path) = std::env::var("CHAIND_STAKE_WATCH") {
+        let sh = sh.clone();
+        std::thread::spawn(move || stake::dry_run(sh, path));
     }
     // SIGTERM / SIGINT: stop cleanly (the connector writes everything that passed)
     {

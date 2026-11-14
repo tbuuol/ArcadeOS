@@ -156,3 +156,22 @@ impl PosState {
         Ok(is_pos)
     }
 }
+
+/// What a staker needs to try the next slot on top of `tip`: the stake modifier after the tip, the bits the
+/// next proof-of-stake block must carry, and the tip's time. Walks back only as far as the last two PoS blocks.
+pub fn stake_target(st: &Store, tip: u32) -> Option<(Hash256, u32, u32)> {
+    let (modifier, _) = st.modifier(tip)?;
+    let tip_time = st.header(tip)?.1.time;
+    let mut found: Vec<Seen> = Vec::with_capacity(2);
+    let mut h = tip;
+    while h > 0 && found.len() < 2 {
+        let (_, is_pos) = st.modifier(h)?;
+        if is_pos {
+            let hd = st.header(h)?.1;
+            found.push(Seen { height: h, bits: hd.bits, time: hd.time });
+        }
+        h -= 1;
+    }
+    let s = PosState { modifier, pos: [found.first().copied(), found.get(1).copied()], pow: [None, None] };
+    Some((modifier, s.expected_bits(true), tip_time))
+}
