@@ -1,0 +1,33 @@
+#!/bin/sh
+# Kotia staking from kotiad to chaind, step by step. Run as root, by the owner of the wallet:
+#   kotia-stake-handover check   export the staking keys from kotiad into /state/chaind/kotia-stake.keys
+#                                (600, uid 1010) and let chaind build + sign + check, NOT send; kotiad keeps staking
+#   kotia-stake-handover live    chaind stakes (sends), kotiad runs with -staking=0
+#   kotia-stake-handover back    kotiad stakes again, chaind back to check mode (sends nothing)
+#   kotia-stake-handover forget  delete the exported keys file, chaind back to the dry run
+# Every step restarts S65kotia (kotiad + chaind, under a minute).
+set -e
+KEYS=/state/chaind/kotia-stake.keys MODE=/state/chaind/kotia-stake.mode
+TMP=/media/ssd/arcadeos/kotia/data/.stake-export.$$
+case "$1" in
+check)
+	if [ ! -s $KEYS ]; then
+		umask 077
+		/state/kotia/kotia-cli dumpwallet "$TMP" >/dev/null
+		mv "$TMP" $KEYS
+		chown 1010:1010 $KEYS; chmod 600 $KEYS
+		echo "keys exported to $KEYS ($(grep -c '^[^#]' $KEYS) lines, not shown)"
+	fi
+	echo check > $MODE ;;
+live)
+	[ -s $KEYS ] || { echo "first: $0 check"; exit 1; }
+	echo live > $MODE ;;
+back)
+	[ -s $KEYS ] && echo check > $MODE || echo dry > $MODE ;;
+forget)
+	[ -f $KEYS ] && { dd if=/dev/zero of=$KEYS bs=1k count=$(( $(wc -c < $KEYS) / 1024 + 1 )) conv=notrunc 2>/dev/null; rm -f $KEYS; }
+	echo dry > $MODE ;;
+*) sed -n '2,9p' "$0"; exit 1 ;;
+esac
+/etc/init.d/S65kotia restart
+echo "mode now: $(cat $MODE)"

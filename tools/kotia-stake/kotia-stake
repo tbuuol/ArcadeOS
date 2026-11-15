@@ -1,0 +1,22 @@
+#!/bin/sh
+# chaind as Kotia staker next to kotiad (started by /state/kotia/kotiad, i.e. by S65kotia / node-supervise).
+# Mode from /state/chaind/kotia-stake.mode (one word):
+#   off    chaind is not started (default when the file is missing)
+#   dry    dry run with the watched scripts (/state/chaind/kotia-stake-watch), no keys, nothing signed or sent
+#   check  keys from /state/chaind/kotia-stake.keys: blocks built, signed and checked, compared with kotiad's; NOT sent
+#   live   as check, and blocks that pass every check are SENT; kotiad then runs with -staking=0
+# Stop sending at once without a restart: touch /media/ssd/arcadeos/chaind-kotia2/stake-off
+# Switching modes: /state/chaind/kotia-stake-handover (check | live | back).
+D=/media/ssd/arcadeos/chaind-kotia2
+MODE=$(cat /state/chaind/kotia-stake.mode 2>/dev/null || echo off)
+[ -d "$D/chain.lmdb" ] || { echo "chaind kotia: data missing under $D" >&2; exit 3; }
+export CHAIND_CHAIN=kotia CHAIND_DIR=$D CHAIND_RPC=127.0.0.1:44883 MALLOC_ARENA_MAX=2 \
+	CHAIND_PEERS="127.0.0.1:46174,94.156.144.178:46174,156.67.28.112:46174"
+case "$MODE" in
+	dry) export CHAIND_STAKE_WATCH=/state/chaind/kotia-stake-watch ;;
+	check) export CHAIND_STAKE_KEYS=/state/chaind/kotia-stake.keys ;;
+	live) export CHAIND_STAKE_KEYS=/state/chaind/kotia-stake.keys CHAIND_STAKE=1 ;;
+	*) exit 0 ;;
+esac
+R=/usr/lib/arcadeos/runas; [ -x $R ] || R=/state/kotia/runas
+exec $R 1010 1010 /state/chaind/bin/kotia-chaind >> $D/chaind.log 2>&1

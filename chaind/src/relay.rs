@@ -50,6 +50,25 @@ pub fn announce(sh: &Shared, txid: Hash256) {
     }
 }
 
+/// Send a block of ours (a staked Kotia block) to the relay peers, and on fresh connections to the configured
+/// peers (one thread each, so a slow peer holds nothing up).
+pub fn send_block(sh: &Arc<Shared>, raw: &[u8]) {
+    let ws: Vec<Writer> = sh.relay.lock().unwrap().clone();
+    for w in ws {
+        send(&w, sh.params.magic, "block", raw);
+    }
+    for a in sh.peers().into_iter().take(8) {
+        let (p, raw, sh2) = (sh.params, raw.to_vec(), sh.clone());
+        std::thread::spawn(move || match arcade_chain::p2p::Peer::connect_with(p, &a, Duration::from_secs(8), false) {
+            Ok(mut peer) => {
+                let _ = peer.send("block", &raw);
+                std::thread::sleep(Duration::from_secs(3));
+            }
+            Err(e) => sh2.log(&format!("stake: sending to {a}: {e}")),
+        });
+    }
+}
+
 pub fn relay_thread(params: &'static ChainParams, sh: Arc<Shared>, no: usize) {
     let mut start = no;
     while !sh.stop.load(Ordering::Relaxed) {

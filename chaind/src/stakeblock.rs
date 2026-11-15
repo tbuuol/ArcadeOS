@@ -162,6 +162,91 @@ pub fn blank_script_sig(cs: &arcade_chain::Tx) -> Option<Vec<u8>> {
     Some(o)
 }
 
+/// The staking keys (a dumpwallet file: the WIF is the first word of a line; # lines skipped). Each key stakes
+/// the coins paying to its P2PK and its P2PKH script. The file is read once and never written or logged.
+pub struct Keys {
+    keys: Vec<(SigningKey, Vec<u8>)>,
+    by_script: std::collections::HashMap<Vec<u8>, usize>,
+}
+
+impl Keys {
+    pub fn load(p: &arcade_chain::params::ChainParams, path: &str) -> Result<Keys, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("stake keys {path}: {e}"))?;
+        let mut k = Keys { keys: Vec::new(), by_script: std::collections::HashMap::new() };
+        for line in text.lines() {
+            let word = line.split_whitespace().next().unwrap_or("");
+            if word.is_empty() || word.starts_with('#') {
+                continue;
+            }
+            let Some(d) = crate::wallet::base58_decode(word) else { continue };
+            if d.first() != Some(&p.wif_version) || !(d.len() == 33 || d.len() == 34 && d[33] == 1) {
+                continue;
+            }
+            let Ok(sk) = SigningKey::from_slice(&d[1..33]) else { continue };
+            let pk = sk.verifying_key().to_encoded_point(d.len() == 34).as_bytes().to_vec();
+            k.by_script.insert(p2pk(&pk), k.keys.len());
+            k.by_script.insert(p2pkh(&pk), k.keys.len());
+            k.keys.push((sk, pk));
+        }
+        if k.keys.is_empty() {
+            return Err(format!("stake keys {path}: no Kotia keys in it"));
+        }
+        Ok(k)
+    }
+    pub fn len(&self) -> usize {
+        self.keys.len()
+    }
+    pub fn scripts(&self) -> impl Iterator<Item = &Vec<u8>> {
+        self.by_script.keys()
+    }
+    pub fn for_script(&self, s: &[u8]) -> Option<(&SigningKey, &[u8])> {
+        self.by_script.get(s).map(|&i| (&self.keys[i].0, self.keys[i].1.as_slice()))
+    }
+}
+
+/// Everything a node will check of our staked block, checked here before it leaves: it parses as a staked block
+/// of two transactions on `prev` at `time` with `bits`; the coinstake spends exactly the kernel coin, pays coin +
+/// 20 KOT (no more, no less) to the P2PK of the coin's own key and nothing else; its script verifies with Kotia's
+/// flags; the kernel hits; the block signature verifies with the key in the coinstake.
+#[allow(clippy::too_many_arguments)]
+pub fn verify(p: &'static arcade_chain::params::ChainParams, raw: &[u8], prev: Hash256, height: u32, time: u32, bits: u32, modifier: Option<&Hash256>,
+              txid: &Hash256, vout: u32, value: u64, coin_script: &[u8], coin_time: u32, pubkey: &[u8]) -> Result<Hash256, String> {
+    use k256::ecdsa::signature::hazmat::PrehashVerifier;
+    let header = Header::parse(raw.get(..80).ok_or("short")?.try_into().unwrap());
+    let id = p.block_id(&header);
+    let blk = crate::net::prep(p, id, raw)?;
+    if blk.header.prev != prev || blk.header.time != time || blk.header.bits != bits || time & arcade_chain::kotia_pos::STAKE_TIMESTAMP_MASK != 0 {
+        return Err("header (prev, time or bits) is not what was meant".into());
+    }
+    if !blk.is_proof_of_stake() || blk.txs.len() != 2 {
+        return Err("not a staked block of two transactions".into());
+    }
+    let (cb, cs) = (&blk.txs[0], &blk.txs[1]);
+    if cb.outputs.len() != 1 || cb.outputs[0].value != 0 || !cb.outputs[0].script_pubkey.is_empty() || cb.time != Some(time) {
+        return Err("coinbase is not empty".into());
+    }
+    if cs.inputs.len() != 1 || cs.inputs[0].prevout.txid != *txid || cs.inputs[0].prevout.vout != vout || cs.time != Some(time) {
+        return Err("coinstake does not spend exactly the kernel coin".into());
+    }
+    if cs.outputs.len() != 2 || cs.outputs[0].value != 0 || !cs.outputs[0].script_pubkey.is_empty()
+        || cs.outputs[1].value != value + STAKE_SUBSIDY || cs.outputs[1].script_pubkey != p2pk(pubkey) {
+        return Err("coinstake does not pay coin + 20 KOT back to the coin's own key".into());
+    }
+    if coin_script != p2pk(pubkey).as_slice() && coin_script != p2pkh(pubkey).as_slice() {
+        return Err("the coin is not this key's".into());
+    }
+    let sp = [crate::rules::Spent { value, script: coin_script, height: 1, coinbase: false, pegout: false }];
+    crate::rules::tx_scripts(p, cs, &sp, height, crate::kotia::script_flags(time)).map_err(|e| format!("coinstake script: {}", e.why))?;
+    if modifier.is_some_and(|m| !arcade_chain::kotia_pos::check_kernel(m, bits, coin_time, txid, vout, value, time)) {
+        return Err("kernel does not hit".into());
+    }
+    let key = arcade_chain::kotia_pos::block_signing_key(&cs.outputs[1].script_pubkey).ok_or("no signing key in output 1")?;
+    let vk = k256::ecdsa::VerifyingKey::from_sec1_bytes(key).map_err(|e| e.to_string())?;
+    let s = Signature::from_der(blk.sig.as_deref().unwrap_or(&[])).map_err(|e| e.to_string())?;
+    vk.verify_prehash(&blk.id.0, &s).map_err(|_| "block signature does not verify".to_string())?;
+    Ok(blk.id)
+}
+
 /// Signing checked end to end with a throwaway key (no real coin): a P2PK and a P2PKH coin are staked, and the
 /// blocks go through the checks any block goes through: shape and merkle root, the coinstake's script, the
 /// block signature.
@@ -171,6 +256,7 @@ pub fn self_test(p: &'static arcade_chain::params::ChainParams) -> Result<(), St
     std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom").map_err(|e| e.to_string())?, &mut b).map_err(|e| e.to_string())?;
     let sk = SigningKey::from_slice(&b).map_err(|e| e.to_string())?;
     let pk = sk.verifying_key().to_encoded_point(true).as_bytes().to_vec();
+    let other = SigningKey::from_slice(&sha256d(&b).0).map_err(|e| e.to_string())?.verifying_key().to_encoded_point(true).as_bytes().to_vec();
     let time = 1_800_000_000 & !arcade_chain::kotia_pos::STAKE_TIMESTAMP_MASK;
     for script in [p2pk(&pk), p2pkh(&pk)] {
         let txid = sha256d(&script);
@@ -188,6 +274,14 @@ pub fn self_test(p: &'static arcade_chain::params::ChainParams) -> Result<(), St
         vk.verify_prehash(&blk.id.0, &s).map_err(|_| "block signature does not verify".to_string())?;
         if blk.txs[1].outputs[1].value != 123_456_789 + STAKE_SUBSIDY || blk.txs[1].outputs[1].script_pubkey != p2pk(&pk) {
             return Err("coinstake does not pay coin + reward back to the coin's key".into());
+        }
+        // the check before sending passes this block, and refuses it for a coin of another value or another key
+        verify(p, &built.raw, Hash256::ZERO, 2_000_000, time, 0x1d00ffff, None, &txid, 3, 123_456_789, &script, 0, &pk)?;
+        if verify(p, &built.raw, Hash256::ZERO, 2_000_000, time, 0x1d00ffff, None, &txid, 3, 123_456_788, &script, 0, &pk).is_ok() {
+            return Err("check before sending passed a block paying 1 satoshi too much".into());
+        }
+        if verify(p, &built.raw, Hash256::ZERO, 2_000_000, time, 0x1d00ffff, None, &txid, 3, 123_456_789, &script, 0, &other).is_ok() {
+            return Err("check before sending passed a block for another key".into());
         }
     }
     Ok(())

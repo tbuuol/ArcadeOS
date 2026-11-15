@@ -16,6 +16,8 @@
 //!   CHAIND_ASSUME_VALID=1  skip scripts below the newest checkpoint              (off: all scripts checked)
 //!   CHAIND_COOKIE      where to write the RPC cookie                             (<dir>/.cookie)
 //!   CHAIND_STAKE_WATCH file of scriptPubKeys (hex) to stake as a dry run (Kotia)  (off)
+//!   CHAIND_STAKE_KEYS  Kotia staking keys (dumpwallet file): signed check         (off)
+//!   CHAIND_STAKE=1     with CHAIND_STAKE_KEYS: send staked blocks; stop file CHAIND_STAKE_OFF
 //!   CHAIND_WALLET      file of WIF keys for sendtoaddress / getbalance           (no wallet)
 //!
 //! Built on arcade-chain and libbitcoinconsensus from Martin Seeger's arcade-v1 (MIT, see vendor/).
@@ -221,10 +223,10 @@ fn main() {
         let sh = sh.clone();
         std::thread::spawn(move || relay::relay_thread(params, sh, i));
     }
-    // Kotia: staking as a dry run (only logs what it would stake)
-    if let Ok(path) = std::env::var("CHAIND_STAKE_WATCH") {
+    // Kotia: staking (dry run, signed check or staking; see stake.rs)
+    if std::env::var("CHAIND_STAKE_WATCH").is_ok() || std::env::var("CHAIND_STAKE_KEYS").is_ok() {
         let sh = sh.clone();
-        std::thread::spawn(move || stake::dry_run(sh, path));
+        std::thread::spawn(move || stake::run(sh));
     }
     // SIGTERM / SIGINT: stop cleanly (the connector writes everything that passed)
     {

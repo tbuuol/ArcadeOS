@@ -25,7 +25,7 @@ pub struct Wallet {
     locked: HashSet<OutKey>,
 }
 
-fn base58_decode(s: &str) -> Option<Vec<u8>> {
+pub fn base58_decode(s: &str) -> Option<Vec<u8>> {
     const A: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
     let mut out: Vec<u8> = Vec::new();
     for c in s.bytes() {

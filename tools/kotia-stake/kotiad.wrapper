@@ -1,0 +1,30 @@
+#!/bin/sh
+# Kotia Core (glibc-Programm) auf ArcadeOS: ueber den glibc-Lader aus /state/glibc (als "kotiad" kopiert, damit
+# der Prozess so heisst), als Nutzer 1010 (nur fuer Kotia, Besitzer von /media/ssd/arcadeos/kotia), RPC nur lokal.
+# Eigene uid seit 2026-11-12: ein uebernommener kotiad (P2P offen, Wallet zum Staken geladen) kommt nicht an die
+# Wallets der anderen Chains (uid 1000).
+# Daten auf der SSD; fehlen sie, Code 3 (node-supervise versucht es spaeter erneut).
+# Als Dienst: /etc/init.d/S65kotia (startet dieses Skript im Vordergrund). Von Hand: /state/kotia/kotiad -daemon
+# Seit 2026-11-15 startet dieses Skript daneben chaind als Kotia-Staker (/state/chaind/kotia-stake, Modus in
+# /state/chaind/kotia-stake.mode). Im Modus "live" stakt chaind, kotiad laeuft dann mit -staking=0.
+# Vorher-Stand: kotiad.before-chaind-stake
+K=/media/ssd/arcadeos/kotia
+[ -x "$K/bin/kotiad" ] && [ -f "$K/data/kotia.conf" ] || { echo "kotia: Daten fehlen unter $K (Platte eingebunden?)" >&2; exit 3; }
+export MALLOC_ARENA_MAX=2   # glibc: few malloc arenas, else RSS grows by fragmentation
+R=/usr/lib/arcadeos/runas; [ -x $R ] || R=/state/kotia/runas
+case "$*" in *-daemon*) exec $R 1010 1010 /state/glibc/kotiad --library-path /state/glibc/lib \
+	"$K/bin/kotiad" -datadir="$K/data" -rpcbind=127.0.0.1 -dbcache=64 -maxmempool=50 "$@" ;; esac
+STAKING=""
+[ "$(cat /state/chaind/kotia-stake.mode 2>/dev/null)" = live ] && STAKING=-staking=0
+cs=""
+/state/chaind/kotia-stake </dev/null &
+cs=$!
+# beim Beenden (SIGTERM von node-supervise) zuerst chaind (schnell), dann kotiad, beide abwarten
+trap 'kill -TERM $cs 2>/dev/null; kill -TERM $kd 2>/dev/null; wait $cs; wait $kd; exit 0' TERM INT
+$R 1010 1010 /state/glibc/kotiad --library-path /state/glibc/lib \
+	"$K/bin/kotiad" -datadir="$K/data" -rpcbind=127.0.0.1 -dbcache=64 -maxmempool=50 $STAKING "$@" &
+kd=$!
+wait $kd
+rc=$?
+kill -TERM $cs 2>/dev/null; wait $cs
+exit $rc
