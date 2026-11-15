@@ -64,9 +64,34 @@ pub struct Shared {
     pub script_bytes: AtomicU64,
     /// blocks of another chaind directory, used before the network (CHAIND_IMPORT)
     pub import: Option<crate::store::Import>,
+    /// heights the last peers told at connecting (their version message): how far the network is
+    peer_heights: Mutex<VecDeque<u32>>,
 }
 
 impl Shared {
+    /// A peer said how high its chain is.
+    pub fn note_peer_height(&self, h: i32) {
+        if h <= 0 {
+            return;
+        }
+        let mut q = self.peer_heights.lock().unwrap();
+        q.push_back(h as u32);
+        while q.len() > 15 {
+            q.pop_front();
+        }
+    }
+
+    /// The network's height: the median of what the last peers told (at least 3 of them, so one that lies
+    /// does not move it), never below our own headers.
+    pub fn network_height(&self) -> Option<u32> {
+        let mut v: Vec<u32> = self.peer_heights.lock().unwrap().iter().copied().collect();
+        if v.len() < 3 {
+            return None;
+        }
+        v.sort_unstable();
+        Some(v[v.len() / 2].max(self.htip.load(Ordering::SeqCst)))
+    }
+
     pub fn new(store: &'static Store, params: &'static ChainParams, budget: Budget, peers: Vec<String>) -> Shared {
         let tip = store.get_meta_u32("tip").unwrap_or(0);
         let htip = store.get_meta_u32("htip").unwrap_or(0);
@@ -90,6 +115,7 @@ impl Shared {
             block_hint: false.into(),
             wallet: Mutex::new(None),
             script_bytes: 0.into(),
+            peer_heights: Mutex::new(VecDeque::new()),
             import: std::env::var("CHAIND_IMPORT").ok().and_then(|d| crate::store::Import::open(std::path::Path::new(&d)).ok()),
         }
     }

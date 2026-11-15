@@ -30,6 +30,7 @@ mod node;
 mod rpc;
 mod rules;
 mod stake;
+mod stakeblock;
 mod store;
 mod utxo;
 

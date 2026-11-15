@@ -202,7 +202,9 @@ local function node_sync(s, up, now)
 		local ibd = d.initialblockdownload == true
 		local pct = headers > 0 and 100 * blocks / headers or 0
 		if ibd then pct = math.min(pct, 99.9) end
-		v = { blocks = blocks, headers = headers, pct = round(pct, 1), ibd = ibd, chain = tostring(d.chain or "") }
+		-- chaind: headers = the network's height while its own header checks still trail; the checked ones apart
+		local checked = math.min(tonumber(type(d.chaind) == "table" and d.chaind.headers_checked) or headers, headers)
+		v = { blocks = blocks, headers = headers, checked = checked, pct = round(pct, 1), hpct = round(headers > 0 and 100 * checked / headers or 0, 1), ibd = ibd, chain = tostring(d.chain or "") }
 	elseif c and c.v and c.v.blocks then
 		-- Knoten laeuft, antwortet aber gerade nicht in 5 s (im Sync oft beschaeftigt): letzten Stand behalten
 		v = c.v

@@ -240,14 +240,18 @@ fn call(sh: &Shared, m: &str, p: &[Value], tn: &Sender<Msg>) -> R {
             Ok(json!(st.id_at(h).map(|x| x.to_hex())))
         }
         "getblockchaininfo" => {
-            let htip = sh.htip.load(Ordering::SeqCst);
+            let checked = sh.htip.load(Ordering::SeqCst);
+            // headers: as far as the network is (the peers' median height) while ours are still coming, so that
+            // blocks / headers is the real progress; the headers checked so far are in chaind.headers_checked
+            let net = sh.network_height();
+            let htip = net.unwrap_or(checked).max(checked);
             let best = st.header(tip).ok_or((-1, "no tip".to_string()))?;
             Ok(json!({
-                "chain": sh.params.net, "blocks": tip, "headers": htip, "bestblockhash": best.0.to_hex(),
+                "chain": core_chain(sh.params.net), "blocks": tip, "headers": htip, "bestblockhash": best.0.to_hex(),
                 "difficulty": difficulty(best.1.bits), "mediantime": best.1.time,
                 "verificationprogress": if htip > 0 { tip as f64 / htip as f64 } else { 0.0 },
                 "initialblockdownload": tip + 6 < htip, "pruned": false,
-                "chaind": {"scripts_verified_to": sh.vtip.load(Ordering::SeqCst), "written_to": sh.flushed.load(Ordering::SeqCst)},
+                "chaind": {"headers_checked": checked, "network_height": net, "scripts_verified_to": sh.vtip.load(Ordering::SeqCst), "written_to": sh.flushed.load(Ordering::SeqCst)},
             }))
         }
         "getblockheader" => {
@@ -372,5 +376,14 @@ fn call(sh: &Shared, m: &str, p: &[Value], tn: &Sender<Msg>) -> R {
             Ok(json!("chaind stopping"))
         }
         _ => err(-32601, "Method not found"),
+    }
+}
+
+/// The chain's name as Core's getblockchaininfo gives it ("main", "test", "regtest"), whatever arcade-chain calls it.
+fn core_chain(net: &str) -> &'static str {
+    match net {
+        "regtest" => "regtest",
+        n if n.contains("test") => "test",
+        _ => "main",
     }
 }

@@ -352,7 +352,8 @@ h1 em { font-style:normal; color:var(--pri); }
 .sector.o .stt { color:var(--muted); }
 /* Chain-Knoten: Kachel bis zum Sync-Stand gefuellt (--fill); waehrend des ersten Syncs Akzentfarbe */
 .sector.sync { background:linear-gradient(90deg, rgba(var(--pri-rgb), .26) var(--fill, 0%), rgba(var(--pri-rgb), .05) var(--fill, 0%)); }
-.sector.sync.ibd { background:linear-gradient(90deg, rgba(var(--acc-rgb), .24) var(--fill, 0%), rgba(var(--acc-rgb), .05) var(--fill, 0%)); }
+/* im Sync zwei Balken uebereinander: gelb die geprueften Blockkoepfe, gruen darueber die ganzen Bloecke (je bis zur Hoehe des Netzes) */
+.sector.sync.ibd { background:linear-gradient(90deg, rgba(61,255,139,.34) var(--fill, 0%), transparent var(--fill, 0%)), linear-gradient(90deg, rgba(255,214,74,.32) var(--hfill, 0%), rgba(255,214,74,.05) var(--hfill, 0%)); }
 .sector.sync.ibd .dot { background:var(--acc); box-shadow:0 0 8px var(--acc); }
 .sector.sync.ibd .stt { color:var(--acc); }
 .foot.lost .live { color:var(--warn); background:rgba(255,80,60,.14); border-right-color:var(--warn); }
@@ -780,7 +781,8 @@ function buildSectors(d) {
     else if (sy) {
       const pct = clamp(+sy.pct || 0, 0, 100);
       more = ' sync' + (sy.ibd ? ' ibd' : '');
-      attrs = ` style="--fill:${pct}%" title="${esc(sy.chain)} · Block ${esc(sy.blocks)} / ${esc(sy.headers)}"`;
+      const hp = clamp(sy.hpct == null ? 100 : +sy.hpct, 0, 100), hk = sy.checked == null ? sy.headers : sy.checked;
+      attrs = ` style="--fill:${pct}%;--hfill:${hp}%" title="${esc(sy.chain)} · Netzhöhe ${esc(sy.headers)}&#10;gelb: Blockköpfe geprüft ${esc(hk)} (${hp.toFixed(1)} %)&#10;grün: ganze Blöcke ${esc(sy.blocks)} (${pct.toFixed(1)} %)"`;
       stt = sy.ibd ? `sync ${pct.toFixed(1)} %` : 'synchron';
     }
     return `<div class="sector ${cls}${more}"${attrs}><i class="dot"></i><span class="nm">${esc(sv.name)}</span><span class="stt">${stt}</span></div>`;

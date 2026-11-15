@@ -47,6 +47,7 @@ fn connect(params: &ChainParams, sh: &Shared, start: usize) -> Option<Peer> {
         match Peer::connect_with(params, a, Duration::from_secs(20), false) {
             Ok(p) => {
                 let _ = p.set_read_timeout(Duration::from_secs(60));
+                sh.note_peer_height(p.version.start_height);
                 return Some(p);
             }
             Err(e) => sh.log(&format!("peer {a}: {e}")),
