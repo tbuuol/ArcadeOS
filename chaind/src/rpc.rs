@@ -239,6 +239,38 @@ fn call(sh: &Shared, m: &str, p: &[Value], tn: &Sender<Msg>) -> R {
             }
             Ok(json!(st.id_at(h).map(|x| x.to_hex())))
         }
+        // Kotia: as Kotia Core reports it (GetPoSKernelPS over the last 72 PoS blocks; expected time as its RPC),
+        // plus what chaind staked (time, reward) in the last 48 h
+        "getstakinginfo" if sh.params.format.tx_time => {
+            let s = sh.stake.lock().unwrap().clone();
+            let (mut kernels, mut secs, mut n, mut prev) = (0f64, 0u64, 0, None::<(u32, u32)>);
+            let mut h = tip;
+            let mut last_bits = 0;
+            while h > 0 && n < 72 {
+                if let Some((_, true)) = st.modifier(h) {
+                    if let Some((_, hd)) = st.header(h) {
+                        if last_bits == 0 {
+                            last_bits = hd.bits;
+                        }
+                        if let Some((pb, pt)) = prev {
+                            kernels += difficulty(pb) * 4294967296.0;
+                            secs += pt.saturating_sub(hd.time) as u64;
+                            n += 1;
+                        }
+                        prev = Some((hd.bits, hd.time));
+                    }
+                }
+                h -= 1;
+            }
+            let net = if secs > 0 { kernels / secs as f64 * 16.0 } else { 0.0 };
+            let expected = if s.staking && s.weight > 0 { (1.0455 * 120.0 * net / s.weight as f64) as u64 } else { 0 };
+            Ok(json!({
+                "enabled": s.enabled, "staking": s.staking, "errors": "", "difficulty": difficulty(last_bits),
+                "search-interval": if s.enabled { 16 } else { 0 }, "weight": s.weight, "netstakeweight": net as u64,
+                "expectedtime": expected,
+                "chaind": {"mode": s.mode, "stakes": s.stakes.iter().map(|(t, r)| json!({"time": t, "reward": *r as f64 / 1e8})).collect::<Vec<_>>()},
+            }))
+        }
         "getblockchaininfo" => {
             let checked = sh.htip.load(Ordering::SeqCst);
             // headers: as far as the network is (the peers' median height) while ours are still coming, so that

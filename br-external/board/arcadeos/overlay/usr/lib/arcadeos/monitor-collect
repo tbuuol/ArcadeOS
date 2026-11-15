@@ -226,7 +226,10 @@ local function staking(now)
 	if not kotia then return nil end
 	if stake_cache and now - stake_cache.t < STAKE_EVERY then return stake_cache.v end
 	local v
-	local ok, info = pcall(json.decode, sh("timeout 5 " .. kotia.cli .. " getstakinginfo") or "")
+	-- stakt chaind (Modus live, /state/chaind/kotia-stake), kommt der Status von dort, seine Stakes ergaenzen die Wallet-Buchungen
+	local ok, info = pcall(json.decode, sh("timeout 5 /state/chaind/kotia-chaind-cli getstakinginfo 2>/dev/null") or "")
+	local cd = ok and type(info) == "table" and type(info.chaind) == "table" and info.chaind.mode == "live" and info.chaind or nil
+	if not cd then ok, info = pcall(json.decode, sh("timeout 5 " .. kotia.cli .. " getstakinginfo") or "") end
 	if ok and type(info) == "table" and info.enabled ~= nil then
 		local ok2, txs = pcall(json.decode, sh("timeout 15 " .. kotia.cli .. " listtransactions '*' 2000") or "")
 		local seen, hours, n, sum, last = {}, {}, 0, 0, nil
@@ -237,6 +240,20 @@ local function staking(now)
 				if x.generated == true and fee and fee > 0 and t and now - t < 86400 and not seen[x.txid] then
 					seen[x.txid] = true
 					n, sum = n + 1, sum + fee
+					local h = math.floor(math.max(0, now - t) / 3600) + 1
+					hours[h] = hours[h] + 1
+					if not last or t > last then last = t end
+				end
+			end
+		end
+		-- chaind's own stakes (time, reward), unless the wallet already booked a stake at that time
+		if cd and type(cd.stakes) == "table" then
+			local at = {}
+			for _, x in ipairs(type(txs) == "table" and txs or {}) do if x.generated == true then at[tonumber(x.time) or 0] = true end end
+			for _, x in ipairs(cd.stakes) do
+				local t, r = tonumber(x.time), tonumber(x.reward)
+				if t and r and now - t < 86400 and not at[t] then
+					n, sum = n + 1, sum + r
 					local h = math.floor(math.max(0, now - t) / 3600) + 1
 					hours[h] = hours[h] + 1
 					if not last or t > last then last = t end

@@ -104,6 +104,11 @@ pub fn run(sh: Arc<Shared>) {
     let mut sent_for: HashSet<u32> = HashSet::new();
     let mut off_said = false;
     let mut hits: HashMap<u32, Vec<Hit>> = HashMap::new();
+    {
+        let mut s = sh.stake.lock().unwrap();
+        s.enabled = true;
+        s.mode = if live { "live" } else if keys.is_some() { "check" } else { "dry" };
+    }
     let (mut n_hits, mut n_taken, mut n_missed, mut n_lost, mut tried) = (0u64, 0u64, 0u64, 0u64, 0u64);
     let (mut n_same, mut n_identical, mut n_differ, mut n_sent, mut n_refused) = (0u64, 0u64, 0u64, 0u64, 0u64);
     while !sh.stop.load(Ordering::Relaxed) {
@@ -144,6 +149,11 @@ pub fn run(sh: Arc<Shared>) {
                                 Ok(bl) if h.checked && raw.as_deref() == Some(bl.raw.as_slice()) => {
                                     n_identical += 1;
                                     sh.log(&format!("stake: block {seen_tip} ({}:{} at {t}) - predicted, and ours is IDENTICAL byte for byte, signatures too", o.txid.to_hex(), o.vout));
+                                    if sent_for.contains(&seen_tip) {
+                                        let mut s = sh.stake.lock().unwrap();
+                                        s.stakes.push((t, arcade_chain::kotia_pos::STAKE_SUBSIDY));
+                                        s.stakes.retain(|x| x.0 + 48 * 3600 > t);
+                                    }
                                 }
                                 Ok(bl) if bl.header.version == blk.header.version && bl.header.prev == blk.header.prev && bl.header.time == blk.header.time && bl.header.bits == blk.header.bits
                                     && bl.coinbase == blk.txs[0].raw && Some(&bl.coinstake_blank) == stakeblock::blank_script_sig(&blk.txs[1]).as_ref() && blk.txs.len() == 2 => {
@@ -183,6 +193,10 @@ pub fn run(sh: Arc<Shared>) {
                 sh.log(&format!("stake: {} coins ({} KOT) at tip {tip}", coins.len(), total as f64 / 1e8));
             }
             scanned_at = tip;
+            let weight: u64 = coins.iter().filter(|c| tip + 1 >= c.1.height + MATURITY).map(|c| c.1.value).sum();
+            let mut s = sh.stake.lock().unwrap();
+            s.weight = weight;
+            s.staking = live && self_ok && weight > 0 && !std::path::Path::new(&off_file).exists();
         }
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as u32).unwrap_or(0);
         let slot = now & !STAKE_TIMESTAMP_MASK;

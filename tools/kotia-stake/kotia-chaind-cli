@@ -1,0 +1,4 @@
+#!/bin/sh
+# cli for chaind as Kotia staker (RPC 127.0.0.1:44883, cookie in its data dir; as root)
+D=/media/ssd/arcadeos/chaind-kotia2
+CHAIND_RPC=127.0.0.1:44883 CHAIND_COOKIE=$D/.cookie exec /state/chaind/bin/chaind cli "$@"

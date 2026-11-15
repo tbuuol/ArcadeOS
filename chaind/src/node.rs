@@ -40,6 +40,21 @@ struct Sched {
     requeue: VecDeque<Vec<(u32, Hash256)>>,
 }
 
+/// The Kotia staker's state for getstakinginfo.
+#[derive(Default, Clone)]
+pub struct StakeState {
+    /// a staker runs (any mode)
+    pub enabled: bool,
+    /// it would send a block now (live mode, synced, no stop file, mature coins)
+    pub staking: bool,
+    /// "dry", "check" or "live"
+    pub mode: &'static str,
+    /// sum of the mature coins' values (satoshi)
+    pub weight: u64,
+    /// blocks it staked that are on the chain now: (time, reward in satoshi), the last 48 h
+    pub stakes: Vec<(u32, u64)>,
+}
+
 pub struct Shared {
     pub store: &'static Store,
     pub params: &'static ChainParams,
@@ -66,6 +81,8 @@ pub struct Shared {
     pub import: Option<crate::store::Import>,
     /// heights the last peers told at connecting (their version message): how far the network is
     peer_heights: Mutex<VecDeque<u32>>,
+    /// Kotia staker: what getstakinginfo reports (set by stake.rs)
+    pub stake: Mutex<StakeState>,
 }
 
 impl Shared {
@@ -116,6 +133,7 @@ impl Shared {
             wallet: Mutex::new(None),
             script_bytes: 0.into(),
             peer_heights: Mutex::new(VecDeque::new()),
+            stake: Mutex::new(StakeState::default()),
             import: std::env::var("CHAIND_IMPORT").ok().and_then(|d| crate::store::Import::open(std::path::Path::new(&d)).ok()),
         }
     }
