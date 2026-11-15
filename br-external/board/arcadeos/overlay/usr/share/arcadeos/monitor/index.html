@@ -320,6 +320,8 @@ h1 em { font-style:normal; color:var(--pri); }
 .stk-hist i:last-child { background:var(--acc); box-shadow:0 0 6px rgba(var(--acc-rgb), .7); }
 .stk-foot { display:flex; justify-content:space-between; font-size:.62rem; letter-spacing:.12em; color:var(--muted); text-transform:uppercase; }
 .stk-foot #stakeLast { color:var(--text); }
+.stk-next { font-size:.68rem; letter-spacing:.08em; color:var(--muted); padding-top:.3em; }
+.stk-next b { color:var(--text); font-weight:600; }
 .log-box { flex:1; min-height:130px; display:flex; flex-direction:column; gap:6px; }
 .log { flex:1; min-height:0; overflow:auto; margin:0; padding:0 4px 0 0; list-style:none; font-size:.76rem; line-height:1.45; }
 .log li { padding:.35em 0 .35em .7em; border-left:1px solid var(--edge-soft); margin-bottom:2px; animation:logIn .3s ease-out; }
@@ -598,6 +600,7 @@ for (const x of (new URLSearchParams(location.search).get('x') || '').split(',')
         </div>
         <div class="stk-hist" id="stakeHist" title="Stakes pro Stunde, letzte 24 h"></div>
         <div class="stk-foot"><span>−24 h</span><span id="stakeLast">—</span><span>jetzt</span></div>
+        <div class="stk-next" id="stakeNext" title="Staking ist Zufall: im Mittel kommt der n&auml;chste Stake nach der erwarteten Zeit, egal wie lange der letzte her ist">—</div>
       </div>
       <div class="log-box">
         <div class="sh"><span data-atl="Protokoll" data-oas="Feed">Protokoll</span><span class="code">AUDIT</span></div>
@@ -761,7 +764,12 @@ function buildStake(d) {
   $('#stakeHist').innerHTML = h.map((c, i) => `<i class="${c ? '' : 'z'}" style="height:${c ? Math.max(8, 100 * c / max) : 4}%" title="${24 - i} h zurück: ${c} Stake${c === 1 ? '' : 's'}"></i>`).join('');
   const ago = k.last_t ? Math.max(0, d.t - k.last_t) : null;
   $('#stakeLast').textContent = (ago == null ? 'noch keiner' : ago < 60 ? 'letzter gerade eben' : `letzter vor ${ago < 3600 ? Math.floor(ago / 60) + ' min' : dur(ago)}`) +
-    (k.expected_s ? ` · Ø alle ${Math.round(k.expected_s / 60)} min` : '');
+    '';
+  // naechster Stake: zufaellig (Poisson), im Mittel nach expected_s ab jetzt; zu 80 % binnen ln(5) * expected_s
+  const mins = s => s < 90 ? `${Math.round(s)} s` : `${Math.round(s / 60)} min`;
+  $('#stakeNext').innerHTML = k.staking && k.expected_s
+    ? `nächster Stake: <b>~${mins(k.expected_s)}</b> · zu 80 % binnen <b>${mins(k.expected_s * Math.log(5))}</b>`
+    : k.enabled ? 'nächster Stake: wartet (Sync oder keine reifen Münzen)' : 'nächster Stake: Staking aus';
 }
 function buildSectors(d) {
   const wifiOn = d.net.some(n => n.type === 'wifi' && n.wifi && n.wifi.state !== 'off');
