@@ -520,3 +520,9 @@ mod tests {
         assert_eq!(out_key(&hex::decode(script_of(&k)).unwrap()), Some(k));
     }
 }
+
+/// Eine einzelne Transaktion (roh, ohne Witness), z. B. aus getrawtransaction
+pub fn parse_tx(b: &[u8]) -> Result<Tx<'_>, String> {
+    let mut r = Rd { b, p: 0 };
+    read_tx(&mut r)
+}

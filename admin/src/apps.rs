@@ -21,7 +21,7 @@ pub struct BuiltIn {
 pub const BUILTIN: &[BuiltIn] = &[BuiltIn {
     id: "lwq",
     name: "LiteWorldsQuest",
-    url: "/lwq-beta/",
+    url: "/lwq-beta/client/",
     about: "Das Rollenspiel dieser Arcade (läuft hier auf der Box, nicht eingeschrieben).",
     default_on: true,
 }];

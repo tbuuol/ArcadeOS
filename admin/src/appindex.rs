@@ -28,6 +28,21 @@ const BATCH: u32 = 200;
 const PENDING_MOST: usize = 64 * 1024 * 1024;
 
 
+/// Eine fertige Inschrift: Inhaltstyp, Groesse, sha256, Ersteller, Hoehe, Stuecke (txids, Manifest-Stueck zuerst)
+#[derive(Clone)]
+pub struct Insc {
+    pub ctype: String,
+    pub total: u32,
+    pub sha: [u8; 32],
+    pub creator: String,
+    pub h: u32,
+    pub pieces: Vec<String>,
+}
+
+pub fn inscription(txid: &str) -> Option<Insc> {
+    idx().lock().unwrap().insc.get(txid).cloned()
+}
+
 /// Eine fertige App-Karte
 #[derive(Clone)]
 pub struct Card {
@@ -56,6 +71,8 @@ pub struct Idx {
     /// alle App-Karten, auch ersetzte (die neueste je Ersteller+Name zeigt cards())
     cards: Vec<Card>,
     inscriptions: u64,
+    /// jede fertige Inschrift: txid -> wo ihre Stuecke liegen (fuer /content, content.rs)
+    insc: HashMap<String, Insc>,
 }
 
 fn idx() -> &'static Mutex<Idx> {
@@ -128,7 +145,7 @@ pub fn progress() -> (u32, u64, usize) {
 // ------------------------------------------------------------------ Stuecke zusammensetzen
 
 /// Ein Stueck: ("INSC" 01 01) id(8) countdown(2) clen(2) body
-fn chunk(data: &[u8]) -> Option<([u8; 8], u16, &[u8])> {
+pub fn chunk(data: &[u8]) -> Option<([u8; 8], u16, &[u8])> {
     let p = data.strip_prefix(b"INSC\x01\x01")?;
     let id: [u8; 8] = p.get(..8)?.try_into().ok()?;
     let countdown = u16::from_be_bytes(p.get(8..10)?.try_into().ok()?);
@@ -138,7 +155,7 @@ fn chunk(data: &[u8]) -> Option<([u8; 8], u16, &[u8])> {
 }
 
 /// Manifest: total(4) sha256(32) ctype_len(1) ctype json_len(2) json, danach Inhalt
-fn manifest(raw: &[u8]) -> Option<(u32, [u8; 32], String, String, &[u8])> {
+pub fn manifest(raw: &[u8]) -> Option<(u32, [u8; 32], String, String, &[u8])> {
     let total = u32::from_be_bytes(raw.get(..4)?.try_into().ok()?);
     let sha: [u8; 32] = raw.get(4..36)?.try_into().ok()?;
     let cl = *raw.get(36)? as usize;
@@ -179,6 +196,8 @@ impl Idx {
         let p = self.pending.remove(&key).unwrap();
         self.pending_bytes -= p.bytes;
         self.inscriptions += 1;
+        self.insc.insert(first_txid.clone(), Insc { ctype: ctype.clone(), total: total as u32, sha, creator: from.to_string(), h,
+            pieces: (0..=top).rev().map(|c| p.pieces[&c].1.clone()).collect() });
         if !ctype.to_ascii_lowercase().starts_with("text/html") {
             return;
         }
@@ -199,6 +218,7 @@ impl Idx {
 
     fn rewind(&mut self, cfg: &crate::Cfg, to: u32) -> Result<(), String> {
         self.cards.retain(|c| c.h <= to);
+        self.insc.retain(|_, i| i.h <= to);
         for p in self.pending.values_mut() {
             let gone: Vec<u16> = p.pieces.iter().filter(|(_, x)| x.2 > to).map(|(k, _)| *k).collect();
             for k in gone {
@@ -218,7 +238,9 @@ impl Idx {
         let cards: Vec<Value> = self.cards.iter().map(|c| json!({"txid": c.txid, "creator": c.creator, "h": c.h, "pos": c.pos, "game": c.game})).collect();
         let pending: Vec<Value> = self.pending.iter().map(|((from, id), p)| json!({"from": from, "id": hex::encode(id), "first_h": p.first_h,
             "pieces": p.pieces.iter().map(|(c, (b, t, h, pos))| json!([c, hex::encode(b), t, h, pos])).collect::<Vec<_>>()})).collect();
-        let v = json!({"height": self.height, "hash": shown(&self.hash), "inscriptions": self.inscriptions, "cards": cards, "pending": pending});
+        let insc: serde_json::Map<String, Value> = self.insc.iter().map(|(t, i)| (t.clone(), json!([i.ctype, i.total, hex::encode(i.sha), i.creator, i.h, i.pieces])))
+            .collect();
+        let v = json!({"version": 2, "height": self.height, "hash": shown(&self.hash), "inscriptions": self.inscriptions, "cards": cards, "pending": pending, "insc": insc});
         let tmp = path.with_extension("new");
         if std::fs::write(&tmp, v.to_string()).is_ok() {
             let _ = std::fs::rename(&tmp, path);
@@ -228,6 +250,16 @@ impl Idx {
     fn load(path: &PathBuf) -> Idx {
         let mut i = Idx { height: ACTIVATION as u32 - 1, ..Default::default() };
         let Some(v) = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) else { return i };
+        // aeltere Fassung ohne die Stuecke jeder Inschrift: von vorn lesen
+        if v["version"] != 2 {
+            return i;
+        }
+        for (t, x) in v["insc"].as_object().into_iter().flatten() {
+            let Some(sha) = x[2].as_str().and_then(|s| hex::decode(s).ok()).and_then(|b| <[u8; 32]>::try_from(b).ok()) else { continue };
+            i.insc.insert(t.clone(), Insc { ctype: x[0].as_str().unwrap_or("").into(), total: x[1].as_u64().unwrap_or(0) as u32, sha,
+                creator: x[3].as_str().unwrap_or("").into(), h: x[4].as_u64().unwrap_or(0) as u32,
+                pieces: x[5].as_array().into_iter().flatten().filter_map(|p| p.as_str().map(String::from)).collect() });
+        }
         i.height = v["height"].as_u64().unwrap_or(i.height as u64) as u32;
         i.hash = internal(v["hash"].as_str().unwrap_or("")).unwrap_or([0; 32]);
         i.inscriptions = v["inscriptions"].as_u64().unwrap_or(0);
