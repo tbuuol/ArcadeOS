@@ -84,6 +84,11 @@ struct St {
     linked: bool,
     served_total: u64,
     refused_total: u64,
+    /// wer den Mempool-Strom einer geteilten Chain bestellt hat (sub): net -> Arcades
+    subs: HashMap<String, std::collections::HashSet<String>>,
+    pushed_total: u64,
+    /// wohin diese Arcade ihren Anteil als Teiler gezahlt bekommt (chains.json "payto", geprueft): net -> Adresse
+    payto: BTreeMap<String, String>,
 }
 
 fn st() -> &'static Mutex<St> {
@@ -114,6 +119,7 @@ pub fn load(app: &App) {
     let v: Value = std::fs::read_to_string(settings_path(app)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(json!({}));
     let mut s = st().lock().unwrap();
     s.share = CHAINS.iter().map(|c| (c.net.to_string(), v["share"][c.net].as_bool() == Some(true))).collect();
+    s.payto = CHAINS.iter().filter_map(|c| v["payto"][c.net].as_str().filter(|a| crate::fees::valid_address(c.net, a)).map(|a| (c.net.to_string(), a.to_string()))).collect();
     drop(s);
     crate::borrow::set_settings(crate::borrow::settings_from(&v));
 }
@@ -123,7 +129,7 @@ pub fn shared_settings() -> BTreeMap<String, bool> {
 }
 
 /// Neue Freigaben (nur bekannte Chains), gespeichert; das Angebot folgt beim naechsten Blick (hoechstens OFFER_EVERY)
-pub fn set_settings(app: &App, share: &Map<String, Value>, borrow: &Map<String, Value>) -> Result<(), String> {
+pub fn set_settings(app: &App, share: &Map<String, Value>, borrow: &Map<String, Value>, payto: &Map<String, Value>) -> Result<(), String> {
     let path = settings_path(app);
     let mut v: Value = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(json!({}));
     if !v.is_object() {
@@ -139,6 +145,18 @@ pub fn set_settings(app: &App, share: &Map<String, Value>, borrow: &Map<String, 
         b.insert(l.net.into(), json!(borrow.get(l.net).and_then(Value::as_bool).unwrap_or(false)));
     }
     v["borrow"] = Value::Object(b);
+    // Zahladressen nur gueltige der jeweiligen Chain; "" oder fehlend = keine
+    let mut pt = Map::new();
+    for c in CHAINS {
+        match payto.get(c.net).and_then(Value::as_str).filter(|a| !a.is_empty()) {
+            Some(a) if crate::fees::valid_address(c.net, a) => {
+                pt.insert(c.net.into(), json!(a));
+            }
+            Some(a) => return Err(format!("{a} ist keine {}-Adresse", c.name)),
+            None => {}
+        }
+    }
+    v["payto"] = Value::Object(pt);
     let tmp = path.with_extension("new");
     std::fs::write(&tmp, serde_json::to_string_pretty(&v).unwrap()).map_err(|e| e.to_string())?;
     {
@@ -176,9 +194,11 @@ pub fn status() -> Value {
     let borrowers: Vec<Value> = s.peers.iter().filter(|(_, p)| p.served > 0)
         .map(|(id, p)| json!({"peer": &id[..16.min(id.len())], "answers": p.served})).collect();
     let linked = s.linked;
-    let (answers, refused) = (s.served_total, s.refused_total);
+    let (answers, refused, pushed) = (s.served_total, s.refused_total, s.pushed_total);
+    let subscribers: BTreeMap<String, usize> = s.subs.iter().map(|(n, p)| (n.clone(), p.len())).collect();
     drop(s);
     json!({"chains": chains, "mesh": linked, "answers": answers, "refused": refused, "borrowers": borrowers,
+           "mempool_pushed": pushed, "mempool_subscribers": subscribers,
            "borrow": crate::borrow::status()})
 }
 
@@ -275,6 +295,8 @@ fn node_tip(chain: &Chain) -> (Value, Option<Value>) {
 pub fn run(app: Arc<App>) {
     load(&app);
     std::thread::spawn(offer_loop);
+    std::thread::spawn(pool_loop);
+    std::thread::spawn(crate::borrow::tips_loop);
     loop {
         let path = std::env::var("ADMIN_MESHD_EXT").unwrap_or_else(|_| "/run/meshd/ext.sock".into());
         match UnixStream::connect(&path) {
@@ -320,6 +342,9 @@ fn session(s: &mut UnixStream) -> std::io::Result<()> {
                     let mut g = st().lock().unwrap();
                     g.peers.remove(peer);
                     g.asked.retain(|k, _| k.0 != peer);
+                    for s in g.subs.values_mut() {
+                        s.remove(peer);
+                    }
                     drop(g);
                     crate::borrow::on_down(peer);
                 }
@@ -338,9 +363,12 @@ fn session(s: &mut UnixStream) -> std::io::Result<()> {
                 match f["op"].as_str() {
                     Some("q") => on_request(peer, f, blob),
                     // Leihen (borrow.rs): Angebote merken, Antworten auf eigene Fragen zuordnen
+                    Some("sub") => on_sub(peer, &f["nets"]),
+                    Some("tx") => crate::borrow::on_pushed(peer, f, &blob),
+                    Some("gone") => crate::borrow::on_gone(peer, f),
                     Some("offer") => crate::borrow::on_offer(peer, &f["nets"]),
                     Some("a") => crate::borrow::on_answer(peer, f, &blob),
-                    // sub/tx/gone (Mempool-Strom): noch nicht
+                    // a: Antworten auf eigene Fragen (oben); der Rest wird ignoriert
                     _ => {}
                 }
             }
@@ -464,6 +492,7 @@ fn offer_loop() {
     let mut said_hour = now();
     loop {
         let share = shared_settings();
+        let payto = st().lock().unwrap().payto.clone();
         let mut offer = Map::new();
         let mut info = BTreeMap::new();
         for c in CHAINS {
@@ -471,6 +500,11 @@ fn offer_loop() {
             info.insert(c.net.to_string(), i);
             if share.get(c.net) == Some(&true) {
                 if let Some(t) = tip {
+                    let mut t = t;
+                    // wohin uns ein Leiher seinen Anteil zahlt (wie die Arcades: "p")
+                    if let Some(a) = payto.get(c.net) {
+                        t["p"] = json!(a);
+                    }
                     offer.insert(c.net.to_string(), t);
                 }
             }
@@ -481,6 +515,8 @@ fn offer_loop() {
             let changed = g.offered != offer;
             if changed {
                 g.offered = offer.clone();
+                // wer eine Chain nicht mehr angeboten bekommt, bekommt auch ihren Mempool nicht mehr
+                g.subs.retain(|net, _| offer.contains_key(net));
             }
             (changed, g.peers.keys().cloned().collect::<Vec<_>>())
         };
@@ -503,4 +539,89 @@ fn offer_loop() {
         let (mut woke, _) = c.wait_timeout(woke, OFFER_EVERY).unwrap();
         *woke = false;
     }
+}
+
+/// Eine Arcade bestellt den Mempool-Strom von Chains, die wir anbieten (nur diese)
+fn on_sub(peer: &str, nets: &Value) {
+    let mut g = st().lock().unwrap();
+    for n in nets.as_array().into_iter().flatten().filter_map(Value::as_str) {
+        if g.offered.contains_key(n) {
+            g.subs.entry(n.to_string()).or_default().insert(peer.to_string());
+        }
+    }
+}
+
+const POOL_EVERY: Duration = Duration::from_secs(2);
+
+/// Alle POOL_EVERY: der Mempool jeder geteilten Chain mit Bestellern; was neu ist, geht roh an jeden Besteller
+/// (tx), was verschwunden ist, als gone. Wie die Arcades: Transaktionen ueber CHUNK nicht (die holt ein Leiher bei
+/// Bedarf), hoechstens 1000 Kennungen je gone-Rahmen.
+fn pool_loop() {
+    let mut seen: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
+    loop {
+        std::thread::sleep(POOL_EVERY);
+        let subs: Vec<(String, Vec<String>)> = {
+            let g = st().lock().unwrap();
+            g.subs.iter().filter(|(_, s)| !s.is_empty()).map(|(n, s)| (n.clone(), s.iter().cloned().collect())).collect()
+        };
+        seen.retain(|n, _| subs.iter().any(|(m, _)| m == n));
+        for (net, peers) in subs {
+            let Some(chain) = CHAINS.iter().find(|c| c.net == net) else { continue };
+            let Ok(a) = core_ask(chain, &[("getrawmempool".into(), json!([]))]) else { continue };
+            let pool: std::collections::HashSet<String> = a[0]["r"].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(String::from)).collect();
+            let (fresh, left): (Vec<String>, Vec<String>) = match seen.get(&net) {
+                Some(k) => (pool.difference(k).cloned().collect(), k.difference(&pool).cloned().collect()),
+                None => (pool.iter().cloned().collect(), Vec::new()),
+            };
+            seen.insert(net.clone(), pool);
+            for ids in left.chunks(1000) {
+                for p in &peers {
+                    send(p, json!({"t": "cr", "op": "gone", "net": net, "ids": ids}), b"");
+                }
+            }
+            for batch in fresh.chunks(100) {
+                let calls: Vec<(String, Value)> = batch.iter().map(|t| ("getrawtransaction".to_string(), json!([t, 0]))).collect();
+                let Ok(raws) = core_ask(chain, &calls) else { break };
+                for r in raws {
+                    let Some(data) = r["r"].as_str().and_then(|s| hex::decode(s).ok()) else { continue };
+                    if data.is_empty() || data.len() > CHUNK {
+                        continue;
+                    }
+                    for p in &peers {
+                        rate_wait(p, data.len());
+                        send(p, json!({"t": "cr", "op": "tx", "net": net}), &data);
+                    }
+                    st().lock().unwrap().pushed_total += 1;
+                }
+            }
+        }
+    }
+}
+
+/// Der Knoten, mit hoechstens CORE_AT_ONCE fremden Anfragen zugleich
+fn core_ask(chain: &Chain, calls: &[(String, Value)]) -> Result<Vec<Value>, String> {
+    let (m, c) = core_slots();
+    {
+        let mut n = m.lock().unwrap();
+        while *n >= CORE_AT_ONCE {
+            n = c.wait(n).unwrap();
+        }
+        *n += 1;
+    }
+    let r = ask_node(chain, calls);
+    *m.lock().unwrap() -= 1;
+    c.notify_one();
+    r
+}
+
+/// Ratenbegrenzung je Arcade (RATE Bytes/s), fuer Antworten und Mempool-Strom zusammen
+fn rate_wait(peer: &str, len: usize) {
+    let wait = {
+        let mut g = st().lock().unwrap();
+        let p = g.peers.entry(peer.to_string()).or_default();
+        let start = p.free_at.filter(|t| *t > Instant::now()).unwrap_or_else(Instant::now);
+        p.free_at = Some(start + Duration::from_secs_f64(len as f64 / RATE));
+        start.saturating_duration_since(Instant::now())
+    };
+    std::thread::sleep(wait);
 }

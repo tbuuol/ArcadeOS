@@ -73,7 +73,26 @@ struct St {
     next_id: i64,
     asked: u64,
     refused: u64,
+    /// Mempool, wie die Teiler ihn schicken (tx/gone): net -> Pool
+    pool: HashMap<String, Pool>,
+    pushed_bad: u64,
+    /// gepruefte Koepfe: Hash -> bits (fuer die Schwierigkeits-Regel beim naechsten Block)
+    headers: HashMap<Hash256, u32>,
+    /// Vergleich der Teiler je Chain (tips_loop)
+    tips: BTreeMap<String, Value>,
 }
+
+/// Transaktionen, die Teiler gepusht haben: geprueft (sie parsen; die Kennung ist ihr Hash), je Teiler gemerkt,
+/// hoechstens POOL_KEEP je Chain (die aeltesten gehen zuerst)
+#[derive(Default)]
+struct Pool {
+    order: std::collections::VecDeque<Hash256>,
+    txs: HashMap<Hash256, (Vec<u8>, std::collections::HashSet<String>)>,
+}
+
+const POOL_KEEP: usize = 20_000;
+const HEADERS_KEEP: usize = 20_000;
+const TIPS_EVERY: Duration = Duration::from_secs(120);
 
 fn st() -> &'static Mutex<St> {
     static S: OnceLock<Mutex<St>> = OnceLock::new();
@@ -81,7 +100,88 @@ fn st() -> &'static Mutex<St> {
 }
 
 pub fn set_settings(borrow: BTreeMap<String, bool>) {
-    st().lock().unwrap().borrow = borrow;
+    let peers: Vec<String> = {
+        let mut g = st().lock().unwrap();
+        g.borrow = borrow;
+        // was nicht (mehr) geliehen wird, braucht keinen Mempool und keinen Vergleich
+        let on: Vec<String> = g.borrow.iter().filter(|(_, v)| **v).map(|(k, _)| k.clone()).collect();
+        g.pool.retain(|n, _| on.contains(n));
+        g.tips.retain(|n, _| on.contains(n));
+        g.offers.keys().cloned().collect()
+    };
+    for p in peers {
+        subscribe(&p);
+    }
+}
+
+/// Bei einem Teiler den Mempool-Strom der Chains bestellen, die wir leihen und die er anbietet
+fn subscribe(peer: &str) {
+    let nets: Vec<String> = {
+        let g = st().lock().unwrap();
+        let Some(o) = g.offers.get(peer) else { return };
+        g.borrow.iter().filter(|(n, on)| **on && o.contains_key(*n)).map(|(n, _)| n.clone()).collect()
+    };
+    if !nets.is_empty() {
+        crate::share::send(peer, json!({"t": "cr", "op": "sub", "nets": nets}), b"");
+    }
+}
+
+/// Ein Teiler hat eine neue Mempool-Transaktion geschickt: nur fuer geliehene Chains, nur wenn sie parst
+pub fn on_pushed(peer: &str, f: &Value, blob: &[u8]) {
+    let net = f["net"].as_str().unwrap_or("");
+    let Some(l) = lendable().iter().find(|l| l.net == net) else { return };
+    let mut g = st().lock().unwrap();
+    if g.borrow.get(net) != Some(&true) {
+        return;
+    }
+    let Ok(t) = Tx::parse_with(blob, &l.params.format) else {
+        g.pushed_bad += 1;
+        return;
+    };
+    let pool = g.pool.entry(net.to_string()).or_default();
+    match pool.txs.get_mut(&t.txid) {
+        Some(e) => {
+            e.1.insert(peer.to_string());
+        }
+        None => {
+            pool.txs.insert(t.txid, (blob.to_vec(), [peer.to_string()].into()));
+            pool.order.push_back(t.txid);
+            while pool.order.len() > POOL_KEEP {
+                if let Some(old) = pool.order.pop_front() {
+                    pool.txs.remove(&old);
+                }
+            }
+        }
+    }
+}
+
+/// Ein Teiler sagt, dass Transaktionen seinen Mempool verlassen haben (in einem Block oder verworfen)
+pub fn on_gone(peer: &str, f: &Value) {
+    let net = f["net"].as_str().unwrap_or("");
+    let mut g = st().lock().unwrap();
+    let Some(pool) = g.pool.get_mut(net) else { return };
+    for id in f["ids"].as_array().into_iter().flatten().take(5000).filter_map(Value::as_str) {
+        let Ok(h) = Hash256::from_hex(id) else { continue };
+        let empty = pool.txs.get_mut(&h).map(|e| {
+            e.1.remove(peer);
+            e.1.is_empty()
+        });
+        if empty == Some(true) {
+            pool.txs.remove(&h);
+            pool.order.retain(|x| *x != h);
+        }
+    }
+}
+
+/// Der gepushte Mempool einer geliehenen Chain: Kennungen (neueste zuletzt)
+pub fn pool(net: &str) -> Vec<String> {
+    let g = st().lock().unwrap();
+    g.pool.get(net).map(|p| p.order.iter().map(|h| h.to_hex()).collect()).unwrap_or_default()
+}
+
+/// Eine gepushte Transaktion, roh (schon geprueft)
+pub fn pool_tx(net: &str, txid: &Hash256) -> Option<Vec<u8>> {
+    st().lock().unwrap().pool.get(net)?.txs.get(txid).map(|e| e.0.clone())
 }
 
 pub fn settings_from(v: &Value) -> BTreeMap<String, bool> {
@@ -91,15 +191,20 @@ pub fn settings_from(v: &Value) -> BTreeMap<String, bool> {
 // ------------------------------------------------------------------ was meshd meldet (aus share.rs)
 
 pub fn on_offer(peer: &str, nets: &Value) {
-    let mut g = st().lock().unwrap();
-    match nets.as_object() {
-        Some(m) if !m.is_empty() => {
-            g.offers.insert(peer.to_string(), m.iter().filter(|(_, v)| v.is_object()).map(|(k, v)| (k.clone(), v.clone())).collect());
-        }
-        _ => {
-            g.offers.remove(peer);
+    {
+        let mut g = st().lock().unwrap();
+        match nets.as_object() {
+            Some(m) if !m.is_empty() => {
+                g.offers.insert(peer.to_string(), m.iter().filter(|(_, v)| v.is_object()).map(|(k, v)| (k.clone(), v.clone())).collect());
+            }
+            _ => {
+                g.offers.remove(peer);
+                return;
+            }
         }
     }
+    // wie die Arcades: bei jedem Angebot (wieder) bestellen, was wir leihen (nichts, solange Leihen aus ist)
+    subscribe(peer);
 }
 
 pub fn on_answer(peer: &str, f: &Value, blob: &[u8]) {
@@ -286,6 +391,18 @@ pub fn call(net: &str, calls: &[(String, Value)]) -> Result<(String, Vec<Value>)
     if st().lock().unwrap().borrow.get(net) != Some(&true) {
         return Err(format!("borrowing {} is off (Admin: Chains)", l.name));
     }
+    // eine schon gepushte (gepruefte) Transaktion roh: ohne Frage an einen Teiler
+    if let [(m, p)] = calls {
+        if m == "getrawtransaction" && allowed(m, p).is_ok() {
+            if let Some(raw) = p.get(0).and_then(Value::as_str).and_then(|s| Hash256::from_hex(s).ok()).and_then(|h| pool_tx(net, &h)) {
+                return Ok(("local".repeat(4), vec![json!({"r": hex::encode(raw)})]));
+            }
+        }
+    }
+    // der gepushte Mempool (nur hier, von den Teilern gesammelt): arcade_pool
+    if calls.len() == 1 && calls[0].0 == "arcade_pool" {
+        return Ok(("local".repeat(4), vec![json!({"r": pool(net)})]));
+    }
     for (m, p) in calls {
         allowed(m, p)?;
     }
@@ -293,7 +410,14 @@ pub fn call(net: &str, calls: &[(String, Value)]) -> Result<(String, Vec<Value>)
     for peer in sharers(net) {
         match ask_once(&peer, net, calls) {
             Ok(answers) => {
-                let bad = calls.iter().zip(&answers).find_map(|((m, p), a)| check(l.params, m, p, a).err().map(|e| format!("{m}: {e}")));
+                let mut bad = calls.iter().zip(&answers).find_map(|((m, p), a)| check(l.params, m, p, a).err().map(|e| format!("{m}: {e}")));
+                // Bloecke und Koepfe: die Schwierigkeit darf zum Block darunter nicht mehr als 4x fallen
+                if bad.is_none() {
+                    bad = calls.iter().zip(&answers).find_map(|((m, _), a)| {
+                        let raw = a["r"].as_str().filter(|_| m == "getblock" || m == "getblockheader")?;
+                        link_ok(&peer, net, l.params, raw).err().map(|e| format!("{m}: {e}"))
+                    });
+                }
                 if let Some(e) = bad {
                     fail(&peer, LIED);
                     st().lock().unwrap().refused += 1;
@@ -315,20 +439,104 @@ pub fn call(net: &str, calls: &[(String, Value)]) -> Result<(String, Vec<Value>)
     Err(if tried.is_empty() { format!("no linked arcade shares {}", l.name) } else { format!("no arcade sharing {} answered ({})", l.name, tried.join("; ")) })
 }
 
+/// Die Schwierigkeits-Regel der Arcades (MAX_EASIER, arcade-chain too_easy: mit den Ausnahmen fuer Testnetze und
+/// Chains, deren Arbeit nicht geprueft wird): ein Block (oder Kopf) gegen den Kopf darunter. Den Kopf darunter
+/// fragt sie beim selben Teiler (roh, geprueft), wenn er nicht schon bekannt ist.
+fn link_ok(peer: &str, net: &str, p: &'static ChainParams, raw_hex: &str) -> Result<(), String> {
+    let raw = hex::decode(raw_hex).map_err(|_| "not hex")?;
+    let h80: [u8; 80] = raw.get(..80).and_then(|x| x.try_into().ok()).ok_or("too short")?;
+    let h = Header::parse(&h80);
+    let id = p.block_id(&h);
+    let remember = |id: Hash256, bits: u32| {
+        let mut g = st().lock().unwrap();
+        if g.headers.len() >= HEADERS_KEEP {
+            g.headers.clear();
+        }
+        g.headers.insert(id, bits);
+    };
+    if !p.max_easier || h.prev == Hash256::ZERO {
+        remember(id, h.bits);
+        return Ok(());
+    }
+    let known = st().lock().unwrap().headers.get(&h.prev).copied();
+    let parent_bits = match known {
+        Some(b) => b,
+        None => {
+            let ask = json!([h.prev.to_hex(), false]);
+            let a = ask_once(peer, net, &[("getblockheader".into(), ask.clone())])?;
+            check(p, "getblockheader", &ask, &a[0])?;
+            let r = a[0]["r"].as_str().ok_or("no header below")?;
+            let pr = hex::decode(r).map_err(|_| "not hex")?;
+            let ph: [u8; 80] = pr.get(..80).and_then(|x| x.try_into().ok()).ok_or("too short")?;
+            let b = Header::parse(&ph).bits;
+            remember(h.prev, b);
+            b
+        }
+    };
+    if arcade_chain::params::too_easy(p, h.bits, parent_bits) {
+        return Err("its difficulty fell more than 4x in one block".into());
+    }
+    remember(id, h.bits);
+    Ok(())
+}
+
+/// Alle TIPS_EVERY, nur fuer geliehene Chains mit mindestens zwei Teilern: alle nach dem Block an derselben Hoehe
+/// fragen (etwas unter dem niedrigsten Angebot, damit alle ihn haben) und vergleichen. Abweichungen stehen in der
+/// Admin-Oberflaeche und im Protokoll; wer recht hat, laesst sich daraus nicht sagen.
+pub fn tips_loop() {
+    loop {
+        std::thread::sleep(TIPS_EVERY);
+        let nets: Vec<String> = st().lock().unwrap().borrow.iter().filter(|(_, v)| **v).map(|(k, _)| k.clone()).collect();
+        for net in nets {
+            let peers = sharers(&net);
+            if peers.len() < 2 {
+                st().lock().unwrap().tips.remove(&net);
+                continue;
+            }
+            let low = {
+                let g = st().lock().unwrap();
+                peers.iter().filter_map(|p| g.offers.get(p)?.get(&net)?["h"].as_u64()).min().unwrap_or(0)
+            };
+            if low < 10 {
+                continue;
+            }
+            let height = low - 3;
+            let mut by: BTreeMap<String, String> = BTreeMap::new();
+            for p in peers.iter().take(6) {
+                if let Ok(a) = ask_once(p, &net, &[("getblockhash".into(), json!([height]))]) {
+                    if let Some(h) = a[0]["r"].as_str() {
+                        by.insert(p[..16].to_string(), h.to_string());
+                    }
+                }
+            }
+            let distinct: std::collections::BTreeSet<&String> = by.values().collect();
+            let agree = distinct.len() <= 1;
+            if !agree {
+                crate::log(&format!("leihen: Teiler von {net} sind sich bei Hoehe {height} nicht einig: {by:?}"));
+            }
+            st().lock().unwrap().tips.insert(net.clone(), json!({"height": height, "agree": agree, "hashes": by, "at": crate::now()}));
+        }
+    }
+}
+
 /// Fuer die Admin-Oberflaeche
 pub fn status() -> Value {
     let order: Vec<(&str, Vec<String>)> = lendable().iter().map(|l| (l.net, sharers(l.net))).collect();
+    let payees: Vec<Option<(String, String)>> = lendable().iter().map(|l| payee(l.net)).collect();
     let g = st().lock().unwrap();
     let chains: Vec<Value> = lendable()
         .iter()
         .zip(order)
-        .map(|(l, (_, peers))| {
+        .zip(payees)
+        .map(|((l, (_, peers)), pay)| {
             let list: Vec<Value> = peers.iter().take(8).map(|p| json!({"peer": &p[..16], "height": g.offers[p][l.net]["h"],
                 "rtt_ms": g.rtt.get(p), "failures": g.failures.get(p).copied().unwrap_or(0)})).collect();
-            json!({"net": l.net, "name": l.name, "borrow": g.borrow.get(l.net).copied().unwrap_or(false), "sharers": list})
+            json!({"net": l.net, "name": l.name, "borrow": g.borrow.get(l.net).copied().unwrap_or(false), "sharers": list,
+                   "mempool": g.pool.get(l.net).map_or(0, |p| p.txs.len()), "sharers_agree": g.tips.get(l.net),
+                   "sharer_paid_at": pay.map(|(p, a)| json!({"peer": &p[..16], "address": a}))})
         })
         .collect();
-    json!({"chains": chains, "asked": g.asked, "wrong_answers": g.refused})
+    json!({"chains": chains, "asked": g.asked, "wrong_answers": g.refused, "pushed_unreadable": g.pushed_bad})
 }
 
 #[cfg(test)]
@@ -399,4 +607,50 @@ mod kotia_sweep {
             assert_eq!(check(p, "getblock", &json!([h, 0]), &json!({"r": raw})), Ok(()), "{h}");
         }
     }
+}
+
+#[cfg(test)]
+mod difficulty {
+    use super::*;
+
+    #[test]
+    fn four_fold_drop_is_refused() {
+        let main = lendable().iter().find(|l| l.net == "main").unwrap().params;
+        let test = lendable().iter().find(|l| l.net == "test").unwrap().params;
+        let kot = lendable().iter().find(|l| l.net == "kot").unwrap().params;
+        // 256x easier than the block under it: refused on Pepecoin mainnet
+        assert!(arcade_chain::params::too_easy(main, 0x1c0404cb, 0x1b0404cb));
+        // 2x easier: fine
+        assert!(!arcade_chain::params::too_easy(main, 0x1b0808cb, 0x1b0404cb));
+        // a test network may drop to its easiest difficulty after a gap
+        assert!(!arcade_chain::params::too_easy(test, test.pow_limit_bits, 0x1b0404cb));
+        // Kotia (staked, its work is not checked): the rule is off for it
+        assert!(!kot.max_easier);
+    }
+
+    #[test]
+    fn link_check_uses_the_header_below() {
+        // on Pepecoin mainnet (on test networks the arcades' rule lets every block down to the easiest difficulty pass)
+        let p = lendable().iter().find(|l| l.net == "main").unwrap().params;
+        let raw = std::fs::read_to_string(format!("{}/src/testdata/peptest-1570000.hex", env!("CARGO_MANIFEST_DIR"))).unwrap();
+        let raw = raw.trim();
+        let h = Header::parse(&hex::decode(raw).unwrap()[..80].try_into().unwrap());
+        // the block under it as hard as Pepecoin mainnet: this block would be far more than 4x easier
+        st().lock().unwrap().headers.insert(h.prev, 0x1b0404cb);
+        let r = link_ok("x".repeat(64).as_str(), "main", p, raw);
+        assert!(r.is_err(), "more than 4x easier: refused");
+        st().lock().unwrap().headers.insert(h.prev, h.bits);
+        assert!(link_ok("x".repeat(64).as_str(), "main", p, raw).is_ok());
+    }
+}
+
+/// Wohin der Anteil fuer den Teiler einer geliehenen Chain geht (fees::split_with_sharer): der Teiler, der zuerst
+/// gefragt wird und eine fuer diese Chain gueltige Adresse nennt (oder der naechste). None: keiner nennt eine.
+pub fn payee(net: &str) -> Option<(String, String)> {
+    let order = sharers(net);
+    let g = st().lock().unwrap();
+    order.into_iter().find_map(|p| {
+        let a = g.offers.get(&p)?.get(net)?["p"].as_str()?.to_string();
+        crate::fees::valid_address(net, &a).then_some((p, a))
+    })
 }

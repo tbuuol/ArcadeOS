@@ -26,6 +26,7 @@ mod utxo;
 mod msgs;
 mod share;
 mod borrow;
+mod fees;
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use ripemd::Ripemd160;
 use serde_json::{json, Value};
@@ -720,13 +721,14 @@ fn owner(app: &App, b: &Value) -> Resp {
 }
 
 /// Was der Betreiber fuer eine Aenderung der Freigaben signiert:
-/// "arcadeos-chains\n<Knoten>\n<Zufallszahl>\nshare <net>=1|0 ...\nborrow <net>=1|0 ..." (Reihenfolge:
+/// "arcadeos-chains\n<Knoten>\n<Zufallszahl>\nshare <net>=1|0 ...\nborrow <net>=1|0 ...\npayto <net>=<Adresse>|- ..." (Reihenfolge:
 /// share::CHAINS, borrow::lendable(); fehlende = 0).
-fn chains_message(node: &str, nonce: &str, share: &serde_json::Map<String, Value>, borrow: &serde_json::Map<String, Value>) -> String {
+fn chains_message(node: &str, nonce: &str, share: &serde_json::Map<String, Value>, borrow: &serde_json::Map<String, Value>, payto: &serde_json::Map<String, Value>) -> String {
     let on = |m: &serde_json::Map<String, Value>, k: &str| if m.get(k).and_then(Value::as_bool) == Some(true) { 1 } else { 0 };
     let s: Vec<String> = share::CHAINS.iter().map(|c| format!("{}={}", c.net, on(share, c.net))).collect();
     let b: Vec<String> = borrow::lendable().iter().map(|l| format!("{}={}", l.net, on(borrow, l.net))).collect();
-    format!("arcadeos-chains\n{node}\n{nonce}\nshare {}\nborrow {}", s.join(" "), b.join(" "))
+    let p: Vec<String> = share::CHAINS.iter().map(|c| format!("{}={}", c.net, payto.get(c.net).and_then(Value::as_str).filter(|a| !a.is_empty()).unwrap_or("-"))).collect();
+    format!("arcadeos-chains\n{node}\n{nonce}\nshare {}\nborrow {}\npayto {}", s.join(" "), b.join(" "), p.join(" "))
 }
 
 /// Lokaler Zugang zu geliehenen Chains (nur 127.0.0.1, fuer Dienste dieser Box und Tests): POST /<net> mit einem
@@ -771,13 +773,14 @@ fn set_chains(app: &App, b: &Value) -> Resp {
     let Some(node) = app.node_id() else { return err(503, "meshd laeuft nicht") };
     let empty = serde_json::Map::new();
     let borrow = b["borrow"].as_object().unwrap_or(&empty);
-    if !verify_message(sig, &chains_message(&node, nonce, share, borrow), &addr) {
+    let payto = b["payto"].as_object().unwrap_or(&empty);
+    if !verify_message(sig, &chains_message(&node, nonce, share, borrow, payto), &addr) {
         return err(403, "Signatur passt nicht zum Betreiber-Konto");
     }
-    if let Err(e) = share::set_settings(app, share, borrow) {
+    if let Err(e) = share::set_settings(app, share, borrow, payto) {
         return err(500, &e);
     }
-    log(&format!("Freigaben geaendert: {}", chains_message("-", "-", share, borrow).lines().skip(3).collect::<Vec<_>>().join(" / ")));
+    log(&format!("Freigaben geaendert: {}", chains_message("-", "-", share, borrow, payto).lines().skip(3).collect::<Vec<_>>().join(" / ")));
     (200, share::status())
 }
 
