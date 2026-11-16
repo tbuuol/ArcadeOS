@@ -1,0 +1,20 @@
+#!/bin/sh
+# Kotia auf ArcadeOS seit 2026-11-16: EIN Programm, chaind (Rust) statt Kotia Core. Es prueft die Kette, stakt
+# (Modus in /state/chaind/kotia-stake.mode: live = senden, check = nur pruefen, sonst kein Staking), fuehrt die
+# Wallet (kotia_wallet.rs, Schluessel /state/chaind/kotia-stake.keys) und ist Seed-Knoten auf Port 46174
+# (listen.rs: eingehende Knoten bekommen nur Blockdaten, nichts wird von ihnen angenommen).
+# Daten (Format 2): /state/chaind-data/kotia. RPC nur 127.0.0.1:44883 mit Cookie (kotia-cli).
+# Staking sofort anhalten ohne Neustart: touch /state/chaind-data/kotia/stake-off
+# Als Dienst: /etc/init.d/S65kotia (node-supervise startet dieses Skript; Prozess heisst "kotiad").
+# Zurueck zu Kotia Core (+ altem Staker daneben): /state/kotia/back-to-core
+# (kotiads Daten und wallet.dat liegen unveraendert unter /media/ssd/arcadeos/kotia).
+D=/state/chaind-data/kotia
+[ -d "$D/chain.lmdb" ] || { echo "kotia: Daten fehlen unter $D" >&2; exit 3; }
+export CHAIND_CHAIN=kotia CHAIND_DIR=$D CHAIND_RPC=127.0.0.1:44883 MALLOC_ARENA_MAX=2 \
+	CHAIND_LISTEN="[::]:46174" CHAIND_KOTIA_WALLET=/state/chaind/kotia-stake.keys
+case "$(cat /state/chaind/kotia-stake.mode 2>/dev/null)" in
+	live) export CHAIND_STAKE_KEYS=/state/chaind/kotia-stake.keys CHAIND_STAKE=1 ;;
+	check) export CHAIND_STAKE_KEYS=/state/chaind/kotia-stake.keys ;;
+esac
+R=/usr/lib/arcadeos/runas; [ -x $R ] || R=/state/kotia/runas
+exec $R 1010 1010 /state/chaind/bin/kotiad >> $D/chaind.log 2>&1

@@ -1,0 +1,9 @@
+#!/bin/sh
+# Zurueck zum Stand vor 2026-11-16: Kotia Core (kotiad) + chaind-Staker daneben (alte Daten /media/ssd/arcadeos/chaind-kotia2).
+set -e
+/etc/init.d/S65kotia stop
+cp -a /state/kotia/kotiad.core /state/kotia/kotiad
+cp -a /state/kotia/kotia-cli.core /state/kotia/kotia-cli
+cp -a /state/chaind/kotia-chaind-cli.before-switch /state/chaind/kotia-chaind-cli
+/etc/init.d/S65kotia start
+echo "zurueck auf Kotia Core"
