@@ -4,6 +4,7 @@
 //   storage  arcade.storage: angemeldet auf der Box (je Konto und Seite), als Gast nur in diesem Browser
 //   app      arcade.app: Zustand (offen)
 //   access   arcade.access: Status; wallet() fragt den angemeldeten Nutzer (Karte), Zustimmung je Konto und App
+//   senden   POST /r/send der App: Karte mit Empfaenger, Betrag/Inschrift, Gebuehr; signiert nur nach dem Ja (hier)
 //   realtime arcade.realtime: Raeume mit Spielern aller Arcades (als Gast), schnelle Spur (WebRTC); ohne Medien
 const $ = (s) => document.querySelector(s);
 const id = new URLSearchParams(location.search).get('id') || '';
@@ -387,6 +388,94 @@ async function walletAsk() {
   try { return await asking; } finally { asking = null; }
 }
 
+// ------------------------------------------------------------------ Senden (POST /r/send der App, sendreq.rs)
+// Die App stellt nur eine Bitte. Dieses Fenster fragt die Box nach offenen Bitten seiner Seite, laesst die
+// UNSIGNIERTE Transaktion bauen und zeigt sie. Nur nach dem Ja entsperrt der Browser den Tresor mit dem Passwort,
+// signiert hier (crypto.js signTx) und die Box sendet genau das. Die Schluessel verlassen den Browser nie.
+let acct = null, sendBusy = false, C = null;
+const pep = (s) => (s / 1e8).toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
+
+async function unlockWith(pw) {
+  if (acct) return acct;
+  C = C || await import('../crypto.js?v=5');
+  const me = await get('/api/me');
+  if (!me.tag) throw new Error('Dieses Konto hat noch keinen @name: bitte auf der Arcade-Seite anmelden.');
+  const w = await get(`/signin/${encodeURIComponent(me.tag)}`);
+  const a = C.fullAccount(await C.arcadeOpen(w.blob, pw));
+  if (a.address !== me.address) throw new Error('Dieser Tresor gehört nicht zu diesem Konto.');
+  acct = a;
+  return acct;
+}
+
+function sendCard(r, offer) {
+  return new Promise((done) => {
+    const name = (appInfo && appInfo.name) || 'Diese App';
+    const tx = offer && offer.tx;
+    const inSum = tx ? tx.inputs.reduce((s, i) => s + i.amount, 0) : 0;
+    const outSum = tx ? tx.outputs.reduce((s, o) => s + o.value, 0) : 0;
+    const own = tx ? tx.outputs.filter((o) => o.script === tx.inputs[0].script).reduce((s, o) => s + o.value, 0) : 0;
+    const fee = inSum - outSum, total = inSum - own;
+    const box = document.createElement('div'); box.className = 'ask';
+    const c = document.createElement('div'); c.className = 'card';
+    const add = (tag, text, cls) => { const e = document.createElement(tag); e.textContent = text; if (cls) e.className = cls; c.append(e); return e; };
+    add('h2', `${name} möchte ${r.kind === 'inscription' ? 'eine Inschrift' : 'Coins'} senden`);
+    add('p', `An: ${r.to_tag ? `@${r.to_tag} (${r.to_address})` : r.to_address}`);
+    add('p', r.kind === 'inscription' ? `Inschrift: ${r.name || r.inscription}` : `Betrag: ${pep(r.sats)} PEP (Testnet)`);
+    if (r.label || r.note) add('p', `Die App sagt: ${[r.label, r.note].filter(Boolean).join(' – ')}`);
+    if (tx) add('p', `Gebühr: ${pep(fee)} PEP · zusammen ${pep(total)} PEP von deinem Guthaben`);
+    const why = add('p', offer ? '' : 'Die Box konnte die Transaktion nicht bauen.');
+    let pw = null;
+    if (offer && !acct) {
+      pw = document.createElement('input');
+      pw.type = 'password'; pw.placeholder = 'Dein Passwort zum Signieren'; pw.autocomplete = 'current-password';
+      pw.className = 'pw';
+      c.append(pw);
+    }
+    const row = document.createElement('div'); row.className = 'row';
+    const bn = document.createElement('button'); bn.type = 'button'; bn.textContent = 'Nein';
+    const by = document.createElement('button'); by.type = 'button'; by.className = 'yes'; by.textContent = 'Ja, senden';
+    row.append(bn); if (offer) row.append(by);
+    c.append(row); box.append(c);
+    const end = (v) => { box.remove(); done(v); };
+    bn.onclick = () => end(false);
+    const go = async () => {
+      by.disabled = bn.disabled = true;
+      try {
+        why.textContent = 'Signiere …';
+        const a = await unlockWith(pw ? pw.value : '');
+        const hex = C.signTx(offer.tx, a);
+        why.textContent = 'Sende …';
+        await post(`/api/sendreqs/${r.id}/send`, { offer: offer.offer, hex });
+        end(true);
+      } catch (e) {
+        why.textContent = String(e.message || e);
+        by.disabled = bn.disabled = false;
+      }
+    };
+    by.onclick = go;
+    if (pw) pw.onkeydown = (e) => { if (e.key === 'Enter') go(); };
+    $('#stage').append(box);
+    (pw || by).focus();
+    if (!offer) why.textContent = `Geht nicht: ${r.buildError}`;
+  });
+}
+
+async function sendRequests() {
+  if (!account || !walletOn || sendBusy) return;
+  let list;
+  try { list = (await get(`/api/sendreqs?card=${id}`)).requests || []; } catch { return; }
+  if (!list.length) return;
+  sendBusy = true;
+  try {
+    for (const r of list) {
+      let offer = null;
+      try { offer = await post(`/api/sendreqs/${r.id}/build`, {}); } catch (e) { r.buildError = e.message; }
+      const sent = await sendCard(r, offer);
+      if (!sent) await post(`/api/sendreqs/${r.id}/deny`, {}).catch(() => {});
+    }
+  } finally { sendBusy = false; }
+}
+
 async function answer(m) {
   if (m.arcade === 'storage') return storage(m);
   if (m.arcade === 'app') return { state: 'open', timeout: null, closesAt: null, inShell: false };
@@ -431,6 +520,7 @@ async function start() {
     try { walletOn = !!(await get(`/api/access/${id}`)).wallet; } catch { walletOn = false; }
     try { ticket = (await post('/api/viewer', { card: id })).ticket || ''; } catch { ticket = ''; }
     showWallet();
+    setInterval(sendRequests, 2500);               // Bitten der App zu senden (nur mit Wallet-Zugriff)
     $('#revoke').onclick = async () => {
       try { await post(`/api/access/${id}`, { wallet: false }); walletOn = false; showWallet(); }
       catch (e) { alert(`Zurücknehmen ging nicht: ${e.message}`); }

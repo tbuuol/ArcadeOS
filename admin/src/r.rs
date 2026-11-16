@@ -60,16 +60,36 @@ fn list(app: &App, query: &str, owner: Option<&str>, default_limit: i64) -> Valu
 /// GET /r/wallet: die Wallet, die diese Seite anschaut (Stufe E1, viewer.rs), im Format der Arcades (app.py
 /// _wallet_answer). Der Betrachter ist allein das Konto, das das Ticket der Seite nennt, und nur solange es dieser
 /// App zugestimmt hat und die App freigeschaltet ist. Sonst "off", nie die Wallet des Betreibers.
-fn wallet(app: &App, query: &str, referer: &str) -> (u16, Value) {
+/// Der Betrachter dieser Anfrage, wenn er der App die Wallet zeigt und die App freigeschaltet ist; sonst 403 "off"
+fn allowed_viewer(app: &App, query: &str, referer: &str) -> Result<crate::viewer::Ticket, (u16, Value)> {
     let Some(t) = crate::viewer::viewer_of(app, query, referer) else {
-        return (403, json!({"wallet": "off", "error": "nobody signed in is looking at this page"}));
+        return Err((403, json!({"wallet": "off", "error": "nobody signed in is looking at this page"})));
     };
     if crate::viewer::enabled_app(app, &t.card).is_none_or(|(_, page)| page != t.page) {
-        return (403, json!({"wallet": "off", "error": "this app is not enabled on this arcade"}));
+        return Err((403, json!({"wallet": "off", "error": "this app is not enabled on this arcade"})));
     }
     if !crate::viewer::wallet_allowed(app, &t.account, &t.card) {
-        return (403, json!({"wallet": "off", "error": "the player has not given this app wallet access"}));
+        return Err((403, json!({"wallet": "off", "error": "the player has not given this app wallet access (ask arcade.access.wallet() first)"})));
     }
+    Ok(t)
+}
+
+/// POST /r/send (sendreq.rs): eine Bitte, nie eine Aktion
+pub fn post(app: &App, path: &str, query: &str, referer: &str, body: &Value) -> Option<(u16, Value)> {
+    if path != "/r/send" {
+        return None;
+    }
+    Some(match allowed_viewer(app, query, referer) {
+        Ok(t) => crate::sendreq::file(app, &t, body),
+        Err(e) => e,
+    })
+}
+
+fn wallet(app: &App, query: &str, referer: &str) -> (u16, Value) {
+    let t = match allowed_viewer(app, query, referer) {
+        Ok(t) => t,
+        Err(e) => return e,
+    };
     // Coins aus dem UTXO-Index (bestaetigt und unbestaetigt), in PEP; null solange der Index aufbaut
     let spendable = crate::utxo::coins(app, &t.address)
         .ok()
@@ -121,6 +141,7 @@ pub fn handle(app: &App, path: &str, query: &str, referer: &str) -> Option<(u16,
             }
         }
         ["wallet"] => wallet(app, query, referer),
+        ["send", id] => crate::sendreq::status(app, id),
         ["blockheight"] => (200, json!(appindex::progress().0)),
         ["blocktime"] => {
             let t = rpc(&app.cfg, "getblockcount", json!([]))

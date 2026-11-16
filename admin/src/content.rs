@@ -85,7 +85,7 @@ pub fn serve(app: Arc<App>, listen: String) {
     for _ in 0..WORKERS {
         let (server, app) = (server.clone(), app.clone());
         std::thread::spawn(move || loop {
-            let Ok(req) = server.recv() else { return };
+            let Ok(mut req) = server.recv() else { return };
             let url = req.url().to_string();
             let path = url.split('?').next().unwrap_or("");
             let h = |s: &str| s.parse::<tiny_http::Header>().unwrap();
@@ -102,6 +102,28 @@ pub fn serve(app: Arc<App>, listen: String) {
                     .with_header(h("Content-Type: application/javascript; charset=utf-8"))
                     .with_header(h("Access-Control-Allow-Origin: *"))
                     .with_header(h("Cache-Control: public, max-age=3600")));
+                continue;
+            }
+            // Bitten der Apps (POST /r/send, sendreq.rs): jede Seite darf fragen (CORS *), die Sandbox schickt vorher OPTIONS
+            if path == "/r/send" && req.method().as_str() == "OPTIONS" {
+                let _ = req.respond(tiny_http::Response::empty(204)
+                    .with_header(h("Access-Control-Allow-Origin: *"))
+                    .with_header(h("Access-Control-Allow-Methods: POST, GET, OPTIONS"))
+                    .with_header(h("Access-Control-Allow-Headers: Content-Type"))
+                    .with_header(h("Access-Control-Max-Age: 600")));
+                continue;
+            }
+            if req.method().as_str() == "POST" && path.starts_with("/r/") {
+                let query = url.split_once('?').map(|x| x.1).unwrap_or("").to_string();
+                let referer = req.headers().iter().find(|x| x.field.equiv("Referer")).map(|x| x.value.as_str().to_string()).unwrap_or_default();
+                let mut body = String::new();
+                let _ = std::io::Read::read_to_string(&mut std::io::Read::take(req.as_reader(), 16 * 1024), &mut body);
+                let body: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
+                let (code, v) = crate::r::post(&app, path, &query, &referer, &body).unwrap_or((404, serde_json::json!({"error": "not answered by this arcade yet"})));
+                let _ = req.respond(tiny_http::Response::from_string(v.to_string()).with_status_code(code)
+                    .with_header(h("Content-Type: application/json; charset=utf-8"))
+                    .with_header(h("Access-Control-Allow-Origin: *"))
+                    .with_header(h("Cache-Control: no-store")));
                 continue;
             }
             // Lese-Schnittstellen fuer Apps (r.rs)

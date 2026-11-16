@@ -179,7 +179,7 @@ pub fn key_of(addr: &str) -> Option<Key> {
     Some(k)
 }
 
-fn script_of(k: &Key) -> String {
+pub fn script_of(k: &Key) -> String {
     if k[0] == 0 {
         format!("76a914{}88ac", hex::encode(&k[1..]))
     } else {

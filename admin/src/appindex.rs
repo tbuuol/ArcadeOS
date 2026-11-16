@@ -330,18 +330,7 @@ fn step(app: &App, path: &PathBuf, marker: &[u8]) -> Result<bool, String> {
             return Ok(true);
         }
         for (pos, tx) in txs.iter().enumerate() {
-            if let Some((from, data)) = crate::msgs::anydata(tx, marker) {
-                if let Some(target) = data.strip_prefix(b"INSC\x01\x02").and_then(|t| t.get(..32)) {
-                    // Uebertragung: an die Referenzadresse, nur durch den Besitzer (state.py _inscription_transfer)
-                    let mut id = target.to_vec();
-                    id.reverse();
-                    if let Some(to) = reference(tx, &from, marker) {
-                        g.transfer(&hex::encode(id), &from, &to);
-                    }
-                } else if let Some((id, countdown, body)) = chunk(&data) {
-                    g.piece(&from, id, countdown, body, shown(&tx.txid), h, pos as u32);
-                }
-            }
+            g.apply(tx, marker, h, pos as u32);
         }
         g.height = h;
         g.hash = hash;
@@ -464,6 +453,21 @@ fn reference(tx: &crate::utxo::Tx, sender: &str, marker: &[u8]) -> Option<String
 }
 
 impl Idx {
+    /// Eine Transaktion eines Blocks: Uebertragung oder Stueck einer Inschrift
+    fn apply(&mut self, tx: &crate::utxo::Tx, marker: &[u8], h: u32, pos: u32) {
+        let Some((from, data)) = crate::msgs::anydata(tx, marker) else { return };
+        if let Some(target) = data.strip_prefix(b"INSC\x01\x02").and_then(|t| t.get(..32)) {
+            // Uebertragung: an die Referenzadresse, nur durch den Besitzer (state.py _inscription_transfer)
+            let mut id = target.to_vec();
+            id.reverse();
+            if let Some(to) = reference(tx, &from, marker) {
+                self.transfer(&hex::encode(id), &from, &to);
+            }
+        } else if let Some((id, countdown, body)) = chunk(&data) {
+            self.piece(&from, id, countdown, body, shown(&tx.txid), h, pos);
+        }
+    }
+
     fn transfer(&mut self, txid: &str, from: &str, to: &str) {
         if let Some(i) = self.insc.get_mut(txid) {
             if i.owner == from && to != i.owner {
@@ -484,4 +488,74 @@ pub fn all_newest_first() -> Vec<(String, Insc)> {
 pub fn by_number(n: u64) -> Option<(String, Insc)> {
     let g = idx().lock().unwrap();
     g.insc.iter().find(|(_, i)| i.number == n).map(|(t, i)| (t.clone(), i.clone()))
+}
+
+#[cfg(test)]
+mod transfer_tests {
+    use super::*;
+
+    /// Eine Transaktion wie die, die das App-Fenster nach dem Ja signiert: Input von `pubkey` (scriptSig <sig> <pubkey>),
+    /// die Ausgaben aus sendreq::outputs und Wechselgeld an den Absender
+    fn raw_tx(pubkey: &[u8; 33], outs: &[(u64, String)]) -> Vec<u8> {
+        let mut t = 1u32.to_le_bytes().to_vec();
+        t.push(1);
+        t.extend_from_slice(&[0x11; 32]);
+        t.extend_from_slice(&0u32.to_le_bytes());
+        let mut sig = vec![71u8];
+        sig.extend_from_slice(&[0x30; 71]);
+        sig.push(33);
+        sig.extend_from_slice(pubkey);
+        t.push(sig.len() as u8);
+        t.extend_from_slice(&sig);
+        t.extend_from_slice(&0xffff_ffffu32.to_le_bytes());
+        t.push(outs.len() as u8);
+        for (v, s) in outs {
+            let s = hex::decode(s).unwrap();
+            t.extend_from_slice(&v.to_le_bytes());
+            t.push(s.len() as u8);
+            t.extend_from_slice(&s);
+        }
+        t.extend_from_slice(&0u32.to_le_bytes());
+        t
+    }
+
+    fn held_by(owner: &str) -> Insc {
+        Insc { ctype: "text/html".into(), total: 1, sha: [0; 32], creator: owner.into(), h: 1, pieces: vec![], number: 7, owner: owner.into(), json: String::new(), pos: 0 }
+    }
+
+    #[test]
+    fn built_transfer_moves_the_inscription_to_the_recipient() {
+        let pk = [2u8; 33];
+        let sender = crate::b58check(crate::PKH, &crate::hash160(&pk));
+        let to = crate::b58check(crate::PKH, &[9u8; 20]);
+        let piece = format!("{}{}", "ab".repeat(31), "01");
+        let marker = crate::msgs::marker();
+        let own = crate::p2pkh_script(&crate::hash160(&pk));
+
+        // mit Wechselgeld an den Absender (der Normalfall von fund())
+        let mut outs = crate::sendreq::outputs("inscription", &to, 0, &piece).unwrap();
+        outs.push((5 * crate::COIN, own.clone()));
+        let raw = raw_tx(&pk, &outs);
+        let tx = crate::utxo::parse_tx(&raw).unwrap();
+        assert_eq!(reference(&tx, &sender, &marker), Some(to.clone()));
+        let mut ix = Idx::default();
+        ix.insc.insert(piece.clone(), held_by(&sender));
+        ix.apply(&tx, &marker, 10, 1);
+        assert_eq!(ix.insc[&piece].owner, to);
+
+        // ohne Wechselgeld
+        let outs = crate::sendreq::outputs("inscription", &to, 0, &piece).unwrap();
+        let raw = raw_tx(&pk, &outs);
+        let tx = crate::utxo::parse_tx(&raw).unwrap();
+        let mut ix = Idx::default();
+        ix.insc.insert(piece.clone(), held_by(&sender));
+        ix.apply(&tx, &marker, 10, 1);
+        assert_eq!(ix.insc[&piece].owner, to);
+
+        // wer nicht besitzt, uebertraegt nichts
+        let mut ix = Idx::default();
+        ix.insc.insert(piece.clone(), held_by("nSomebodyElse"));
+        ix.apply(&tx, &marker, 10, 1);
+        assert_eq!(ix.insc[&piece].owner, "nSomebodyElse");
+    }
 }

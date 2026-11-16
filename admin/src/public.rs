@@ -583,6 +583,27 @@ fn route(app: &App, p: &Pub, r: &Req) -> Out {
                     _ => bad(405, "GET oder POST"),
                 };
             }
+            // Bitten der Apps zu senden (sendreq.rs): das Fenster sieht sie, laesst bauen, sendet nach dem Ja das im
+            // Browser Signierte, oder sagt nein
+            if path == "/api/sendreqs" && r.method == "GET" {
+                let card = r.query.split('&').find_map(|kv| kv.strip_prefix("card=")).unwrap_or("").to_ascii_lowercase();
+                return ok(crate::sendreq::waiting(app, &pk, &card));
+            }
+            if let Some(rest) = path.strip_prefix("/api/sendreqs/") {
+                if r.method != "POST" {
+                    return bad(405, "POST");
+                }
+                let res = match rest.split_once('/') {
+                    Some((id, "build")) => crate::sendreq::build(app, &pk, id),
+                    Some((id, "send")) => crate::sendreq::send(app, &pk, id, r.body),
+                    Some((id, "deny")) => crate::sendreq::deny(app, &pk, id),
+                    _ => Err((404, "unbekannt".to_string())),
+                };
+                return match res {
+                    Ok(v) => ok(v),
+                    Err((c, e)) => bad(c, e),
+                };
+            }
             if path == "/api/viewer" && r.method == "POST" {
                 if !p.limit(&format!("viewer:{pk}"), 120, 3600) {
                     return bad(429, "zu viele Anfragen");
