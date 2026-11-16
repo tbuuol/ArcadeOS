@@ -19,11 +19,13 @@
 //!   CHAIND_STAKE_KEYS  Kotia staking keys (dumpwallet file): signed check         (off)
 //!   CHAIND_STAKE=1     with CHAIND_STAKE_KEYS: send staked blocks; stop file CHAIND_STAKE_OFF
 //!   CHAIND_WALLET      file of WIF keys for sendtoaddress / getbalance           (no wallet)
+//!   CHAIND_KOTIA_WALLET  Kotia: key file (dumpwallet) for Kotia Core's wallet RPCs (kotia_wallet.rs)  (none)
 //!
 //! Built on arcade-chain and libbitcoinconsensus from Martin Seeger's arcade-v1 (MIT, see vendor/).
 
 mod addr;
 mod kotia;
+mod kotia_wallet;
 mod mempool;
 mod net;
 mod relay;
@@ -184,6 +186,13 @@ fn main() {
                     w.keys(), w.coins.len(), ok as f64 / 1e8, imm as f64 / 1e8, t.elapsed().as_secs_f64()));
                 *sh.wallet.lock().unwrap() = Some(w);
             }
+            Err(e) => sh.log(&e),
+        }
+    }
+    // Kotia: its own wallet (kotia_wallet.rs; not the faucet wallet above)
+    if let Ok(path) = std::env::var("CHAIND_KOTIA_WALLET") {
+        match kotia_wallet::load(params, &path) {
+            Ok((n, labelled)) => sh.log(&format!("kotia wallet: {n} keys ({labelled} with a label)")),
             Err(e) => sh.log(&e),
         }
     }

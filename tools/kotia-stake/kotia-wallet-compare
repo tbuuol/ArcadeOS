@@ -1,0 +1,128 @@
+#!/usr/bin/lua
+-- Compare chaind's Kotia wallet (test instance, kotia-wallet-test-cli) with kotiad's wallet (kotia-cli).
+-- Read-only, except signatures: a payment of one wallet coin back to the same address is signed by both and the
+-- two signed transactions compared. NOTHING is sent (no sendrawtransaction). Output: counts, sums, OK/DIFF only.
+local json = require("cjson")
+local K, C = "/state/kotia/kotia-cli", "/state/chaind/kotia-wallet-test-cli"
+
+local function q(s) return "'" .. s:gsub("'", "'\\''") .. "'" end
+local function run(cli, ...)
+	local a = { cli }
+	for _, x in ipairs({ ... }) do a[#a + 1] = q(x) end
+	local f = io.popen(table.concat(a, " ") .. " 2>&1"); local out = f:read("a"); f:close()
+	out = out:gsub("%s+$", "")
+	local ok, v = pcall(json.decode, out)
+	if ok then return v end
+	return out
+end
+local function sats(x) return math.floor(tonumber(x) * 1e8 + 0.5) end
+local fails = 0
+local function same(what, a, b)
+	a, b = tostring(a), tostring(b)
+	if a == b then print("OK    " .. what .. ": " .. a) else fails = fails + 1; print("DIFF  " .. what .. ": kotiad " .. a .. " / chaind " .. b) end
+end
+
+local hk, hc = run(K, "getblockcount"), run(C, "getblockcount")
+print(("heights: kotiad %s, chaind %s"):format(hk, hc))
+if hk ~= hc then print("heights differ: run again"); os.exit(1) end
+
+same("getbalance (sat)", sats(run(K, "getbalance")), sats(run(C, "getbalance")))
+local wk, wc = run(K, "getwalletinfo"), run(C, "getwalletinfo")
+same("walletinfo balance (sat)", sats(wk.balance), sats(wc.balance))
+same("walletinfo staked_balance (sat)", sats(wk.staked_balance), sats(wc.staked_balance))
+
+local function coinset(list)
+	local s, n, sum = {}, 0, 0
+	for _, u in ipairs(list) do
+		s[u.txid .. ":" .. u.vout] = sats(u.amount) .. " " .. u.address .. " " .. u.confirmations
+		n, sum = n + 1, sum + sats(u.amount)
+	end
+	return s, n, sum
+end
+local uk, uc = run(K, "listunspent"), run(C, "listunspent")
+local sk, nk, sumk = coinset(uk)
+local sc, nc, sumc = coinset(uc)
+same("listunspent count", nk, nc)
+same("listunspent sum (sat)", sumk, sumc)
+local diff = 0
+for k, v in pairs(sk) do if sc[k] ~= v then diff = diff + 1; if diff <= 3 then print("      kotiad only/other: " .. k .. " " .. v .. " / " .. tostring(sc[k])) end end end
+for k, v in pairs(sc) do if not sk[k] then diff = diff + 1; if diff <= 6 then print("      chaind only: " .. k .. " " .. v) end end end
+same("listunspent coins differing (txid:vout amount address conf)", 0, diff)
+-- coins only chaind lists: are they unspent on the chain, by kotiad's own gettxout?
+local only, onchain = 0, 0
+for k in pairs(sc) do
+	if not sk[k] then
+		only = only + 1
+		local t, v = k:match("^(%x+):(%d+)")
+		local o = run(K, "gettxout", t, v)
+		if type(o) == "table" and o.value then onchain = onchain + 1 end
+	end
+end
+print(("      coins only chaind lists: %d, of them unspent by kotiad's gettxout: %d"):format(only, onchain))
+local A = io.open("/state/outbox/kotia-claude.address"):read("l")
+same("listunspent of the Freigabe-Fach address", #run(K, "listunspent", "1", "9999999", json.encode({ A })), #run(C, "listunspent", "1", "9999999", json.encode({ A })))
+
+for _, a in ipairs({ A, "KsJT53cXWezBeBx1HWAjgrhVdBnYYT71XL", "KJ5pXUKCAjN1dz1oVwMpNqvYgFNTm1JbQ3", "notanaddress" }) do
+	local function f(v) return ("%s %s %s %s %s"):format(tostring(v.isvalid), tostring(v.ismine), tostring(v.scriptPubKey), tostring(v.pubkey), tostring(v.account)) end
+	same("validateaddress " .. a, f(run(K, "validateaddress", a)), f(run(C, "validateaddress", a)))
+end
+
+-- listtransactions: both give the newest 2000 entries; compare the entries of the txs both list in full
+local tk, tc = run(K, "listtransactions", "*", "2000"), run(C, "listtransactions", "*", "2000")
+same("listtransactions entries", #tk, #tc)
+local function entries(list)
+	local by, first = {}, nil
+	for i, x in ipairs(list) do
+		if i == 1 then first = x.txid end
+		local e = ("%s %d %s %s %s %s"):format(x.category, sats(x.amount), x.fee and tostring(sats(x.fee)) or "-", tostring(x.vout), tostring(x.generated), tostring(x.time))
+		by[x.txid] = by[x.txid] or {}
+		table.insert(by[x.txid], e)
+	end
+	for _, v in pairs(by) do table.sort(v) end
+	return by, first
+end
+local ek, fk = entries(tk)
+local ec, fc = entries(tc)
+local common, bad = 0, 0
+for txid, v in pairs(ek) do
+	if ec[txid] and txid ~= fk and txid ~= fc then
+		common = common + 1
+		if table.concat(v, "|") ~= table.concat(ec[txid], "|") then
+			bad = bad + 1
+			if bad <= 3 then print("      " .. txid .. "\n        kotiad " .. table.concat(v, "|") .. "\n        chaind " .. table.concat(ec[txid], "|")) end
+		end
+	end
+end
+same(("listtransactions: of %d common txs, differing"):format(common), 0, bad)
+local now = os.time()
+local function stakes(list)
+	local seen, n = {}, 0
+	for _, x in ipairs(list) do
+		if x.generated == true and (tonumber(x.fee) or 0) > 0 and now - x.time < 86400 and not seen[x.txid] then seen[x.txid] = true; n = n + 1 end
+	end
+	return n
+end
+same("stakes in the last 24 h (monitor's count)", stakes(tk), stakes(tc))
+
+-- createrawtransaction: same bytes apart from the time (bytes 4..7); one coin back to its own address, data output
+local u = uk[1]
+local ins = json.encode({ { txid = u.txid, vout = u.vout } })
+local back = ("%.8f"):format((sats(u.amount) - 100000) / 1e8)
+local outs = ('{"%s":%s,"data":"636c61756465"}'):format(u.address, back)
+local rk, rc = run(K, "createrawtransaction", ins, outs), run(C, "createrawtransaction", ins, outs)
+same("createrawtransaction (time cut out)", rk:sub(1, 8) .. rk:sub(17), rc:sub(1, 8) .. rc:sub(17))
+-- signrawtransaction of the SAME unsigned tx (kotiad's): deterministic signatures (RFC 6979), so equal = equal signing
+local gk, gc = run(K, "signrawtransaction", rk), run(C, "signrawtransaction", rk)
+same("signrawtransaction complete", tostring(gk.complete), tostring(gc.complete))
+same("signrawtransaction: signed tx identical", "yes", gk.hex == gc.hex and "yes" or "no")
+-- chaind's own unsigned tx, signed by chaind; kotiad decodes it
+local g2 = run(C, "signrawtransaction", rc)
+local d = run(K, "decoderawtransaction", g2.hex)
+local paid = 0
+for _, o in ipairs(d.vout or {}) do
+	local a = o.scriptPubKey and o.scriptPubKey.addresses
+	if a and a[1] == u.address then paid = paid + sats(o.value) end
+end
+same("chaind-built and -signed tx as kotiad decodes it: pays back (sat)", sats(back), paid)
+-- a coin that is not the wallet's cannot be signed
+print(fails == 0 and "ALL EQUAL (nothing was sent)" or (fails .. " DIFFERENCES (nothing was sent)"))

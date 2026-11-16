@@ -227,6 +227,10 @@ pub fn find_tx(sh: &Shared, txid: &Hash256) -> Option<(Vec<u8>, u32)> {
 }
 
 fn call(sh: &Shared, m: &str, p: &[Value], tn: &Sender<Msg>) -> R {
+    // Kotia: its wallet (kotia_wallet.rs), only when CHAIND_KOTIA_WALLET loaded one
+    if let Some(r) = crate::kotia_wallet::call(sh, m, p) {
+        return r;
+    }
     let st = sh.store;
     let tip = sh.ctip.load(Ordering::SeqCst);
     match m {

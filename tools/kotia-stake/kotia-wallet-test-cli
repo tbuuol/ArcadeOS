@@ -1,0 +1,3 @@
+#!/bin/sh
+D=/state/chaind-data/kotia-wtest
+CHAIND_RPC=127.0.0.1:44893 CHAIND_COOKIE=$D/.cookie exec /state/chaind/bin/chaind cli "$@"
