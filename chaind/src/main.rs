@@ -20,12 +20,14 @@
 //!   CHAIND_STAKE=1     with CHAIND_STAKE_KEYS: send staked blocks; stop file CHAIND_STAKE_OFF
 //!   CHAIND_WALLET      file of WIF keys for sendtoaddress / getbalance           (no wallet)
 //!   CHAIND_KOTIA_WALLET  Kotia: key file (dumpwallet) for Kotia Core's wallet RPCs (kotia_wallet.rs)  (none)
+//!   CHAIND_LISTEN      incoming peers, e.g. "[::]:46174": they get block data only (listen.rs)  (none)
 //!
 //! Built on arcade-chain and libbitcoinconsensus from Martin Seeger's arcade-v1 (MIT, see vendor/).
 
 mod addr;
 mod kotia;
 mod kotia_wallet;
+mod listen;
 mod mempool;
 mod net;
 mod relay;
@@ -231,6 +233,10 @@ fn main() {
     for i in 0..2 {
         let sh = sh.clone();
         std::thread::spawn(move || relay::relay_thread(params, sh, i));
+    }
+    // incoming peers (seed node): block data only, see listen.rs
+    if let Ok(b) = std::env::var("CHAIND_LISTEN") {
+        listen::start(sh.clone(), &b);
     }
     // Kotia: staking (dry run, signed check or staking; see stake.rs)
     if std::env::var("CHAIND_STAKE_WATCH").is_ok() || std::env::var("CHAIND_STAKE_KEYS").is_ok() {
