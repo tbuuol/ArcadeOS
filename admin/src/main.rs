@@ -35,6 +35,7 @@ mod pagestore;
 mod rt;
 mod viewer;
 mod sendreq;
+mod trade;
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use ripemd::Ripemd160;
 use serde_json::{json, Value};

@@ -604,6 +604,27 @@ fn route(app: &App, p: &Pub, r: &Req) -> Out {
                     Err((c, e)) => bad(c, e),
                 };
             }
+            // Tausch zwischen Spielern (trade.rs): bauen, pruefen, die beiden im Browser signierten Haelften senden
+            if let Some(op) = path.strip_prefix("/api/trades/") {
+                if r.method != "POST" {
+                    return bad(405, "POST");
+                }
+                if !p.limit(&format!("trade:{pk}"), 120, 3600) {
+                    return bad(429, "zu viele Anfragen");
+                }
+                let (addr, tag) = {
+                    let a = p.accounts.lock().unwrap();
+                    (a[pk.as_str()]["address"].as_str().unwrap_or("").to_string(), a[pk.as_str()]["tag"].as_str().map(String::from))
+                };
+                if addr.is_empty() {
+                    return bad(409, "dieses Konto hat keine Adresse");
+                }
+                let cp = if op == "build" { coinpub_of(p, &pk, r.body, &addr) } else { None };
+                return match crate::trade::api(app, &addr, tag.as_deref(), cp, op, r.body) {
+                    Ok(v) => ok(v),
+                    Err((c, e)) => bad(c, e),
+                };
+            }
             if path == "/api/viewer" && r.method == "POST" {
                 if !p.limit(&format!("viewer:{pk}"), 120, 3600) {
                     return bad(429, "zu viele Anfragen");

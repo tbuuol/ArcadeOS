@@ -5,7 +5,8 @@
 //   app      arcade.app: Zustand (offen)
 //   access   arcade.access: Status; wallet() fragt den angemeldeten Nutzer (Karte), Zustimmung je Konto und App
 //   senden   POST /r/send der App: Karte mit Empfaenger, Betrag/Inschrift, Gebuehr; signiert nur nach dem Ja (hier)
-//   realtime arcade.realtime: Raeume mit Spielern aller Arcades (als Gast), schnelle Spur (WebRTC); ohne Medien
+//   realtime arcade.realtime: Raeume mit Spielern aller Arcades (Gast oder @name), schnelle Spur (WebRTC); ohne Medien
+//   swap     arcade.swap.trade: Tausch zwischen zwei @name-Spielern im selben Raum, eine Transaktion (trade.rs)
 const $ = (s) => document.querySelector(s);
 const id = new URLSearchParams(location.search).get('id') || '';
 let frame = null, page = '', account = null;
@@ -268,6 +269,7 @@ function heard(name, s, ev) {
   const p = ev.member;
   if (ev.type === 'message' && typeof ev.data === 'string' && ev.data.startsWith('\u001f')) {
     if (ev.data.startsWith(RTC)) rtcHeard(name, s, p, ev.data.slice(RTC.length));
+    else if (ev.data.startsWith(TRADE)) tradeHeard(name, s, p, ev.data.slice(TRADE.length));
     return;
   }
   if (ev.type === 'join' && p) { s.members[p.id] = p; fastMeet(name, s, p); }
@@ -445,7 +447,7 @@ async function playerCert() {
     const a = acct || await certCard(h.who);
     if (!a) { asGuest = true; return null; }
     if (a.address !== h.who.address) return null;
-    C = C || await import('../crypto.js?v=5');
+    C = C || await import('../crypto.js?v=6');
     cert = { address: a.address, expires: h.sign.expires, sig: C.signMessage(a.priv, h.sign.message) };
     return cert;
   })();
@@ -455,7 +457,7 @@ const pep = (s) => (s / 1e8).toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
 
 async function unlockWith(pw) {
   if (acct) return acct;
-  C = C || await import('../crypto.js?v=5');
+  C = C || await import('../crypto.js?v=6');
   const me = await get('/api/me');
   if (!me.tag) throw new Error('Dieses Konto hat noch keinen @name: bitte auf der Arcade-Seite anmelden.');
   const w = await get(`/signin/${encodeURIComponent(me.tag)}`);
@@ -534,7 +536,334 @@ async function sendRequests() {
   } finally { sendBusy = false; }
 }
 
+// ------------------------------------------------------------------ Tausch (arcade.swap.trade, trade.rs)
+// Wie die Arcades: Angebot, Ja und Quittung laufen als versteckte Raum-Nachrichten ("\u001farcade-trade:" + JSON,
+// {t: propose|propose-part|accept|decline|cancel|failed|leg|done, id, to}) in dem Raum, in dem beide Spieler sind.
+// Wer zuerst signiert (iSign: wer die Inschrift gibt; bei einem Buendel, wer es anbietet), laesst seine Box die
+// unsignierte Transaktion bauen, signiert im Browser NUR seine Inputs und schickt das Teilstueck VERSIEGELT an den
+// Nachrichtenschluessel des anderen (crypto.js boxSeal), in Stuecken zu 360 Zeichen. Der andere oeffnet es im
+// Browser, seine Box prueft es gegen die Absprache, er signiert seine Inputs, seine Box fuegt zusammen und sendet.
+// Jeder sagt in SEINEM Fenster Ja (Karte, Passwort fuer den Tresor); die App hoert nur Zustaende. Eine Transaktion:
+// beide Seiten bewegen sich oder keine. Nur Spieler mit @name-Nachweis im Raum, keine Gaeste; nur Pepecoin-Testnet.
+// Das versiegelte Teilstueck ist unser eigenes Format ({kind: 'arcadeos-trade'}): ein Spieler auf einer anderen
+// Arcade kann es nicht lesen und bekommt 'failed'.
+const TRADE = '\u001farcade-trade:', TRADE_PIECE = 360, TRADE_PIECES = 64, TRADE_WATCH = 30 * 60 * 1000;
+const trades = {}, proposeParts = {};
+const nftSide = (l) => !!(l && l.inscription);
+function iSign(t) {
+  if (t.bundle) return t.role === 'proposer';
+  if (nftSide(t.give)) return t.role === 'proposer' || !nftSide(t.get);
+  return !nftSide(t.get) && t.role === 'proposer';
+}
+const pause = (ms) => new Promise((ok) => setTimeout(ok, ms));
+const whoIs = (p) => (p && p.tag ? `@${p.tag}` : 'dem anderen Spieler');
+function roomWith(pid) { for (const [k, s] of Object.entries(seats)) if (s.live && s.members[pid]) return k; return ''; }
+function tradeSay(t, status, extra) {
+  t.status = status;
+  if (frame) frame.contentWindow.postMessage({ arcade: 'swap', event: { type: 'trade', id: t.id, status, with: t.peer, give: t.give, get: t.get, role: t.role, ...(extra || {}) } }, '*');
+}
+async function tradeSend(t, msg) {
+  const s = seats[t.room];
+  if (!s || !s.live) throw new Error('you left the room this trade was in');
+  const r = await post('/rt/send', { token: s.token, data: TRADE + JSON.stringify({ ...msg, id: t.id, to: t.peer.id }) });
+  if (r && r.ok === false) throw new Error(r.error || 'the room did not take it');
+}
+function tradeFail(t, err, quiet) {
+  const why = String((err && err.message) || err || 'failed');
+  tradeSay(t, 'failed', { why });
+  if (!quiet) tradeSend(t, { t: 'failed', why }).catch(() => {});
+}
+// Nur die Formen, die die Box kennt; Token mit klarer Meldung ablehnen (kein Token-Ledger)
+function tradeSide(l, list) {
+  const one = (x) => {
+    if (!x || typeof x !== 'object') throw new Error('a side is {inscription: id} or {coins: "1.5"}');
+    if (x.token != null) throw new Error('tokens cannot be traded on this arcade: it keeps no token ledger (trade an inscription or coins)');
+    if (typeof x.inscription === 'string' && /^[0-9a-fA-F]{64}$/.test(x.inscription)) return { inscription: x.inscription.toLowerCase() };
+    if (x.coins != null && /^\d{1,10}(\.\d{1,8})?$/.test(String(x.coins).trim()) && Number(x.coins) > 0) return { coins: String(x.coins).trim() };
+    throw new Error('a side is {inscription: id} or {coins: "1.5"}');
+  };
+  if (!list) return one(l);
+  const a = [].concat(l);
+  if (a.length < 1 || a.length > 64) throw new Error('a bundle side is a list of 1 to 64 things');
+  return a.map(one);
+}
+async function sideWords(l) {
+  if (Array.isArray(l)) return (await Promise.all(l.map(sideWords))).join(', ');
+  if (!l) return 'nichts';
+  if (l.inscription) {
+    try {
+      const j = await get(`/r/inscription/${encodeURIComponent(l.inscription)}`);
+      const nm = j.json && typeof j.json === 'object' && typeof j.json.name === 'string' ? ` (${j.json.name.slice(0, 40)})` : '';
+      return `Inschrift #${j.number}${nm}`;
+    } catch { return `Inschrift ${l.inscription.slice(0, 10)}…`; }
+  }
+  if (l.coins) return `${l.coins} PEP (Testnet)`;
+  return 'etwas';
+}
+async function tradeWords(t) {
+  const [g, r] = await Promise.all([sideWords(t.give), sideWords(t.get)]);
+  return `Du gibst ${g} und bekommst ${r}, im Tausch mit ${whoIs(t.peer)}. Eine Transaktion: beide Seiten bewegen sich oder keine.`;
+}
+const pepSigned = (n) => { const v = BigInt(n); return (v < 0n ? '−' : '+') + pep(Number(v < 0n ? -v : v)); };
+
+// Eine Karte in zwei Schritten: Bedingungen (+ Passwort, solange der Tresor zu ist) -> `prepare(acct)` prueft und
+// liefert {lines, go}; erst das zweite Ja ruft go() (signieren, senden). Nein: false.
+function tradeCard(title, lead, prepare, yesText) {
+  return new Promise((done) => {
+    const box = document.createElement('div'); box.className = 'ask';
+    const c = document.createElement('div'); c.className = 'card';
+    const add = (tag, text) => { const e = document.createElement(tag); e.textContent = text; c.append(e); return e; };
+    add('h2', title);
+    add('p', lead);
+    const info = document.createElement('div'); c.append(info);
+    const why = add('p', '');
+    let pw = null;
+    if (!acct) {
+      pw = document.createElement('input'); pw.type = 'password'; pw.className = 'pw';
+      pw.placeholder = 'Dein Passwort'; pw.autocomplete = 'current-password';
+      c.append(pw);
+    }
+    const row = document.createElement('div'); row.className = 'row';
+    const bn = document.createElement('button'); bn.type = 'button'; bn.textContent = 'Nein';
+    const by = document.createElement('button'); by.type = 'button'; by.className = 'yes'; by.textContent = 'Weiter';
+    row.append(bn, by); c.append(row); box.append(c);
+    let ready = null;
+    const end = (v) => { box.remove(); done(v); };
+    bn.onclick = () => end(false);
+    const step = async () => {
+      by.disabled = bn.disabled = true;
+      try {
+        if (!ready) {
+          why.textContent = 'Prüfe …';
+          const a = await unlockWith(pw ? pw.value : '');
+          if (pw) { pw.remove(); pw = null; }
+          ready = await prepare(a);
+          info.replaceChildren(...ready.lines.map((l) => { const p = document.createElement('p'); p.textContent = l; return p; }));
+          why.textContent = '';
+          by.textContent = yesText;
+        } else {
+          why.textContent = 'Signiere …';
+          await ready.go();
+          end(true);
+          return;
+        }
+      } catch (e) { why.textContent = String(e.message || e); }
+      by.disabled = bn.disabled = false;
+    };
+    by.onclick = step;
+    if (pw) pw.onkeydown = (e) => { if (e.key === 'Enter') step(); };
+    $('#stage').append(box);
+    (pw || by).focus();
+    if (!pw) step();                                  // Tresor schon offen: gleich pruefen, das Ja bleibt beim Spieler
+  });
+}
+
+function feeLine(r, t) {
+  return `Netzgebühr ${pep(r.fee)} PEP, ${r.fee_by === 'you' ? 'zahlst du' : `zahlt ${whoIs(t.peer)}`}. Dein Guthaben ändert sich um ${pepSigned(r.net)} PEP.`;
+}
+
+// Zuerst signieren: bauen lassen, eigene Inputs signieren, versiegelt an den anderen. `before`: was vor den
+// Stuecken gesagt wird (das Ja des Antwortenden)
+async function tradeSign(t, title, before) {
+  const s = seats[t.room];
+  const ok = await tradeCard(title, await tradeWords(t), async (a) => {
+    if (!s || a.address !== s.me.address) throw new Error('Du spielst in diesem Raum nicht als dieses Konto.');
+    const key = await get(`/api/key?to=${encodeURIComponent(t.peer.address)}`);
+    if (!key.pubkey) throw new Error(`${whoIs(t.peer)} hat noch keinen Nachrichtenschlüssel veröffentlicht; ohne ihn kann das Teilstück nicht versiegelt werden.`);
+    const b = await post('/api/trades/build', { card: id, with: t.peer.address, give: t.give, get: t.get, coinpub: a.pub, chain: 'test' });
+    const mine = '76a914' + C.bytesToHex(C.hash160(C.hexToBytes(a.pub))) + '88ac', ins = (b.tx && b.tx.inputs) || [];
+    if (!ins.length || ins[0].script !== mine || ins.every((i) => i.script === mine)) throw new Error('Die Box hat etwas Unerwartetes gebaut - nichts signiert.');
+    return {
+      lines: [feeLine(b, t), 'Signiert wird nur deine Hälfte; erst wenn der andere seine signiert, sendet seine Arcade beides zusammen.'],
+      go: async () => {
+        const hex = C.signTxPart(b.tx, a);
+        const body = new TextEncoder().encode(JSON.stringify({ v: 1, kind: 'arcadeos-trade', id: t.id, a: a.address, b: t.peer.address, raw: hex }));
+        const parts = b64(C.boxSeal(body, C.hexToBytes(key.pubkey))).match(new RegExp(`.{1,${TRADE_PIECE}}`, 'g')) || [];
+        if (parts.length > TRADE_PIECES) throw new Error('Dieser Tausch ist zu groß für den Raum.');
+        if (before && !t.saidYes) { await before(); t.saidYes = true; }
+        for (let i = 0; i < parts.length; i++) {
+          await tradeSend(t, { t: 'leg', n: i, of: parts.length, part: parts[i] });
+          await pause(300);                            // das Tempo des Raums
+        }
+      },
+    };
+  }, 'Ja, signieren');
+  if (!ok) return false;
+  tradeSay(t, 'signed');
+  return true;
+}
+
+// Als zweiter signieren: oeffnen, pruefen lassen, eigene Inputs signieren, die Box sendet beides zusammen
+async function tradeFinish(t) {
+  try {
+    let txid = '';
+    const s = seats[t.room];
+    const ok = await tradeCard('Tausch abschließen?', await tradeWords(t), async (a) => {
+      if (!s || a.address !== s.me.address) throw new Error('Du spielst in diesem Raum nicht als dieses Konto.');
+      let open;
+      try { open = JSON.parse(new TextDecoder().decode(C.boxSealOpen(new Uint8Array(unb64(t.parts.join(''))), a.msg.secret, C.hexToBytes(a.msg.pubkey)))); }
+      catch { throw new Error('Das signierte Teilstück lässt sich mit deinem Schlüssel nicht öffnen (anderer Schlüssel oder das Format einer anderen Arcade).'); }
+      if (!open || open.kind !== 'arcadeos-trade' || open.id !== t.id || open.a !== t.peer.address || open.b !== a.address || typeof open.raw !== 'string') {
+        throw new Error('Dieses Teilstück gehört nicht zu diesem Tausch mit diesem Spieler.');
+      }
+      const c = await post('/api/trades/check', { card: id, with: t.peer.address, give: t.give, get: t.get, raw: open.raw, chain: 'test' });
+      return {
+        lines: [feeLine(c, t), 'Deine Arcade hat geprüft: genau dieser Tausch, nur Coins von euch beiden, und ihr Index bewegt beide Seiten.'],
+        go: async () => {
+          const raw_b = C.signTxPart(c.tx, a);
+          txid = (await post('/api/trades/send', { card: id, with: t.peer.address, give: t.give, get: t.get, raw: open.raw, raw_b, chain: 'test' })).txid;
+        },
+      };
+    }, 'Ja, tauschen');
+    if (!ok) throw new Error('the player said no');
+    await tradeSend(t, { t: 'done', txid }).catch(() => {});
+    tradeSay(t, 'broadcast', { txid });
+    tradeWatch(t, txid);
+  } catch (e) { tradeFail(t, e); }
+}
+
+// settled erst im Block, und nur wenn die Inschrift wirklich gewechselt hat
+function tradeWatch(t, txid) {
+  const until = Date.now() + TRADE_WATCH;
+  const me = seats[t.room] ? seats[t.room].me.address : (account && account.address);
+  const mine = [].concat(t.give).filter(nftSide)[0], theirs = [].concat(t.get).filter(nftSide)[0];
+  const piece = mine ? mine.inscription : theirs ? theirs.inscription : '';
+  const owner = mine ? t.peer.address : me;
+  const tick = async () => {
+    try {
+      const j = await get(`/r/tx/${txid}`);
+      if (!j.confirmed) { if (Date.now() < until) setTimeout(tick, 10000); return; }
+      if (!piece) { tradeSay(t, 'settled', { txid }); return; }
+      // der Index liest den Block etwas spaeter: noch einmal fragen, bevor es "nichts bewegt" heisst
+      for (let i = 0; i < 6; i++) {
+        const row = await get(`/r/inscription/${piece}`).catch(() => ({}));
+        if (row.owner === owner) { tradeSay(t, 'settled', { txid }); return; }
+        await pause(10000);
+      }
+      tradeFail(t, new Error('the block refused the trade; nothing moved'), true);
+    } catch { if (Date.now() < until) setTimeout(tick, 10000); }
+  };
+  tick();
+}
+
+function tradeHeard(room, s, from, text) {
+  let msg; try { msg = JSON.parse(text); } catch { return; }
+  const me = s.me;
+  if (!me || !msg || typeof msg !== 'object' || msg.to !== me.id || !from || from.id === me.id) return;
+  const tid = String(msg.id || '').slice(0, 64);
+  let t = trades[tid];
+  if (msg.t === 'propose-part') {                    // ein grosses Buendel kommt in Stuecken
+    if (t || me.guest || from.guest) return;
+    const got = proposeParts[tid] || (proposeParts[tid] = []);
+    const n = msg.n | 0, of = msg.of | 0;
+    if (!(of > 0 && of <= TRADE_PIECES && n >= 0 && n < of)) return;
+    got[n] = String(msg.part || '');
+    for (let i = 0; i < of; i++) if (typeof got[i] !== 'string') return;
+    delete proposeParts[tid];
+    try { msg = { ...JSON.parse(got.join('')), id: tid, t: 'propose' }; } catch { return; }
+  }
+  if (msg.t === 'propose') {
+    if (t || !tid || me.guest || from.guest || !from.address || !account) return;
+    const bundle = Array.isArray(msg.give) || Array.isArray(msg.get);
+    let give, getSide;
+    try { give = tradeSide(msg.get, bundle); getSide = tradeSide(msg.give, bundle); } catch { return; }
+    t = trades[tid] = { id: tid, role: 'responder', room, peer: from, give, get: getSide, parts: [], bundle };
+    tradeSay(t, 'incoming');
+    return;
+  }
+  if (!t || t.peer.id !== from.id) return;
+  if (msg.t === 'accept' && t.role === 'proposer' && t.status === 'proposed') {
+    tradeSay(t, 'accepted');
+    if (iSign(t)) tradeSign(t, 'Deine Hälfte des Tauschs signieren?').then((ok) => { if (!ok) tradeFail(t, new Error('the player said no')); }).catch((e) => tradeFail(t, e));
+  } else if (msg.t === 'decline') {
+    if (!['broadcast', 'settled'].includes(t.status)) tradeSay(t, 'declined', { why: String(msg.why || '').slice(0, 200) });
+  } else if (msg.t === 'cancel') {
+    if (!['broadcast', 'settled'].includes(t.status)) tradeSay(t, 'cancelled');
+  } else if (msg.t === 'failed') {
+    if (!['broadcast', 'settled'].includes(t.status)) tradeSay(t, 'failed', { why: String(msg.why || '').slice(0, 200) });
+  } else if (msg.t === 'leg' && !iSign(t) && !t.finishing && t.status === 'accepted') {
+    const n = msg.n | 0, of = msg.of | 0;
+    if (!(of > 0 && of <= TRADE_PIECES && n >= 0 && n < of)) return;
+    t.parts[n] = String(msg.part || '');
+    for (let i = 0; i < of; i++) if (typeof t.parts[i] !== 'string') return;
+    t.finishing = true; t.parts.length = of;
+    tradeFinish(t);
+  } else if (msg.t === 'done' && iSign(t) && t.status === 'signed' && /^[0-9a-f]{64}$/.test(String(msg.txid || ''))) {
+    tradeSay(t, 'broadcast', { txid: msg.txid });
+    tradeWatch(t, msg.txid);
+  }
+}
+
+async function swapDoor(m) {
+  if (m.op === 'items') {
+    if (!account || !account.address) throw new Error('sign in first: items belong to an account');
+    const pieces = await get(`/r/inscriptions/${encodeURIComponent(account.address)}`).catch(() => []);
+    return { address: account.address, inscriptions: pieces, balances: [] };
+  }
+  if (['shop', 'offer', 'accept', 'status', 'replies'].includes(m.op)) throw new Error('shops are not available on this arcade yet: trades between players are');
+  if (!account || !account.tag) throw new Error('trades are signed with your own key: sign in with your @name first');
+  if (m.chain && !['test', 'pep-test', 'pepecoin-test'].includes(String(m.chain))) throw new Error('only Pepecoin testnet: this arcade does not trade on mainnet');
+  if (m.op === 'trade') {
+    const peerId = String(m.with || ''), room = roomWith(peerId);
+    if (!room) throw new Error('that player is not in a room with you');
+    const s = seats[room], peer = s.members[peerId];
+    if (s.me.guest || !s.me.address) throw new Error('sign in to trade: you play as a guest in this room');
+    if (peer.guest || !peer.address) throw new Error('that player is a guest and cannot trade');
+    if (m.give == null || m.get == null) throw new Error('a trade needs something on each side');
+    const bundle = Array.isArray(m.give) || Array.isArray(m.get);
+    const t = { id: Math.random().toString(36).slice(2) + Date.now().toString(36), role: 'proposer', room, peer, parts: [], bundle,
+      give: tradeSide(m.give, bundle), get: tradeSide(m.get, bundle) };
+    if (![].concat(t.give, t.get).some(nftSide)) throw new Error('a trade needs an inscription on at least one side');
+    if (!bundle && !nftSide(t.give) && !nftSide(t.get)) throw new Error('a trade needs an inscription on at least one side');
+    // das signierte Teilstueck geht versiegelt an den, der als zweiter signiert: sein Schluessel muss bekannt sein
+    const reader = iSign(t) ? peer : s.me;
+    const key = await get(`/api/key?to=${encodeURIComponent(reader.address)}`).catch(() => ({}));
+    if (!key.pubkey) throw new Error(`${reader === peer ? 'that player has' : 'you have'} not published a messaging key yet, so the signed half cannot reach ${reader === peer ? 'them' : 'you'}`);
+    if (!(await card('Tausch anbieten?', [await tradeWords(t), 'Signiert wird erst, wenn beide Ja gesagt haben: jeder in seinem eigenen Fenster.'], 'Anbieten', 'Nein'))) throw new Error('cancelled');
+    trades[t.id] = t;
+    const said = JSON.stringify({ give: t.give, get: t.get });
+    if (said.length <= 300) await tradeSend(t, { t: 'propose', give: t.give, get: t.get });
+    else {
+      const bits = said.match(/.{1,300}/g) || [];
+      if (bits.length > TRADE_PIECES) throw new Error('this trade is too big for the room');
+      for (let i = 0; i < bits.length; i++) { await tradeSend(t, { t: 'propose-part', n: i, of: bits.length, part: bits[i] }); await pause(300); }
+    }
+    tradeSay(t, 'proposed');
+    return { id: t.id };
+  }
+  const t = trades[String(m.id || '')];
+  if (!t) throw new Error('no such trade');
+  if (m.op === 'answer') {
+    if (t.role !== 'responder' || t.status !== 'incoming') throw new Error('nothing to answer');
+    const no = async () => {
+      await tradeSend(t, { t: 'decline', why: String(m.why || '').slice(0, 200) }).catch(() => {});
+      tradeSay(t, 'declined');
+      return { accepted: false };
+    };
+    if (!m.accept) return no();
+    if (iSign(t)) {
+      // Annehmen und die eigene Haelfte signieren: eine Karte, ein Ja
+      let ok = false;
+      try { ok = await tradeSign(t, 'Tausch annehmen und signieren?', async () => { await tradeSend(t, { t: 'accept' }); tradeSay(t, 'accepted'); }); }
+      catch (e) { tradeFail(t, e); throw e; }
+      return ok ? { accepted: true } : no();
+    }
+    if (!(await card('Tausch annehmen?', [await tradeWords(t), `${whoIs(t.peer)} signiert zuerst; danach fragt dich dieses Fenster noch einmal, bevor du deine Hälfte signierst.`], 'Annehmen', 'Nein'))) return no();
+    await tradeSend(t, { t: 'accept' });
+    tradeSay(t, 'accepted');
+    return { accepted: true };
+  }
+  if (m.op === 'cancel') {
+    if (['broadcast', 'settled'].includes(t.status)) throw new Error('too late: it was sent');
+    await tradeSend(t, { t: 'cancel' }).catch(() => {});
+    tradeSay(t, 'cancelled');
+    return {};
+  }
+  throw new Error('trade ops are trade, answer, cancel and items');
+}
+
 async function answer(m) {
+  if (m.arcade === 'swap') return swapDoor(m);
   if (m.arcade === 'storage') return storage(m);
   if (m.arcade === 'app') return { state: 'open', timeout: null, closesAt: null, inShell: false };
   if (m.arcade === 'realtime') return realtime(m);

@@ -964,3 +964,20 @@ mod swap_tests {
         assert_eq!(ix.insc[Y].owner, b);
     }
 }
+
+// ------------------------------------------------------------------ Probelauf fuer Tausche (trade.rs)
+
+/// Was der Index mit dieser Transaktion taete: Inschriften mit ihren jetzigen Besitzern (`owners`), `prev` = Adresse
+/// und Betrag jedes Inputs in Reihenfolge, `h` = Blockhoehe. Antwort: Besitzer danach (gleiche Reihenfolge)
+pub fn simulate(owners: &[(String, String)], raw: &[u8], prev: &[(Option<String>, u64)], h: u32) -> Option<Vec<(String, String)>> {
+    let tx = crate::utxo::parse_tx(raw).ok()?;
+    let mut ix = Idx::default();
+    for (t, o) in owners {
+        ix.insc.insert(t.clone(), Insc { ctype: String::new(), total: 0, sha: [0; 32], creator: o.clone(), h: 0, pieces: vec![], number: 0, owner: o.clone(), json: String::new(), pos: 0 });
+    }
+    let at: Vec<(Txid, u32)> = tx.ins.iter().map(|i| i.prev).collect();
+    let mut look = |t: &Txid, n: u32| at.iter().position(|p| p.0 == *t && p.1 == n).and_then(|i| prev.get(i).cloned());
+    ix.apply(&tx, &crate::msgs::marker(), h, 0, &mut look);
+    Some(owners.iter().map(|(t, _)| (t.clone(), ix.insc[t].owner.clone())).collect())
+}
+

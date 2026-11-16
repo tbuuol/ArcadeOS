@@ -185,6 +185,26 @@ export function signTx(tx, acct) {
   return bytesToHex(serialize(tx, sigScripts));
 }
 
+/**
+ * Teil eines Tauschs signieren (zwei Spieler, eine Transaktion): NUR die Inputs, deren Skript das P2PKH dieses Kontos
+ * ist, jeder mit SIGHASH_ALL ueber die ganze Transaktion; die anderen Inputs bleiben leer, ihre Spieler signieren
+ * selbst. Mindestens ein Input muss diesem Konto gehoeren. Ergebnis: Rohtransaktion als hex (die Box fuegt zusammen).
+ */
+export function signTxPart(tx, acct) {
+  const pub = hexToBytes(acct.pub);
+  const mine = bytesToHex(concatBytes(Uint8Array.of(0x76, 0xa9, 0x14), hash160(pub), Uint8Array.of(0x88, 0xac)));
+  if (!tx.inputs.some((i) => i.script === mine)) throw new Error('Kein Input gehoert zu diesem Konto - nichts signiert.');
+  const empty = tx.inputs.map(() => new Uint8Array(0));
+  const sigScripts = tx.inputs.map((inp, n) => {
+    if (inp.script !== mine) return new Uint8Array(0);
+    const scripts = empty.slice(); scripts[n] = hexToBytes(inp.script);
+    const h = dsha(concatBytes(serialize(tx, scripts), u32(1)));            // SIGHASH_ALL
+    const der = secp256k1.sign(h, acct.priv, { prehash: false, format: 'der' });
+    return concatBytes(push(concatBytes(der, Uint8Array.of(1))), push(pub));
+  });
+  return bytesToHex(serialize(tx, sigScripts));
+}
+
 // ------------------------------------------------------------------ Messenger (arcm, wie dogecoin-arcade envelope.py)
 // inner = crypto_box(Absender, Empfaenger, "arcm" 01 01 || Text) mit Zufalls-Nonce (24)
 // sealed = crypto_box_seal(Empfaenger, Absender-pk || nonce || inner)

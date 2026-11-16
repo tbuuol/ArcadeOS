@@ -142,6 +142,16 @@ pub fn handle(app: &App, path: &str, query: &str, referer: &str) -> Option<(u16,
         }
         ["wallet"] => wallet(app, query, referer),
         ["send", id] => crate::sendreq::status(app, id),
+        // Ist eine Transaktion im Block? (fuer Tausche: settled erst nach dem Block)
+        ["tx", txid] if txid.len() == 64 && txid.bytes().all(|c| c.is_ascii_hexdigit()) => {
+            match rpc(&app.cfg, "getrawtransaction", json!([txid.to_ascii_lowercase(), 1])) {
+                Ok(v) => {
+                    let c = v["confirmations"].as_u64().unwrap_or(0);
+                    (200, json!({"txid": txid, "known": true, "confirmed": c > 0, "confirmations": c, "conflicted": false}))
+                }
+                Err(_) => (200, json!({"txid": txid, "known": false, "confirmed": false, "confirmations": 0, "conflicted": false})),
+            }
+        }
         ["blockheight"] => (200, json!(appindex::progress().0)),
         ["blocktime"] => {
             let t = rpc(&app.cfg, "getblockcount", json!([]))
