@@ -791,6 +791,11 @@ impl Node {
         loop {
             let tmp = self.cfg.status_file.with_extension("new");
             if std::fs::write(&tmp, format!("{}\n", self.status())).is_ok() {
+                // lesbar fuer die Gruppe (arcadeos-admin: Knoten-Kennung fuer signierte Einstellungen), nicht fuer alle
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o640));
+                }
                 let _ = std::fs::rename(&tmp, &self.cfg.status_file);
             }
             sleep(STATUS_EVERY).await;
