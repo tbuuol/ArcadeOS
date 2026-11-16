@@ -32,6 +32,7 @@ mod appindex;
 mod content;
 mod r;
 mod pagestore;
+mod rt;
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use ripemd::Ripemd160;
 use serde_json::{json, Value};
@@ -871,6 +872,12 @@ fn main() {
     // Teilen der Chain-Knoten mit anderen Arcades (standardmaessig nichts; share.rs)
     let a = app.clone();
     std::thread::spawn(move || share::run(a));
+    // Raeume fuer App-Fenster (rt.rs; Caddy: /rt/* der Arcade-Seite)
+    let a = app.clone();
+    let rl = env("ADMIN_RT_LISTEN", "127.0.0.1:8099");
+    if rl != "off" {
+        std::thread::spawn(move || rt::serve(a, rl));
+    }
     // geliehene Chains fuer Dienste dieser Box (standardmaessig aus; borrow.rs)
     let bl = env("ADMIN_BORROW_LISTEN", "127.0.0.1:8095");
     if bl != "off" {

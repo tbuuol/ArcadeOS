@@ -4,6 +4,7 @@
 //   storage  arcade.storage: angemeldet auf der Box (je Konto und Seite), als Gast nur in diesem Browser
 //   app      arcade.app: Zustand (offen)
 //   access   arcade.access: Status; Wallet-Zugriff gibt es hier noch nicht
+//   realtime arcade.realtime: Raeume mit Spielern aller Arcades (als Gast; ohne schnelle Spur und Medien)
 const $ = (s) => document.querySelector(s);
 const id = new URLSearchParams(location.search).get('id') || '';
 let frame = null, page = '', account = null;
@@ -43,9 +44,49 @@ async function storage(m) {
   return {};
 }
 
+// ------------------------------------------------------------------ Raeume (arcade.realtime)
+// Der Raum heisst im Mesh "<diese Seite>/<Raum>"; die Marke kennt nur dieses Fenster. Ereignisse holt es per
+// Long-Polling und reicht sie an den Rahmen weiter.
+const seats = {};   // Raumname der Seite -> {token, live}
+function tell(ev) { if (frame) frame.contentWindow.postMessage({ arcade: 'realtime', event: ev }, '*'); }
+async function pollSeat(name, s) {
+  while (s.live) {
+    try {
+      const r = await get(`/rt/poll?token=${s.token}&wait=25`);
+      for (const ev of r.events || []) tell({ ...ev, room: name });
+    } catch (e) {
+      if (e.status === 404) { s.live = false; tell({ room: name, type: 'closed', why: 'the arcade closed this seat' }); return; }
+      await new Promise((ok) => setTimeout(ok, 3000));
+    }
+  }
+}
+async function realtime(m) {
+  const name = String(m.room || '');
+  if (m.op === 'join') {
+    if (seats[name]) return { online: true, me: seats[name].me, members: [], fast: false, media: false };
+    const r = await post('/rt/join', { page, room: name });
+    if (!r.online) return { online: false, why: r.why || 'offline', fast: false, media: false };
+    const s = seats[name] = { token: r.token, me: r.me, live: true };
+    pollSeat(name, s);
+    return { online: true, me: r.me, members: r.members || [], fast: false, media: false };
+  }
+  const s = seats[name];
+  if (m.op === 'send') { if (!s) throw new Error('join the room first'); await post('/rt/send', { token: s.token, data: String(m.data || '') }); return {}; }
+  if (m.op === 'leave') { if (s) { s.live = false; delete seats[name]; post('/rt/leave', { token: s.token }).catch(() => {}); } return {}; }
+  if (m.op === 'fast') return {};   // keine schnelle Spur hier: still verworfen
+  throw new Error('not available on this arcade yet');
+}
+window.addEventListener('pagehide', () => {
+  for (const s of Object.values(seats)) {
+    s.live = false;
+    try { navigator.sendBeacon('/rt/leave', new Blob([JSON.stringify({ token: s.token })], { type: 'application/json' })); } catch {}
+  }
+});
+
 async function answer(m) {
   if (m.arcade === 'storage') return storage(m);
   if (m.arcade === 'app') return { state: 'open', timeout: null, closesAt: null, inShell: false };
+  if (m.arcade === 'realtime') return realtime(m);
   if (m.arcade === 'access') {
     if (m.op === 'status') return { wallet: false, signedIn: !!account };
     if (m.op === 'nodes') return { nodes: [] };

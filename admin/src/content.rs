@@ -94,6 +94,7 @@ pub fn serve(app: Arc<App>, listen: String) {
                 "/r/storage.js" => Some(include_str!("../web/shims/storage.js")),
                 "/r/app.js" => Some(include_str!("../web/shims/app.js")),
                 "/r/access.js" => Some(include_str!("../web/shims/access.js")),
+                "/r/realtime.js" => Some(include_str!("../web/shims/realtime.js")),
                 _ => None,
             };
             if let Some(js) = shim {
