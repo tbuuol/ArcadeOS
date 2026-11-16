@@ -27,6 +27,7 @@ mod msgs;
 mod share;
 mod borrow;
 mod fees;
+mod apps;
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use ripemd::Ripemd160;
 use serde_json::{json, Value};
@@ -784,6 +785,26 @@ fn set_chains(app: &App, b: &Value) -> Resp {
     (200, share::status())
 }
 
+/// Apps umschalten: wie die Freigaben nur mit der Signatur des Betreiber-Kontos ueber eine frische Zufallszahl
+fn set_apps(app: &App, b: &Value) -> Resp {
+    let Some(addr) = app.operator_addr() else { return err(409, "noch kein Betreiber") };
+    let (Some(list), Some(nonce), Some(sig)) = (b["apps"].as_object(), b["nonce"].as_str(), b["sig"].as_str()) else {
+        return err(400, "apps, nonce, sig fehlen");
+    };
+    if app.nonces.lock().unwrap().remove(nonce).is_none() {
+        return err(400, "Zufallszahl unbekannt oder abgelaufen, bitte neu laden");
+    }
+    let Some(node) = app.node_id() else { return err(503, "meshd laeuft nicht") };
+    if !verify_message(sig, &apps::message(&node, nonce, list), &addr) {
+        return err(403, "Signatur passt nicht zum Betreiber-Konto");
+    }
+    if let Err(e) = apps::save(app, list) {
+        return err(500, &e);
+    }
+    log(&format!("Apps geaendert: {}", apps::message("-", "-", list).lines().last().unwrap_or("")));
+    (200, apps::status(app))
+}
+
 fn route(app: &App, method: &str, url: &str, body: &Value) -> Resp {
     let (path, query) = url.split_once('?').unwrap_or((url, ""));
     let path = path.trim_start_matches("/admin/api");
@@ -801,6 +822,8 @@ fn route(app: &App, method: &str, url: &str, body: &Value) -> Resp {
         ("POST", "/owner") => owner(app, body),
         ("GET", "/chains") => (200, share::status()),
         ("POST", "/chains") => set_chains(app, body),
+        ("GET", "/apps") => (200, apps::status(app)),
+        ("POST", "/apps") => set_apps(app, body),
         _ => err(404, "unbekannt"),
     }
 }

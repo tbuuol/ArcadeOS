@@ -188,7 +188,7 @@ pub fn status() -> Value {
         .map(|c| {
             json!({"net": c.net, "name": c.name, "share": s.share.get(c.net).copied().unwrap_or(false),
                    "node": s.node.get(c.net).cloned().unwrap_or(json!({"running": false})),
-                   "offered": s.offered.contains_key(c.net)})
+                   "offered": s.offered.contains_key(c.net), "payto": s.payto.get(c.net)})
         })
         .collect();
     let borrowers: Vec<Value> = s.peers.iter().filter(|(_, p)| p.served > 0)

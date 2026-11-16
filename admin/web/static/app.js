@@ -10,6 +10,7 @@ let S = null;          // letzter Status der Box
 let acct = null;       // entsperrtes Konto (nur im Speicher dieses Tabs)
 let draft = null;      // neue Woerter waehrend der Einrichtung
 let timer = null;
+let tab = 'setup';     // Reiter: setup (Arcade), chains, apps
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const pep = (s) => (Number(s || 0) / 1e8).toLocaleString('de-DE', { maximumFractionDigits: 8 });
@@ -59,6 +60,13 @@ async function refresh() {
 
 function render() {
   clearInterval(timer);
+  // Reiter Chains und Apps nur fuer den angemeldeten Betreiber (Aenderungen signiert sein Konto)
+  const me = !!(S.operator && acct && acct.address === S.operator.address);
+  $('#tabs').hidden = !me;
+  $('#steps').hidden = me && tab !== 'setup';
+  document.querySelectorAll('#tabs button').forEach((b) => { b.className = b.dataset.tab === tab ? 'on' : ''; });
+  if (me && tab === 'chains') return chainsView();
+  if (me && tab === 'apps') return appsView();
   if (!S.operator) return draft ? confirmWords() : start();
   if (!acct) return unlock();
   if (acct.address !== S.operator.address) {
@@ -227,6 +235,108 @@ function done() {
     <div class="row"><button class="alt" id="ren">Besitz-Nachweis erneuern</button><button class="alt" id="out">Abmelden</button></div></div>`;
   $('#ren').onclick = async () => { try { await publishOwner(S.name); await refresh(); } catch (e) { msg($('#ren').closest('.box'), e.message); } };
   $('#out').onclick = () => { acct = null; render(); };
+}
+
+// ------------------------------------------------------------------ Reiter: Chains (teilen, leihen) und Apps
+
+document.querySelectorAll('#tabs button').forEach((b) => { b.onclick = () => { tab = b.dataset.tab; render(); }; });
+
+const nf = (n) => Number(n || 0).toLocaleString('de-DE');
+
+/** Eine signierte Aenderung: Zufallszahl der Box holen, die Nachricht (wie die Box sie nachbaut) signieren, senden */
+async function signed(path, head, lines, body) {
+  const ch = await api('/challenge');
+  const text = `${head}\n${S.node_id}\n${ch.nonce}\n${lines.join('\n')}`;
+  return api(path, { ...body, nonce: ch.nonce, sig: C.signMessage(acct.priv, text) });
+}
+
+function sw(id, on, disabled = false) {
+  return `<label class="sw"><input type="checkbox" id="${esc(id)}" ${on ? 'checked' : ''} ${disabled ? 'disabled' : ''}><span></span></label>`;
+}
+
+function nodeInfo(n) {
+  if (!n || !n.running) return '<span class="bad">kein Knoten hier erreichbar</span>';
+  if (!n.synced) return `<span class="warn">Knoten synchronisiert noch · Block ${nf(n.blocks)} von ${nf(n.headers)}</span>`;
+  return `<span class="ok">Knoten läuft · synchron · Block ${nf(n.blocks)}</span>`;
+}
+
+async function chainsView() {
+  view.innerHTML = '<div class="box"><p class="muted">Lade …</p></div>';
+  let c;
+  try { c = await api('/chains'); } catch (e) { view.innerHTML = `<div class="box"><p class="msg err">${esc(e.message)}</p></div>`; return; }
+  if (tab !== 'chains') return;
+  const here = Object.fromEntries(c.chains.map((x) => [x.net, x.node && x.node.running]));
+  const share = c.chains.map((x) => `<div class="chain">
+      <div class="name">${esc(x.name)}${x.offered ? '<span class="pill on">wird angeboten</span>' : ''}</div>${sw(`sh-${x.net}`, x.share, !(x.node && x.node.running) && !x.share)}
+      <div class="info">${nodeInfo(x.node)}</div>
+      <input class="pay" id="pt-${esc(x.net)}" placeholder="Zahladresse für den Anteil der Leiher (optional)" value="${esc(x.payto || '')}" autocomplete="off" spellcheck="false">
+    </div>`).join('');
+  const borrow = c.borrow.chains.map((x) => {
+    const best = x.sharers[0];
+    const agree = x.sharers_agree ? (x.sharers_agree.agree
+      ? `<span class="ok">${Object.keys(x.sharers_agree.hashes).length} Teiler einig bei Block ${nf(x.sharers_agree.height)}</span>`
+      : `<span class="bad">Teiler uneinig bei Block ${nf(x.sharers_agree.height)}</span>`) : '';
+    const who = x.sharers.length
+      ? `${x.sharers.length} Arcade${x.sharers.length > 1 ? 's' : ''} teilen sie${best && best.rtt_ms != null ? ` · schnellste ${nf(Math.round(best.rtt_ms))} ms` : ''}`
+      : '<span class="warn">gerade teilt sie keine verbundene Arcade</span>';
+    return `<div class="chain">
+      <div class="name">${esc(x.name)}${x.borrow ? '<span class="pill on">geliehen</span>' : ''}${here[x.net] ? '<span class="pill">läuft hier</span>' : ''}</div>${sw(`br-${x.net}`, x.borrow)}
+      <div class="info">${who}${agree ? ' · ' + agree : ''}${x.borrow && x.mempool ? ` · ${nf(x.mempool)} Transaktionen im Mempool` : ''}</div>
+    </div>`;
+  }).join('');
+  view.innerHTML = `<div class="box"><h2>Teilen</h2>
+      <p class="muted">Andere Arcades dürfen die Knoten dieser Box fragen: nur Blöcke, Transaktionen und Mempool lesen und fertig signierte Transaktionen weitergeben – nie die Wallet. Angeboten wird eine Chain nur, wenn ihr Knoten synchron ist.</p>
+      ${share}
+      <p class="muted">Bisher ${nf(c.answers)} Antworten an andere Arcades, ${nf(c.refused)} abgelehnt, ${nf(c.mempool_pushed)} Mempool-Transaktionen weitergegeben.${c.mesh ? '' : ' <span style="color:var(--warn)">meshd nicht verbunden.</span>'}</p></div>
+    <div class="box"><h2>Leihen</h2>
+      <p class="muted">Eine Chain, deren Knoten hier nicht läuft, bei einer Arcade lesen, die sie teilt. Blöcke und Transaktionen werden geprüft (Hash, Merkle-Wurzel, Arbeit, bei Kotia die Signatur); Höhe und Mempool sind das Wort des Teilers.</p>
+      ${borrow}
+      <p class="muted">Bisher ${nf(c.borrow.asked)} Anfragen, ${nf(c.borrow.wrong_answers)} falsche Antworten abgewiesen.</p></div>
+    <div class="box"><div class="row" style="margin-top:0"><button id="save">Speichern</button><button class="alt" id="reload">Neu laden</button></div>
+      <p class="muted">Speichern signiert die Einstellungen mit deinem Admin-Konto.</p></div>`;
+  $('#reload').onclick = () => chainsView();
+  $('#save').onclick = async () => {
+    const box = $('#save').closest('.box');
+    const sh = {}, br = {}, pt = {};
+    c.chains.forEach((x) => { sh[x.net] = $(`#sh-${x.net}`).checked; const a = $(`#pt-${x.net}`).value.trim(); if (a) pt[x.net] = a; });
+    c.borrow.chains.forEach((x) => { br[x.net] = $(`#br-${x.net}`).checked; });
+    const lines = [
+      'share ' + c.chains.map((x) => `${x.net}=${sh[x.net] ? 1 : 0}`).join(' '),
+      'borrow ' + c.borrow.chains.map((x) => `${x.net}=${br[x.net] ? 1 : 0}`).join(' '),
+      'payto ' + c.chains.map((x) => `${x.net}=${pt[x.net] || '-'}`).join(' '),
+    ];
+    try {
+      msg(box, 'Signiere und speichere …', 'wait');
+      await signed('/chains', 'arcadeos-chains', lines, { share: sh, borrow: br, payto: pt });
+      msg(box, 'Gespeichert. Angebote ändern sich innerhalb von 20 Sekunden.', 'ok');
+      setTimeout(() => { if (tab === 'chains') chainsView(); }, 1500);
+    } catch (e) { msg(box, e.message); }
+  };
+  // Stand alle 30 s neu, aber nicht mitten in einer Eingabe
+  timer = setInterval(() => { if (tab === 'chains' && !view.contains(document.activeElement)) chainsView(); }, 30000);
+}
+
+async function appsView() {
+  view.innerHTML = '<div class="box"><p class="muted">Lade …</p></div>';
+  let a;
+  try { a = await api('/apps'); } catch (e) { view.innerHTML = `<div class="box"><p class="msg err">${esc(e.message)}</p></div>`; return; }
+  if (tab !== 'apps') return;
+  view.innerHTML = `<div class="box"><h2>Apps</h2>
+      <p class="muted">Welche Apps die Nutzer dieser Arcade sehen und starten können. Neue Apps sind zuerst aus.</p>
+      ${a.apps.map((x) => `<div class="chain"><div class="name">${esc(x.name)}${x.builtin ? '<span class="pill">von dieser Box</span>' : ''}</div>${sw(`ap-${x.id}`, x.on)}
+        <div class="info">${esc(x.about)}</div></div>`).join('')}
+      <p class="muted">${esc(a.inscribed_note)}</p>
+      <div class="row"><button id="save">Speichern</button></div></div>`;
+  $('#save').onclick = async () => {
+    const box = $('#save').closest('.box');
+    const on = {};
+    a.apps.forEach((x) => { on[x.id] = $(`#ap-${x.id}`).checked; });
+    try {
+      msg(box, 'Signiere und speichere …', 'wait');
+      await signed('/apps', 'arcadeos-apps', ['apps ' + a.apps.map((x) => `${x.id}=${on[x.id] ? 1 : 0}`).join(' ')], { apps: on });
+      msg(box, 'Gespeichert.', 'ok');
+    } catch (e) { msg(box, e.message); }
+  };
 }
 
 refresh();

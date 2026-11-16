@@ -526,6 +526,8 @@ fn route(app: &App, p: &Pub, r: &Req) -> Out {
             let nonce = v["nonce"].as_str().unwrap_or("").to_string();
             ok(json!({"nonce": nonce, "message": login_message(p, &nonce)}))
         }
+        // die Apps, die der Betreiber eingeschaltet hat (oeffentlich, ohne Anmeldung)
+        ("GET", "/api/apps") => ok(crate::apps::public_list(app)),
         ("GET", "/api/name") => {
             let q = r.query.split('&').find_map(|kv| kv.strip_prefix("tag=")).unwrap_or("");
             // "gehoert dir" nur fuer das angemeldete Konto, nie fuer den Betreiber der Box
