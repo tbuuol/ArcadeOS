@@ -321,19 +321,26 @@ async function appsView() {
   let a;
   try { a = await api('/apps'); } catch (e) { view.innerHTML = `<div class="box"><p class="msg err">${esc(e.message)}</p></div>`; return; }
   if (tab !== 'apps') return;
-  view.innerHTML = `<div class="box"><h2>Apps</h2>
-      <p class="muted">Welche Apps die Nutzer dieser Arcade sehen und starten können. Neue Apps sind zuerst aus.</p>
-      ${a.apps.map((x) => `<div class="chain"><div class="name">${esc(x.name)}${x.builtin ? '<span class="pill">von dieser Box</span>' : ''}</div>${sw(`ap-${x.id}`, x.on)}
-        <div class="info">${esc(x.about)}</div></div>`).join('')}
-      <p class="muted">${esc(a.inscribed_note)}</p>
-      <div class="row"><button id="save">Speichern</button></div></div>`;
+  const own = a.apps.filter((x) => x.builtin), chain = a.apps.filter((x) => !x.builtin);
+  const flags = (x) => [x.wallet && 'nutzt die Wallet', x.media && 'Kamera/Mikrofon', x.multiplayer && 'Mehrspieler'].filter(Boolean).join(' · ');
+  const row = (x) => `<div class="chain"><div class="name">${esc(x.name)}${x.version ? ` <span class="pill">${esc(x.version)}</span>` : ''}${x.builtin ? '<span class="pill">von dieser Box</span>' : ''}</div>${sw(`ap-${x.id}`, x.on)}
+      <div class="info">${x.builtin ? '' : `von ${x.tag ? '@' + esc(x.tag) : esc(x.creator)}${x.genre ? ' · ' + esc(x.genre) : ''}${flags(x) ? ' · ' + flags(x) : ''}<br>`}${esc(x.about || '')}</div></div>`;
+  view.innerHTML = `<div class="box"><h2>Apps dieser Box</h2>${own.map(row).join('')}</div>
+    <div class="box"><h2>Eingeschriebene Apps <span class="pill">${chain.length}</span></h2>
+      <p class="muted">Aus der Pepecoin-Testnet-Chain gelesen (bis Block ${nf(a.index.height)}, ${nf(a.index.inscriptions)} Inschriften). Jede ist zuerst aus. ${esc(a.inscribed_note)}</p>
+      ${chain.length ? chain.map(row).join('') : '<p class="muted">Noch keine gefunden – der Index liest die Chain gerade.</p>'}</div>
+    <div class="box"><div class="row" style="margin-top:0"><button id="save">Speichern</button><button class="alt" id="reload">Neu laden</button></div>
+      <p class="muted">Speichern signiert die Schalter mit deinem Admin-Konto.</p></div>`;
+  $('#reload').onclick = () => appsView();
   $('#save').onclick = async () => {
     const box = $('#save').closest('.box');
     const on = {};
-    a.apps.forEach((x) => { on[x.id] = $(`#ap-${x.id}`).checked; });
+    a.apps.forEach((x) => { on[x.id] = $(`#ap-${CSS.escape(x.id)}`).checked; });
+    const keys = Object.keys(on).sort();
+    const sorted = Object.fromEntries(keys.map((k) => [k, on[k]]));
     try {
       msg(box, 'Signiere und speichere …', 'wait');
-      await signed('/apps', 'arcadeos-apps', ['apps ' + a.apps.map((x) => `${x.id}=${on[x.id] ? 1 : 0}`).join(' ')], { apps: on });
+      await signed('/apps', 'arcadeos-apps', ['apps ' + keys.map((k) => `${k}=${on[k] ? 1 : 0}`).join(' ')], { apps: sorted });
       msg(box, 'Gespeichert.', 'ok');
     } catch (e) { msg(box, e.message); }
   };

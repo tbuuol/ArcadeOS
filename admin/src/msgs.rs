@@ -122,6 +122,17 @@ fn decode_class_b(from: &str, outs: &[(u64, &[u8])]) -> Option<Vec<u8>> {
 
 /// arcm-Nutzlast einer Transaktion (Class C oder B), mit Absender
 fn extract(tx: &Tx, marker: &[u8]) -> Option<(String, Vec<u8>)> {
+    anydata(tx, marker).filter(|(_, d)| d.starts_with(ARCM))
+}
+
+/// Der Class-B-Marker der Arcades (fuer andere Leser der AnyData-Nutzlasten, appindex.rs)
+pub fn marker() -> Vec<u8> {
+    marker_script()
+}
+
+/// Die AnyData-Nutzlast einer Transaktion (Class C "arcd" oder Class B mit Marker), mit Absender, was immer sie
+/// traegt (arcm, INSC ...); bei Class B mit dem Polster am Ende
+pub fn anydata(tx: &Tx, marker: &[u8]) -> Option<(String, Vec<u8>)> {
     let mut payload = None;
     for (_, spk) in &tx.outs {
         if let Some(d) = op_return_data(spk) {
@@ -136,7 +147,7 @@ fn extract(tx: &Tx, marker: &[u8]) -> Option<(String, Vec<u8>)> {
         payload = decode_class_b(&from, &tx.outs);
     }
     let data = payload?.strip_prefix(&ANYDATA_HEAD)?.to_vec();
-    data.starts_with(ARCM).then_some((from, data))
+    Some((from, data))
 }
 
 /// Schluessel-Ankuendigung: (pubkey, behauptete Adresse, Name)

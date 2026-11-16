@@ -28,6 +28,7 @@ mod share;
 mod borrow;
 mod fees;
 mod apps;
+mod appindex;
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use ripemd::Ripemd160;
 use serde_json::{json, Value};
@@ -856,6 +857,9 @@ fn main() {
         std::thread::spawn(move || utxo::run(a));
         let a = app.clone();
         std::thread::spawn(move || msgs::run(a));
+        // App-Index aus der Chain (welche Apps es gibt; was Nutzer sehen, schaltet der Betreiber: apps.rs)
+        let a = app.clone();
+        std::thread::spawn(move || appindex::run(a));
     }
     // Teilen der Chain-Knoten mit anderen Arcades (standardmaessig nichts; share.rs)
     let a = app.clone();
