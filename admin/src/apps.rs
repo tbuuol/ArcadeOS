@@ -67,10 +67,22 @@ pub fn status(app: &App) -> Value {
            "inscribed_note": "Eingeschriebene Apps laufen auf dieser Arcade noch nicht: der Schalter bestimmt, welche später angeboten werden."})
 }
 
-/// Fuer die Nutzer-Seite: nur die eingeschalteten (vorerst nur die eigenen, eingeschriebene laufen hier noch nicht)
+/// Fuer die Nutzer-Seite und das App-Fenster: nur die eingeschalteten
 pub fn public_list(app: &App) -> Value {
     let v = settings(app);
-    let list: Vec<Value> = BUILTIN.iter().filter(|b| is_on(&v, b.id, b.default_on)).map(|b| json!({"id": b.id, "name": b.name, "url": b.url, "about": b.about})).collect();
+    let mut list: Vec<Value> = BUILTIN.iter().filter(|b| is_on(&v, b.id, b.default_on)).map(|b| json!({"id": b.id, "name": b.name, "url": b.url, "about": b.about})).collect();
+    // eingeschriebene, die der Betreiber eingeschaltet hat: Karte und die Seite, die Spielen oeffnet (play, sonst die Karte)
+    let names = app.index.lock().unwrap().by_addr.clone();
+    for c in crate::appindex::cards() {
+        let g = &c.game;
+        let id = crate::appindex::app_key(&c.creator, g["name"].as_str().unwrap_or(""));
+        if !is_on(&v, &id, false) {
+            continue;
+        }
+        let page = g["play"].as_str().filter(|p| crate::appindex::inscription(p).is_some_and(|i| i.creator == c.creator)).unwrap_or(&c.txid).to_string();
+        list.push(json!({"id": id, "name": g["name"], "about": g["description"], "card": c.txid, "page": page, "url": format!("/app/?id={}", c.txid),
+            "by": names.get(&c.creator), "wallet": g["wallet"], "media": g["media"], "version": g["version"]}));
+    }
     json!({"apps": list})
 }
 

@@ -543,6 +543,18 @@ fn route(app: &App, p: &Pub, r: &Req) -> Out {
         }
         (_, path) if path.starts_with("/api/") => {
             let Some(pk) = me_pk else { return bad(401, "bitte anmelden") };
+            // Speicher eingeschriebener Seiten (pagestore.rs), vom App-Fenster fuer die Seite gefragt
+            if let Some(t) = path.strip_prefix("/api/storage/") {
+                let t = t.to_ascii_lowercase();
+                return match r.method {
+                    "GET" => match crate::pagestore::items(app, &pk, &t) { Ok(i) => ok(json!({"ok": true, "items": i})), Err(e) => bad(400, e) },
+                    "POST" => match crate::pagestore::op(app, &pk, &t, r.body) {
+                        Ok(mut v) => { v["ok"] = json!(true); ok(v) }
+                        Err(e) => bad(400, e),
+                    },
+                    _ => bad(405, "GET oder POST"),
+                };
+            }
             match (r.method, path) {
                 ("GET", "/api/me") => me(app, p, &pk),
                 ("POST", "/api/faucet") => faucet(app, p, r, &pk),
@@ -576,7 +588,7 @@ pub fn serve(app: Arc<App>, listen: String) {
     log(&format!("oeffentlich auf {listen} (Host {}, Arcades {:?})", p.host, p.peers));
     for mut req in server.incoming_requests() {
         let mut body = String::new();
-        let _ = req.as_reader().take(64 * 1024).read_to_string(&mut body);
+        let _ = req.as_reader().take(160 * 1024).read_to_string(&mut body);
         let body: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
         let hdr = |name: &'static str| {
             req.headers().iter().find(|h| h.field.equiv(name)).map(|h| h.value.as_str().to_string()).unwrap_or_default()

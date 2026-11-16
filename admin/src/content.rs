@@ -89,6 +89,20 @@ pub fn serve(app: Arc<App>, listen: String) {
             let url = req.url().to_string();
             let path = url.split('?').next().unwrap_or("");
             let h = |s: &str| s.parse::<tiny_http::Header>().unwrap();
+            // Shims der App-Laufzeit (eigener Code, Nachrichten wie die Arcades): /r/storage.js, /r/app.js, /r/access.js
+            let shim = match path {
+                "/r/storage.js" => Some(include_str!("../web/shims/storage.js")),
+                "/r/app.js" => Some(include_str!("../web/shims/app.js")),
+                "/r/access.js" => Some(include_str!("../web/shims/access.js")),
+                _ => None,
+            };
+            if let Some(js) = shim {
+                let _ = req.respond(tiny_http::Response::from_string(js)
+                    .with_header(h("Content-Type: application/javascript; charset=utf-8"))
+                    .with_header(h("Access-Control-Allow-Origin: *"))
+                    .with_header(h("Cache-Control: public, max-age=3600")));
+                continue;
+            }
             // Lese-Schnittstellen fuer Apps (r.rs)
             if req.method().as_str() == "GET" {
                 let query = url.split_once('?').map(|x| x.1).unwrap_or("");
