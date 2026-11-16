@@ -13,6 +13,7 @@
 
 mod dlog;
 mod ext;
+mod rooms;
 mod link;
 mod node;
 mod ws;
@@ -298,12 +299,63 @@ fn cmd_ext_probe(args: Vec<String>) {
     });
 }
 
+/// meshd room-probe SOCKET ROOM SECONDS: Pruefung der Raeume am laufenden meshd. Tritt ROOM als guest-<zufall>
+/// bei, sagt alle 5 s eine Zeile, gibt jedes Ereignis als JSON-Zeile aus und geht nach SECONDS wieder.
+fn cmd_room_probe(args: Vec<String>) {
+    let sock = args.first().cloned().unwrap_or_else(|| "/run/meshd/ext.sock".into());
+    let room = args.get(1).cloned().unwrap_or_else(|| "arcadeos-test/lobby".into());
+    let secs: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(60);
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+    rt.block_on(async move {
+        use tokio::io::AsyncWriteExt;
+        let s = tokio::net::UnixStream::connect(&sock).await.expect("socket");
+        let (mut r, mut w) = s.into_split();
+        let mut b = [0u8; 4];
+        rand::rngs::OsRng.fill_bytes(&mut b);
+        let me = format!("guest-{}", hex::encode(b));
+        w.write_all(&ext::encode(&json!({"op": "hello", "kinds": ["rooms"]}), b"")).await.unwrap();
+        w.write_all(&ext::encode(&json!({"op": "room", "do": "join", "id": 1, "room": room, "member": me}), b"")).await.unwrap();
+        let start = Instant::now();
+        let mut said = 0u64;
+        let mut next = Instant::now() + Duration::from_secs(3);
+        while start.elapsed() < Duration::from_secs(secs) {
+            if Instant::now() >= next {
+                said += 1;
+                let line = format!("hello {said} from {me}");
+                w.write_all(&ext::encode(&json!({"op": "room", "do": "send", "id": 100 + said, "room": room, "member": me}), line.as_bytes())).await.unwrap();
+                w.write_all(&ext::encode(&json!({"op": "room", "do": "touch", "id": 0, "room": room, "member": me}), b"")).await.unwrap();
+                next = Instant::now() + Duration::from_secs(5);
+            }
+            match timeout(Duration::from_millis(500), ext::read_local(&mut r)).await {
+                Ok(Ok((h, blob))) if h["op"] == "room-event" || (h["op"] == "room-reply" && h["id"] != 0) => {
+                    let mut h = h;
+                    if !blob.is_empty() {
+                        h["data"] = json!(String::from_utf8_lossy(&blob));
+                    }
+                    if let Some(n) = h["node"].as_str() {
+                        h["node"] = json!(&n[..16.min(n.len())]);
+                    }
+                    println!("{h}");
+                }
+                Ok(Err(e)) => {
+                    println!("{}", json!({"error": e.to_string()}));
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let _ = w.write_all(&ext::encode(&json!({"op": "room", "do": "leave", "id": 2, "room": room, "member": me}), b"")).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    });
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("run") => return cmd_run(args[1..].to_vec()),
         Some("status") => return cmd_status(args[1..].to_vec()),
         Some("ext-probe") => return cmd_ext_probe(args[1..].to_vec()),
+        Some("room-probe") => return cmd_room_probe(args[1..].to_vec()),
         Some("probe") => {}
         _ => usage(),
     }

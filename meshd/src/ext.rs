@@ -50,7 +50,7 @@ impl ExtConfig {
         };
         ExtConfig {
             socket: std::env::var("MESHD_EXT").map(PathBuf::from).unwrap_or_else(|_| "/run/meshd/ext.sock".into()),
-            kinds: list("MESHD_EXT_KINDS", "cr").into_iter().collect(),
+            kinds: list("MESHD_EXT_KINDS", "cr,rooms").into_iter().collect(),
             uids: list("MESHD_EXT_UIDS", "0,1001").iter().filter_map(|s| s.parse().ok()).collect(),
         }
     }
@@ -68,6 +68,8 @@ pub trait Links: Send + Sync + 'static {
     /// (peer, inbound, rtt in s)
     fn links(&self) -> Vec<(String, bool, Option<f64>)>;
     fn node_id(&self) -> String;
+    /// Raum-Befehl (rooms.rs): join, leave, send, touch, members; die Antwort
+    fn room(&self, h: &Value, blob: Vec<u8>) -> Value;
 }
 
 pub struct Ext {
@@ -137,6 +139,14 @@ impl Ext {
         self.to_clients(None, encode(&json!({"op": "up", "peer": peer, "inbound": inbound}), b""));
     }
 
+    /// Ereignisse in Raeumen (rooms.rs) an Dienste, die "rooms" bestellt haben
+    pub fn room_events(&self, ev: Vec<crate::rooms::Event>) {
+        for e in ev {
+            let h = json!({"op": "room-event", "type": e.kind, "room": e.room, "member": e.member, "node": e.node, "cred": e.cred});
+            self.to_clients(Some("rooms"), encode(&h, &e.data));
+        }
+    }
+
     pub fn link_down(&self, peer: &str) {
         self.to_clients(None, encode(&json!({"op": "down", "peer": peer}), b""));
     }
@@ -198,6 +208,7 @@ impl Ext {
             let _ = tx.try_send(encode(&json!({"op": "up", "peer": p, "inbound": inbound}), b""));
         }
         ev("info", "ext_client", json!({"client": id, "kinds": sorted}));
+        let reply_tx = tx.clone();
         self.clients.lock().unwrap().push(Client { id, kinds: kinds.clone(), tx });
         let writer = tokio::spawn(async move {
             while let Some(m) = rx.recv().await {
@@ -210,6 +221,14 @@ impl Ext {
         let mut refused = 0u64;
         loop {
             let Ok((h, blob)) = read_local(&mut r).await else { break };
+            // Raum-Befehle (nur wer "rooms" bestellt hat): Antwort mit derselben id
+            if h["op"] == "room" && kinds.contains("rooms") {
+                let mut reply = node.room(&h, blob);
+                reply["op"] = json!("room-reply");
+                reply["id"] = h["id"].clone();
+                let _ = reply_tx.try_send(encode(&reply, b""));
+                continue;
+            }
             if h["op"] != "send" {
                 continue;
             }
@@ -244,6 +263,9 @@ mod tests {
         }
         fn links(&self) -> Vec<(String, bool, Option<f64>)> {
             vec![("aa".repeat(32), true, Some(0.05))]
+        }
+        fn room(&self, _: &Value, _: Vec<u8>) -> Value {
+            json!({"ok": true})
         }
         fn node_id(&self) -> String {
             "bb".repeat(32)

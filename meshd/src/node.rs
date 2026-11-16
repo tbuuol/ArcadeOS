@@ -170,6 +170,8 @@ pub struct Node {
     st: Mutex<State>,
     /// lokale Schnittstelle fuer Erweiterungen (ext.rs); None = keine
     ext: Option<Arc<crate::ext::Ext>>,
+    /// Raeume fuer die Spieler dieser Box (rooms.rs)
+    rooms: Mutex<crate::rooms::Rooms>,
 }
 
 /// Mesh-Key laden oder (beim ersten Start) erzeugen: 32-Byte-Seed als Hex, Datei 0600
@@ -208,6 +210,7 @@ impl Node {
             id,
             started: Instant::now(),
             ext,
+            rooms: Mutex::new(Default::default()),
             st: Mutex::new(State {
                 addrs: HashMap::new(),
                 links: HashMap::new(),
@@ -352,6 +355,9 @@ impl Node {
                 Err(e) => ev("error", "listen_failed", json!({"port": port, "error": e.to_string()})),
             }
         }
+        // Raeume: Anwesenheit und SUB im Takt (rooms.rs)
+        let n2 = self.clone();
+        tokio::spawn(async move { n2.rooms_loop().await });
         if let Some(x) = self.ext.clone() {
             let n: Arc<dyn crate::ext::Links> = self.clone();
             tokio::spawn(async move { x.run(n).await });
@@ -578,6 +584,10 @@ impl Node {
         if let Some(x) = &self.ext {
             x.link_up(&peer, inbound);
         }
+        // sind Spieler dieser Box in Raeumen, erfaehrt die neue Verbindung das gleich
+        if let Some(sub) = self.rooms.lock().unwrap().current_sub(&self.key, &self.id) {
+            let _ = out_tx.send((sub, Vec::new()));
+        }
         // Schreiber: alles, was in den Kanal kommt, geht verschluesselt raus
         let writer = tokio::spawn(async move {
             while let Some(v) = out_rx.recv().await {
@@ -639,7 +649,8 @@ impl Node {
             };
             let (kind, header) = match body {
                 Body::Json(h, b) => (h.get("t").and_then(Value::as_str).unwrap_or("?").to_string(), Some((h, b))),
-                Body::BinaryPub(_) => ("pub".to_string(), None),
+                // binaerer Raum-Rahmen: als dasselbe Dict wie die JSON-Form (rooms.rs)
+                Body::BinaryPub(p) => ("pub".to_string(), crate::rooms::unpack_pub(&p)),
             };
             let first = {
                 let mut st = self.st.lock().unwrap();
@@ -691,6 +702,14 @@ impl Node {
                             ev("debug", "addrs", json!({"peer": peer, "new": new, "refused": refused}));
                         }
                     }
+                }
+                // Raeume (rooms.rs): SUBs geben Wege, PUBs in unsere Raeume Ereignisse fuer unsere Spieler
+                "sub" => {
+                    self.rooms.lock().unwrap().on_sub(&peer, &h, &self.id);
+                }
+                "pub" => {
+                    let ev = self.rooms.lock().unwrap().on_pub(&h, &blob, &self.id);
+                    self.room_events(ev);
                 }
                 "dialback-said" => {
                     let n = h.get("n").and_then(Value::as_str).unwrap_or("");
@@ -784,6 +803,7 @@ impl Node {
             // Rueckrufe der Gegenseiten: ok = dort, wo sie uns sehen, sind wir von aussen erreichbar
             "dialback": st.dialback.values().cloned().collect::<Vec<Value>>(),
             "reachable": st.dialback.values().any(|d| d["ok"] == true),
+            "rooms": self.rooms.lock().unwrap().status(),
         })
     }
 
@@ -803,7 +823,83 @@ impl Node {
     }
 }
 
+impl Node {
+    /// Was die Raumschicht hinausschicken will: an eine Verbindung, oder (None) an alle
+    fn send_out(&self, out: crate::rooms::Out) {
+        if out.is_empty() {
+            return;
+        }
+        let st = self.st.lock().unwrap();
+        for (to, h, blob) in out {
+            match to {
+                Some(p) => {
+                    if let Some(l) = st.links.get(&p) {
+                        let _ = l.tx.send((h, blob));
+                    }
+                }
+                None => {
+                    for l in st.links.values() {
+                        let _ = l.tx.send((h.clone(), blob.clone()));
+                    }
+                }
+            }
+        }
+    }
+
+    fn room_events(&self, ev: Vec<crate::rooms::Event>) {
+        if let (Some(x), false) = (&self.ext, ev.is_empty()) {
+            x.room_events(ev);
+        }
+    }
+
+    /// Der Takt der Raeume: alle HERE_EVERY Anwesenheit, alle SUB_EVERY (und bei Aenderung) die eigene SUB
+    pub async fn rooms_loop(self: Arc<Self>) {
+        let mut last_sub = Instant::now();
+        loop {
+            sleep(crate::rooms::HERE_EVERY).await;
+            let due = last_sub.elapsed() >= crate::rooms::SUB_EVERY;
+            if due {
+                last_sub = Instant::now();
+            }
+            let (ev, out) = self.rooms.lock().unwrap().tick(&self.key, &self.id, due);
+            self.room_events(ev);
+            self.send_out(out);
+        }
+    }
+}
+
 impl crate::ext::Links for Node {
+    /// Raum-Befehle des lokalen Dienstes: join, leave, send (Nutzlast im Anhang), touch, members
+    fn room(&self, h: &Value, blob: Vec<u8>) -> Value {
+        let room = h["room"].as_str().unwrap_or("");
+        let member = h["member"].as_str().unwrap_or("");
+        let mut r = self.rooms.lock().unwrap();
+        let (ev, out, reply) = match h["do"].as_str() {
+            Some("join") => match r.join(&self.key, &self.id, room, member, h.get("cred").filter(|c| c.is_object()).cloned()) {
+                Ok((ev, out, members)) => (ev, out, json!({"ok": true, "me": member, "node": self.id, "members": members})),
+                Err(e) => (vec![], vec![], json!({"ok": false, "error": e})),
+            },
+            Some("leave") => {
+                let (ev, out) = r.leave(&self.key, &self.id, room, member);
+                (ev, out, json!({"ok": true}))
+            }
+            Some("send") => match r.send(&self.key, &self.id, room, member, &blob) {
+                Ok((ev, out)) => (ev, out, json!({"ok": true})),
+                Err(e) => (vec![], vec![], json!({"ok": false, "error": e})),
+            },
+            Some("touch") => {
+                let ok = r.touch(room, member);
+                (vec![], vec![], json!({"ok": ok, "error": if ok { Value::Null } else { json!("not in that room") }}))
+            }
+            Some("members") => (vec![], vec![], json!({"ok": true, "members": r.members(room, &self.id)})),
+            _ => (vec![], vec![], json!({"ok": false, "error": "room ops are join, leave, send, touch, members"})),
+        };
+        drop(r);
+        self.room_events(ev);
+        self.send_out(out);
+        reply
+    }
+
     fn send_to(&self, peer: &str, h: Value, blob: Vec<u8>) -> bool {
         self.st.lock().unwrap().links.get(peer).is_some_and(|l| l.tx.send((h, blob)).is_ok())
     }
