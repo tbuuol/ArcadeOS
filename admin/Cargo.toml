@@ -17,6 +17,8 @@ base64 = "0.22"
 hex = "0.4"
 getrandom = "0.2"
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+# Pruefung geliehener Bloecke (Hash, Merkle, Arbeit): dieselben Regeln wie chaind
+arcade-chain = { path = "../chaind/vendor/arcade-chain" }
 
 [profile.release]
 opt-level = "s"

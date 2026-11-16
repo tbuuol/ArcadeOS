@@ -25,6 +25,7 @@ mod public;
 mod utxo;
 mod msgs;
 mod share;
+mod borrow;
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use ripemd::Ripemd160;
 use serde_json::{json, Value};
@@ -718,11 +719,44 @@ fn owner(app: &App, b: &Value) -> Resp {
     (200, json!({"ok": true}))
 }
 
-/// Was der Betreiber fuer eine Aenderung der Freigaben signiert: "arcadeos-chains\n<Knoten>\n<Zufallszahl>\n" und
-/// je Chain (Reihenfolge von share::CHAINS) "share <net>=1|0" in einer Zeile, durch Leerzeichen getrennt.
-fn chains_message(node: &str, nonce: &str, share: &serde_json::Map<String, Value>) -> String {
-    let parts: Vec<String> = share::CHAINS.iter().map(|c| format!("{}={}", c.net, if share.get(c.net).and_then(Value::as_bool) == Some(true) { 1 } else { 0 })).collect();
-    format!("arcadeos-chains\n{node}\n{nonce}\nshare {}", parts.join(" "))
+/// Was der Betreiber fuer eine Aenderung der Freigaben signiert:
+/// "arcadeos-chains\n<Knoten>\n<Zufallszahl>\nshare <net>=1|0 ...\nborrow <net>=1|0 ..." (Reihenfolge:
+/// share::CHAINS, borrow::lendable(); fehlende = 0).
+fn chains_message(node: &str, nonce: &str, share: &serde_json::Map<String, Value>, borrow: &serde_json::Map<String, Value>) -> String {
+    let on = |m: &serde_json::Map<String, Value>, k: &str| if m.get(k).and_then(Value::as_bool) == Some(true) { 1 } else { 0 };
+    let s: Vec<String> = share::CHAINS.iter().map(|c| format!("{}={}", c.net, on(share, c.net))).collect();
+    let b: Vec<String> = borrow::lendable().iter().map(|l| format!("{}={}", l.net, on(borrow, l.net))).collect();
+    format!("arcadeos-chains\n{node}\n{nonce}\nshare {}\nborrow {}", s.join(" "), b.join(" "))
+}
+
+/// Lokaler Zugang zu geliehenen Chains (nur 127.0.0.1, fuer Dienste dieser Box und Tests): POST /<net> mit einem
+/// JSON-RPC-Aufruf oder einer Liste davon. Nur fuer freigeschaltete Chains, nur pruefbare Formen (borrow.rs).
+fn serve_borrow(listen: String) {
+    if !listen.starts_with("127.0.0.1:") {
+        log("leihen: Zugang nur auf 127.0.0.1");
+        return;
+    }
+    let Ok(server) = tiny_http::Server::http(&listen) else { return log(&format!("leihen: kann nicht auf {listen} lauschen")) };
+    for mut req in server.incoming_requests() {
+        let net = req.url().trim_start_matches('/').to_string();
+        let mut body = String::new();
+        let _ = req.as_reader().take(16 * 1024 * 1024).read_to_string(&mut body);
+        let v: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+        let single = !v.is_array();
+        let list: Vec<Value> = if single { vec![v] } else { v.as_array().cloned().unwrap_or_default() };
+        let calls: Vec<(String, Value)> = list.iter().map(|c| (c["method"].as_str().unwrap_or("").to_string(), c["params"].clone().as_array().cloned().map(Value::Array).unwrap_or(json!([])))).collect();
+        let out = match borrow::call(&net, &calls) {
+            Ok((peer, answers)) => {
+                let rows: Vec<Value> = list.iter().zip(answers).map(|(c, a)| match a.get("r") {
+                    Some(r) => json!({"result": r, "error": null, "id": c["id"], "from": &peer[..16]}),
+                    None => json!({"result": null, "error": {"code": a["e"][0], "message": a["e"][1]}, "id": c["id"]}),
+                }).collect();
+                if single { rows[0].clone() } else { Value::Array(rows) }
+            }
+            Err(e) => json!({"result": null, "error": {"code": -1, "message": e}, "id": list.first().map(|c| c["id"].clone())}),
+        };
+        let _ = req.respond(tiny_http::Response::from_string(out.to_string()).with_header("Content-Type: application/json".parse::<tiny_http::Header>().unwrap()));
+    }
 }
 
 /// Freigaben aendern: nur mit der Signatur des Betreiber-Kontos (aus seinem Browser) ueber eine frische Zufallszahl
@@ -735,13 +769,15 @@ fn set_chains(app: &App, b: &Value) -> Resp {
         return err(400, "Zufallszahl unbekannt oder abgelaufen, bitte neu laden");
     }
     let Some(node) = app.node_id() else { return err(503, "meshd laeuft nicht") };
-    if !verify_message(sig, &chains_message(&node, nonce, share), &addr) {
+    let empty = serde_json::Map::new();
+    let borrow = b["borrow"].as_object().unwrap_or(&empty);
+    if !verify_message(sig, &chains_message(&node, nonce, share, borrow), &addr) {
         return err(403, "Signatur passt nicht zum Betreiber-Konto");
     }
-    if let Err(e) = share::set_share(app, share) {
+    if let Err(e) = share::set_settings(app, share, borrow) {
         return err(500, &e);
     }
-    log(&format!("Freigaben geaendert: {}", chains_message("-", "-", share).lines().last().unwrap_or("")));
+    log(&format!("Freigaben geaendert: {}", chains_message("-", "-", share, borrow).lines().skip(3).collect::<Vec<_>>().join(" / ")));
     (200, share::status())
 }
 
@@ -798,6 +834,11 @@ fn main() {
     // Teilen der Chain-Knoten mit anderen Arcades (standardmaessig nichts; share.rs)
     let a = app.clone();
     std::thread::spawn(move || share::run(a));
+    // geliehene Chains fuer Dienste dieser Box (standardmaessig aus; borrow.rs)
+    let bl = env("ADMIN_BORROW_LISTEN", "127.0.0.1:8093");
+    if bl != "off" {
+        std::thread::spawn(move || serve_borrow(bl));
+    }
     // Oeffentlicher Teil (Konten der Nutzer), eigener Port; Caddy reicht ihn ins Internet
     let a = app.clone();
     let public_listen = env("ADMIN_PUBLIC_LISTEN", "127.0.0.1:8091");

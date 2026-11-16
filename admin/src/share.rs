@@ -114,6 +114,8 @@ pub fn load(app: &App) {
     let v: Value = std::fs::read_to_string(settings_path(app)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(json!({}));
     let mut s = st().lock().unwrap();
     s.share = CHAINS.iter().map(|c| (c.net.to_string(), v["share"][c.net].as_bool() == Some(true))).collect();
+    drop(s);
+    crate::borrow::set_settings(crate::borrow::settings_from(&v));
 }
 
 pub fn shared_settings() -> BTreeMap<String, bool> {
@@ -121,7 +123,7 @@ pub fn shared_settings() -> BTreeMap<String, bool> {
 }
 
 /// Neue Freigaben (nur bekannte Chains), gespeichert; das Angebot folgt beim naechsten Blick (hoechstens OFFER_EVERY)
-pub fn set_share(app: &App, share: &Map<String, Value>) -> Result<(), String> {
+pub fn set_settings(app: &App, share: &Map<String, Value>, borrow: &Map<String, Value>) -> Result<(), String> {
     let path = settings_path(app);
     let mut v: Value = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(json!({}));
     if !v.is_object() {
@@ -132,6 +134,11 @@ pub fn set_share(app: &App, share: &Map<String, Value>) -> Result<(), String> {
         new.insert(c.net.into(), json!(share.get(c.net).and_then(Value::as_bool).unwrap_or(false)));
     }
     v["share"] = Value::Object(new);
+    let mut b = Map::new();
+    for l in crate::borrow::lendable() {
+        b.insert(l.net.into(), json!(borrow.get(l.net).and_then(Value::as_bool).unwrap_or(false)));
+    }
+    v["borrow"] = Value::Object(b);
     let tmp = path.with_extension("new");
     std::fs::write(&tmp, serde_json::to_string_pretty(&v).unwrap()).map_err(|e| e.to_string())?;
     {
@@ -168,7 +175,11 @@ pub fn status() -> Value {
         .collect();
     let borrowers: Vec<Value> = s.peers.iter().filter(|(_, p)| p.served > 0)
         .map(|(id, p)| json!({"peer": &id[..16.min(id.len())], "answers": p.served})).collect();
-    json!({"chains": chains, "mesh": s.linked, "answers": s.served_total, "refused": s.refused_total, "borrowers": borrowers})
+    let linked = s.linked;
+    let (answers, refused) = (s.served_total, s.refused_total);
+    drop(s);
+    json!({"chains": chains, "mesh": linked, "answers": answers, "refused": refused, "borrowers": borrowers,
+           "borrow": crate::borrow::status()})
 }
 
 // ------------------------------------------------------------------ meshd-Schnittstelle
@@ -202,7 +213,7 @@ fn read_local(r: &mut UnixStream) -> std::io::Result<(Value, Vec<u8>)> {
 }
 
 /// Einen cr-Rahmen an eine Arcade
-fn send(peer: &str, h: Value, blob: &[u8]) -> bool {
+pub fn send(peer: &str, h: Value, blob: &[u8]) -> bool {
     let w = writer().lock().unwrap();
     let Some(s) = w.as_ref() else { return false };
     let mut s: &UnixStream = s;
@@ -309,6 +320,8 @@ fn session(s: &mut UnixStream) -> std::io::Result<()> {
                     let mut g = st().lock().unwrap();
                     g.peers.remove(peer);
                     g.asked.retain(|k, _| k.0 != peer);
+                    drop(g);
+                    crate::borrow::on_down(peer);
                 }
             }
             Some("links") => {
@@ -316,15 +329,20 @@ fn session(s: &mut UnixStream) -> std::io::Result<()> {
                 for l in h["links"].as_array().into_iter().flatten() {
                     if let Some(p) = l["peer"].as_str() {
                         g.peers.entry(p.to_string()).or_default().rtt_ms = l["rtt_ms"].as_f64();
+                        crate::borrow::on_rtt(p, l["rtt_ms"].as_f64());
                     }
                 }
             }
             Some("frame") => {
                 let (Some(peer), f) = (h["peer"].as_str(), &h["h"]) else { continue };
-                if f["op"] == "q" {
-                    on_request(peer, f, blob);
+                match f["op"].as_str() {
+                    Some("q") => on_request(peer, f, blob),
+                    // Leihen (borrow.rs): Angebote merken, Antworten auf eigene Fragen zuordnen
+                    Some("offer") => crate::borrow::on_offer(peer, &f["nets"]),
+                    Some("a") => crate::borrow::on_answer(peer, f, &blob),
+                    // sub/tx/gone (Mempool-Strom): noch nicht
+                    _ => {}
                 }
-                // offer/sub/a/tx/gone anderer Arcades: Leihen (spaeter, standardmaessig aus)
             }
             _ => {}
         }
