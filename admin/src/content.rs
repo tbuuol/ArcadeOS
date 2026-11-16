@@ -89,6 +89,17 @@ pub fn serve(app: Arc<App>, listen: String) {
             let url = req.url().to_string();
             let path = url.split('?').next().unwrap_or("");
             let h = |s: &str| s.parse::<tiny_http::Header>().unwrap();
+            // Lese-Schnittstellen fuer Apps (r.rs)
+            if req.method().as_str() == "GET" {
+                let query = url.split_once('?').map(|x| x.1).unwrap_or("");
+                if let Some((code, v)) = crate::r::handle(&app, path, query) {
+                    let _ = req.respond(tiny_http::Response::from_string(v.to_string()).with_status_code(code)
+                        .with_header(h("Content-Type: application/json; charset=utf-8"))
+                        .with_header(h("Access-Control-Allow-Origin: *"))
+                        .with_header(h("Cache-Control: no-store")));
+                    continue;
+                }
+            }
             let resp = match (req.method().as_str(), path.strip_prefix("/content/")) {
                 ("GET", Some(t)) | ("HEAD", Some(t)) => match get(&app, t) {
                     Ok((ct, b)) => tiny_http::Response::from_data(b)

@@ -37,6 +37,12 @@ pub struct Insc {
     pub creator: String,
     pub h: u32,
     pub pieces: Vec<String>,
+    /// laufende Nummer (Reihenfolge, in der Inschriften fertig wurden, wie die Arcades)
+    pub number: u64,
+    /// wem sie gehoert (Uebertragungen KIND_TRANSFER; Tausch/Buendel noch nicht)
+    pub owner: String,
+    pub json: String,
+    pub pos: u32,
 }
 
 pub fn inscription(txid: &str) -> Option<Insc> {
@@ -196,7 +202,9 @@ impl Idx {
         let p = self.pending.remove(&key).unwrap();
         self.pending_bytes -= p.bytes;
         self.inscriptions += 1;
+        let number = self.inscriptions - 1;
         self.insc.insert(first_txid.clone(), Insc { ctype: ctype.clone(), total: total as u32, sha, creator: from.to_string(), h,
+            number, owner: from.to_string(), json: js.clone(), pos,
             pieces: (0..=top).rev().map(|c| p.pieces[&c].1.clone()).collect() });
         if !ctype.to_ascii_lowercase().starts_with("text/html") {
             return;
@@ -238,9 +246,9 @@ impl Idx {
         let cards: Vec<Value> = self.cards.iter().map(|c| json!({"txid": c.txid, "creator": c.creator, "h": c.h, "pos": c.pos, "game": c.game})).collect();
         let pending: Vec<Value> = self.pending.iter().map(|((from, id), p)| json!({"from": from, "id": hex::encode(id), "first_h": p.first_h,
             "pieces": p.pieces.iter().map(|(c, (b, t, h, pos))| json!([c, hex::encode(b), t, h, pos])).collect::<Vec<_>>()})).collect();
-        let insc: serde_json::Map<String, Value> = self.insc.iter().map(|(t, i)| (t.clone(), json!([i.ctype, i.total, hex::encode(i.sha), i.creator, i.h, i.pieces])))
+        let insc: serde_json::Map<String, Value> = self.insc.iter().map(|(t, i)| (t.clone(), json!([i.ctype, i.total, hex::encode(i.sha), i.creator, i.h, i.pieces, i.number, i.owner, i.json, i.pos])))
             .collect();
-        let v = json!({"version": 2, "height": self.height, "hash": shown(&self.hash), "inscriptions": self.inscriptions, "cards": cards, "pending": pending, "insc": insc});
+        let v = json!({"version": 3, "height": self.height, "hash": shown(&self.hash), "inscriptions": self.inscriptions, "cards": cards, "pending": pending, "insc": insc});
         let tmp = path.with_extension("new");
         if std::fs::write(&tmp, v.to_string()).is_ok() {
             let _ = std::fs::rename(&tmp, path);
@@ -251,14 +259,16 @@ impl Idx {
         let mut i = Idx { height: ACTIVATION as u32 - 1, ..Default::default() };
         let Some(v) = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) else { return i };
         // aeltere Fassung ohne die Stuecke jeder Inschrift: von vorn lesen
-        if v["version"] != 2 {
+        if v["version"] != 3 {
             return i;
         }
         for (t, x) in v["insc"].as_object().into_iter().flatten() {
             let Some(sha) = x[2].as_str().and_then(|s| hex::decode(s).ok()).and_then(|b| <[u8; 32]>::try_from(b).ok()) else { continue };
             i.insc.insert(t.clone(), Insc { ctype: x[0].as_str().unwrap_or("").into(), total: x[1].as_u64().unwrap_or(0) as u32, sha,
                 creator: x[3].as_str().unwrap_or("").into(), h: x[4].as_u64().unwrap_or(0) as u32,
-                pieces: x[5].as_array().into_iter().flatten().filter_map(|p| p.as_str().map(String::from)).collect() });
+                pieces: x[5].as_array().into_iter().flatten().filter_map(|p| p.as_str().map(String::from)).collect(),
+                number: x[6].as_u64().unwrap_or(0), owner: x[7].as_str().unwrap_or("").into(), json: x[8].as_str().unwrap_or("").into(),
+                pos: x[9].as_u64().unwrap_or(0) as u32 });
         }
         i.height = v["height"].as_u64().unwrap_or(i.height as u64) as u32;
         i.hash = internal(v["hash"].as_str().unwrap_or("")).unwrap_or([0; 32]);
@@ -321,7 +331,14 @@ fn step(app: &App, path: &PathBuf, marker: &[u8]) -> Result<bool, String> {
         }
         for (pos, tx) in txs.iter().enumerate() {
             if let Some((from, data)) = crate::msgs::anydata(tx, marker) {
-                if let Some((id, countdown, body)) = chunk(&data) {
+                if let Some(target) = data.strip_prefix(b"INSC\x01\x02").and_then(|t| t.get(..32)) {
+                    // Uebertragung: an die Referenzadresse, nur durch den Besitzer (state.py _inscription_transfer)
+                    let mut id = target.to_vec();
+                    id.reverse();
+                    if let Some(to) = reference(tx, &from, marker) {
+                        g.transfer(&hex::encode(id), &from, &to);
+                    }
+                } else if let Some((id, countdown, body)) = chunk(&data) {
                     g.piece(&from, id, countdown, body, shown(&tx.txid), h, pos as u32);
                 }
             }
@@ -412,4 +429,59 @@ mod tests {
         d.extend_from_slice(b"hi\0\0\0");
         assert_eq!(chunk(&d), Some(([9; 8], 3, &b"hi"[..])));
     }
+}
+
+/// Die Adresse einer Ausgabe (P2PKH, P2SH; Pepecoin-Testnet), sonst None
+fn out_addr(spk: &[u8]) -> Option<String> {
+    if spk.len() == 25 && spk[..3] == [0x76, 0xa9, 20] && spk[23..] == [0x88, 0xac] {
+        return Some(crate::b58check(crate::PKH, &spk[3..23]));
+    }
+    if spk.len() == 23 && spk[..2] == [0xa9, 20] && spk[22] == 0x87 {
+        return Some(crate::b58check(crate::P2SH, &spk[2..22]));
+    }
+    None
+}
+
+/// Die Referenzadresse wie die Arcades (tx.py determine_reference): die Ausgaben mit Adresse ausser dem Marker;
+/// eine einzige ist es; sonst die erste an den Absender als Wechselgeld uebersprungen und die letzte der anderen
+fn reference(tx: &crate::utxo::Tx, sender: &str, marker: &[u8]) -> Option<String> {
+    let c: Vec<String> = tx.outs.iter().filter(|(_, s)| *s != marker).filter_map(|(_, s)| out_addr(s)).collect();
+    match c.len() {
+        0 => None,
+        1 => c.into_iter().next(),
+        _ => {
+            let (mut r, mut change) = (None, false);
+            for a in c {
+                if a == sender && !change {
+                    change = true;
+                    continue;
+                }
+                r = Some(a);
+            }
+            r
+        }
+    }
+}
+
+impl Idx {
+    fn transfer(&mut self, txid: &str, from: &str, to: &str) {
+        if let Some(i) = self.insc.get_mut(txid) {
+            if i.owner == from && to != i.owner {
+                i.owner = to.to_string();
+            }
+        }
+    }
+}
+
+/// Alle Inschriften (fuer die Lese-Schnittstellen r.rs): (txid, Inschrift), neueste zuerst
+pub fn all_newest_first() -> Vec<(String, Insc)> {
+    let g = idx().lock().unwrap();
+    let mut v: Vec<(String, Insc)> = g.insc.iter().map(|(t, i)| (t.clone(), i.clone())).collect();
+    v.sort_by(|a, b| b.1.number.cmp(&a.1.number));
+    v
+}
+
+pub fn by_number(n: u64) -> Option<(String, Insc)> {
+    let g = idx().lock().unwrap();
+    g.insc.iter().find(|(_, i)| i.number == n).map(|(t, i)| (t.clone(), i.clone()))
 }
