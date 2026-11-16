@@ -555,6 +555,47 @@ fn route(app: &App, p: &Pub, r: &Req) -> Out {
                     _ => bad(405, "GET oder POST"),
                 };
             }
+            // Wallet-Zugriff eingeschriebener Apps (viewer.rs): Zustimmung je Konto und App, Betrachter-Ticket
+            if path == "/api/access" && r.method == "GET" {
+                return ok(json!({"wallet": crate::viewer::wallet_list(app, &pk)}));
+            }
+            if let Some(card) = path.strip_prefix("/api/access/") {
+                let card = card.to_ascii_lowercase();
+                if card.len() != 64 || !card.bytes().all(|c| c.is_ascii_hexdigit()) {
+                    return bad(400, "keine Karte");
+                }
+                return match r.method {
+                    "GET" => ok(json!({"wallet": crate::viewer::wallet_allowed(app, &pk, &card)})),
+                    "POST" => {
+                        let on = r.body["wallet"].as_bool() == Some(true);
+                        // zustimmen nur fuer eine freigeschaltete App; zuruecknehmen immer
+                        if on && crate::viewer::enabled_app(app, &card).is_none() {
+                            return bad(404, "diese App ist hier nicht freigeschaltet");
+                        }
+                        match crate::viewer::set_wallet(app, &pk, &card, on) {
+                            Ok(()) => {
+                                log(&format!("Wallet-Zugriff {} fuer App {}", if on { "erlaubt" } else { "zurueckgenommen" }, &card[..12]));
+                                ok(json!({"ok": true, "wallet": on}))
+                            }
+                            Err(e) => bad(500, e),
+                        }
+                    }
+                    _ => bad(405, "GET oder POST"),
+                };
+            }
+            if path == "/api/viewer" && r.method == "POST" {
+                if !p.limit(&format!("viewer:{pk}"), 120, 3600) {
+                    return bad(429, "zu viele Anfragen");
+                }
+                let card = r.body["card"].as_str().unwrap_or("").to_ascii_lowercase();
+                let Some((_, page)) = crate::viewer::enabled_app(app, &card) else { return bad(404, "diese App ist hier nicht freigeschaltet") };
+                let addr = p.accounts.lock().unwrap()[pk.as_str()]["address"].as_str().unwrap_or("").to_string();
+                if addr.is_empty() {
+                    return bad(409, "dieses Konto hat keine Adresse");
+                }
+                let (ticket, exp) = crate::viewer::mint(app, &pk, &addr, &card, &page);
+                return ok(json!({"ok": true, "ticket": ticket, "page": page, "expires": exp}));
+            }
             match (r.method, path) {
                 ("GET", "/api/me") => me(app, p, &pk),
                 ("POST", "/api/faucet") => faucet(app, p, r, &pk),

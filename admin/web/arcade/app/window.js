@@ -3,7 +3,7 @@
 // den Woertern) und beantwortet ihre Fragen - nur die aus genau diesem Rahmen:
 //   storage  arcade.storage: angemeldet auf der Box (je Konto und Seite), als Gast nur in diesem Browser
 //   app      arcade.app: Zustand (offen)
-//   access   arcade.access: Status; Wallet-Zugriff gibt es hier noch nicht
+//   access   arcade.access: Status; wallet() fragt den angemeldeten Nutzer (Karte), Zustimmung je Konto und App
 //   realtime arcade.realtime: Raeume mit Spielern aller Arcades (als Gast), schnelle Spur (WebRTC); ohne Medien
 const $ = (s) => document.querySelector(s);
 const id = new URLSearchParams(location.search).get('id') || '';
@@ -340,14 +340,62 @@ window.addEventListener('pagehide', () => {
   }
 });
 
+// ------------------------------------------------------------------ Wallet-Zugriff (arcade.access.wallet)
+// Die Karte zeichnet DIESES Fenster ueber dem Rahmen, wo die App nicht hinkommt; die App bekommt nur die Antwort.
+// Die Zustimmung liegt auf der Box je Konto und App (/api/access/<Karte>); /r/wallet fragt sie bei jedem Aufruf,
+// darum wirken Ja und Zuruecknehmen sofort, ohne die Seite neu zu laden (das Ticket hat der Rahmen schon).
+let walletOn = false, asking = null, appInfo = null;
+
+function showWallet() { $('#wallet').classList.toggle('on', walletOn); }
+
+function card(title, text, yes, no) {
+  return new Promise((done) => {
+    const box = document.createElement('div');
+    box.className = 'ask';
+    const c = document.createElement('div');
+    c.className = 'card';
+    const h = document.createElement('h2'); h.textContent = title;
+    c.append(h);
+    for (const t of text) { const p = document.createElement('p'); p.textContent = t; c.append(p); }
+    const row = document.createElement('div'); row.className = 'row';
+    const bn = document.createElement('button'); bn.type = 'button'; bn.textContent = no;
+    const by = document.createElement('button'); by.type = 'button'; by.className = 'yes'; by.textContent = yes;
+    row.append(bn, by); c.append(row); box.append(c);
+    const end = (v) => { box.remove(); done(v); };
+    bn.onclick = () => end(false);
+    by.onclick = () => end(true);
+    $('#stage').append(box);
+    by.focus();
+  });
+}
+
+async function walletAsk() {
+  if (!account) throw new Error('wallet off: sign in first: wallet access is for a player who is signed in');
+  if (walletOn) return { wallet: true, status: 'already' };
+  if (asking) return asking;                       // eine Karte zur Zeit; jede Frage bekommt dieselbe Antwort
+  asking = (async () => {
+    const name = appInfo.name || 'Diese App';
+    const yes = await card(`${name} möchte deine Wallet sehen`, [
+      `${name}${appInfo.by ? ` von @${appInfo.by}` : ''} möchte wissen, wer spielt: deine Adresse${account.tag ? ` und @${account.tag}` : ''}, dein Guthaben (Pepecoin-Testnet) und wie viele Inschriften du besitzt.`,
+      'Ausgeben kann die App damit nichts. Du kannst die Zustimmung oben in der Leiste jederzeit zurücknehmen.',
+    ], 'Ja, zeigen', 'Nein');
+    if (!yes) return { wallet: false, status: 'declined' };
+    await post(`/api/access/${id}`, { wallet: true });
+    walletOn = true; showWallet();
+    return { wallet: true, status: 'allowed' };
+  })();
+  try { return await asking; } finally { asking = null; }
+}
+
 async function answer(m) {
   if (m.arcade === 'storage') return storage(m);
   if (m.arcade === 'app') return { state: 'open', timeout: null, closesAt: null, inShell: false };
   if (m.arcade === 'realtime') return realtime(m);
   if (m.arcade === 'access') {
-    if (m.op === 'status') return { wallet: false, signedIn: !!account };
+    if (m.op === 'status') return { wallet: walletOn, signedIn: !!account, node: location.host, game: true, name: appInfo ? String(appInfo.name || '') : '' };
+    if (m.op === 'wallet') return walletAsk();
     if (m.op === 'nodes') return { nodes: [] };
-    throw new Error(m.op === 'wallet' ? 'wallet access is not available on this arcade yet' : 'not available on this arcade yet');
+    throw new Error(m.op === 'move' ? 'moving to another arcade is not available on this arcade yet' : 'access: op is status, wallet, nodes or move');
   }
   throw new Error('not answered by this arcade yet');
 }
@@ -374,11 +422,24 @@ async function start() {
   document.title = `${app.name} · LiteWorldsQuest ArcadeOS`;
   $('#name').textContent = app.name;
   $('#by').textContent = app.by ? `von @${app.by}` : '';
-  $('#who').textContent = account ? (account.tag ? `@${account.tag}` : 'angemeldet') : 'Gast: Spielstände nur in diesem Browser';
+  $('#who').textContent = account ? (account.tag ? `@${account.tag}` : 'angemeldet') : 'Gast: Spielstände nur in diesem Browser, Wallet aus';
+  appInfo = app;
+  // Angemeldet: Zustimmung lesen und das Betrachter-Ticket fuer diese Seite holen (die Seite sieht damit nur etwas,
+  // wenn der Nutzer zustimmt: /r/wallet prueft das jedes Mal)
+  let ticket = '';
+  if (account) {
+    try { walletOn = !!(await get(`/api/access/${id}`)).wallet; } catch { walletOn = false; }
+    try { ticket = (await post('/api/viewer', { card: id })).ticket || ''; } catch { ticket = ''; }
+    showWallet();
+    $('#revoke').onclick = async () => {
+      try { await post(`/api/access/${id}`, { wallet: false }); walletOn = false; showWallet(); }
+      catch (e) { alert(`Zurücknehmen ging nicht: ${e.message}`); }
+    };
+  }
   frame = document.createElement('iframe');
   frame.setAttribute('sandbox', 'allow-scripts allow-pointer-lock');
   frame.setAttribute('allow', 'fullscreen');
-  frame.src = `/content/${page}`;
+  frame.src = `/content/${page}` + (ticket ? `?v=${encodeURIComponent(ticket)}` : '');
   $('#stage').replaceChildren(frame);
 }
 start();

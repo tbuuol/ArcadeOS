@@ -57,8 +57,34 @@ fn list(app: &App, query: &str, owner: Option<&str>, default_limit: i64) -> Valu
     Value::Array(rows)
 }
 
+/// GET /r/wallet: die Wallet, die diese Seite anschaut (Stufe E1, viewer.rs), im Format der Arcades (app.py
+/// _wallet_answer). Der Betrachter ist allein das Konto, das das Ticket der Seite nennt, und nur solange es dieser
+/// App zugestimmt hat und die App freigeschaltet ist. Sonst "off", nie die Wallet des Betreibers.
+fn wallet(app: &App, query: &str, referer: &str) -> (u16, Value) {
+    let Some(t) = crate::viewer::viewer_of(app, query, referer) else {
+        return (403, json!({"wallet": "off", "error": "nobody signed in is looking at this page"}));
+    };
+    if crate::viewer::enabled_app(app, &t.card).is_none_or(|(_, page)| page != t.page) {
+        return (403, json!({"wallet": "off", "error": "this app is not enabled on this arcade"}));
+    }
+    if !crate::viewer::wallet_allowed(app, &t.account, &t.card) {
+        return (403, json!({"wallet": "off", "error": "the player has not given this app wallet access"}));
+    }
+    // Coins aus dem UTXO-Index (bestaetigt und unbestaetigt), in PEP; null solange der Index aufbaut
+    let spendable = crate::utxo::coins(app, &t.address)
+        .ok()
+        .map(|c| c.iter().map(|x| x["sats"].as_u64().unwrap_or(0)).sum::<u64>() as f64 / crate::COIN as f64);
+    let owned = appindex::all_newest_first().iter().filter(|(_, i)| i.owner == t.address).count();
+    let tag = app.index.lock().unwrap().by_addr.get(&t.address).cloned();
+    (200, json!({
+        "network": "test", "mainnet": false, "addresses": [t.address], "tag": tag,
+        "coin": {"spendable": spendable, "ticker": "tPEP"}, "spendable": spendable,
+        "tokens": [], "inscriptions": owned, "wallet": "account",
+    }))
+}
+
 /// (HTTP-Status, Antwort) fuer GET /r/...; None: keine dieser Schnittstellen
-pub fn handle(app: &App, path: &str, query: &str) -> Option<(u16, Value)> {
+pub fn handle(app: &App, path: &str, query: &str, referer: &str) -> Option<(u16, Value)> {
     let p = path.strip_prefix("/r/")?;
     let parts: Vec<&str> = p.split('/').collect();
     Some(match parts.as_slice() {
@@ -94,6 +120,7 @@ pub fn handle(app: &App, path: &str, query: &str) -> Option<(u16, Value)> {
                 None => (404, json!({"error": "nobody holds that tag on this chain"})),
             }
         }
+        ["wallet"] => wallet(app, query, referer),
         ["blockheight"] => (200, json!(appindex::progress().0)),
         ["blocktime"] => {
             let t = rpc(&app.cfg, "getblockcount", json!([]))

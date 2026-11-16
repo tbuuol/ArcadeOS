@@ -107,7 +107,8 @@ pub fn serve(app: Arc<App>, listen: String) {
             // Lese-Schnittstellen fuer Apps (r.rs)
             if req.method().as_str() == "GET" {
                 let query = url.split_once('?').map(|x| x.1).unwrap_or("");
-                if let Some((code, v)) = crate::r::handle(&app, path, query) {
+                let referer = req.headers().iter().find(|x| x.field.equiv("Referer")).map(|x| x.value.as_str().to_string()).unwrap_or_default();
+                if let Some((code, v)) = crate::r::handle(&app, path, query, &referer) {
                     let _ = req.respond(tiny_http::Response::from_string(v.to_string()).with_status_code(code)
                         .with_header(h("Content-Type: application/json; charset=utf-8"))
                         .with_header(h("Access-Control-Allow-Origin: *"))
@@ -121,9 +122,16 @@ pub fn serve(app: Arc<App>, listen: String) {
                         .with_header(h(&format!("Content-Type: {}", safe_type(&ct))))
                         .with_header(h(&format!("Content-Security-Policy: {CSP}")))
                         .with_header(h("X-Content-Type-Options: nosniff"))
-                        .with_header(h("Referrer-Policy: same-origin"))
+                        // das Ticket (?v=, viewer.rs) muss als Referer mit den fetch-Aufrufen der Seite zurueckkommen; die
+                        // Sandbox macht jeden Aufruf ursprungsfremd, sonst bliebe nur der blanke Ursprung. Hinaus geht
+                        // dabei nichts: connect-src und alle anderen Quellen sind nur diese Arcade.
+                        .with_header(h("Referrer-Policy: unsafe-url"))
                         .with_header(h("Access-Control-Allow-Origin: *"))
-                        .with_header(h("Cache-Control: public, max-age=31536000, immutable")),
+                        .with_header(h(if crate::viewer::from_request(url.split_once('?').map(|x| x.1).unwrap_or(""), "").0.is_empty() {
+                            "Cache-Control: public, max-age=31536000, immutable"
+                        } else {
+                            "Cache-Control: private, no-store" // das Ticket eines Betrachters gehoert in keinen Cache
+                        })),
                     Err((code, e)) => tiny_http::Response::from_data(e.into_bytes()).with_status_code(code)
                         .with_header(h("Content-Type: text/plain; charset=utf-8")).with_header(h("Cache-Control: no-store")),
                 },
