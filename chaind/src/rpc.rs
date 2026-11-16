@@ -16,7 +16,30 @@ fn err<T>(code: i64, m: impl Into<String>) -> Result<T, (i64, String)> {
     Err((code, m.into()))
 }
 
+/// What the share port answers (CHAIND_RPC_SHARE, see serve_share): reads of the chain and the mempool, fees, and
+/// passing on a transaction somebody already signed. Never a wallet call, never stop.
+pub const SHARED: &[&str] = &[
+    "getblockchaininfo", "getblockcount", "getbestblockhash", "getblockhash", "getblockheader", "getblock",
+    "getrawtransaction", "decoderawtransaction", "getrawmempool", "getmempoolentry", "getmempoolinfo", "gettxout",
+    "getdifficulty", "sendrawtransaction", "estimatefee", "estimatesmartfee", "getnetworkinfo",
+];
+
 pub fn serve(sh: Arc<Shared>, bind: String, cookie: String, to_node: Sender<Msg>) {
+    let auth = format!("Basic {}", b64(cookie.as_bytes()));
+    listen(sh, bind, Some(auth), to_node)
+}
+
+/// The share port: only on 127.0.0.1, no cookie, and only the calls in SHARED (checked here, in the node itself, so
+/// a service that shares the chain with other arcades cannot reach anything else even by mistake).
+pub fn serve_share(sh: Arc<Shared>, bind: String, to_node: Sender<Msg>) {
+    if !bind.starts_with("127.0.0.1:") {
+        sh.log(&format!("rpc share {bind}: refused, only 127.0.0.1"));
+        return;
+    }
+    listen(sh, bind, None, to_node)
+}
+
+fn listen(sh: Arc<Shared>, bind: String, auth: Option<String>, to_node: Sender<Msg>) {
     let l = match TcpListener::bind(&bind) {
         Ok(l) => l,
         Err(e) => {
@@ -24,12 +47,11 @@ pub fn serve(sh: Arc<Shared>, bind: String, cookie: String, to_node: Sender<Msg>
             return;
         }
     };
-    sh.log(&format!("rpc on {bind}"));
-    let auth = format!("Basic {}", b64(cookie.as_bytes()));
+    sh.log(&format!("rpc on {bind}{}", if auth.is_none() { " (share port: chain reads and signed transactions only)" } else { "" }));
     for s in l.incoming().flatten() {
         let (sh, auth, tn) = (sh.clone(), auth.clone(), to_node.clone());
         std::thread::spawn(move || {
-            let _ = handle(&sh, s, &auth, &tn);
+            let _ = handle(&sh, s, auth.as_deref(), &tn);
         });
     }
 }
@@ -50,7 +72,8 @@ fn b64(b: &[u8]) -> String {
     o
 }
 
-fn handle(sh: &Shared, s: TcpStream, auth: &str, tn: &Sender<Msg>) -> std::io::Result<()> {
+fn handle(sh: &Shared, s: TcpStream, auth: Option<&str>, tn: &Sender<Msg>) -> std::io::Result<()> {
+    let share = auth.is_none();
     let mut r = BufReader::new(s.try_clone()?);
     let mut w = s;
     loop {
@@ -58,7 +81,7 @@ fn handle(sh: &Shared, s: TcpStream, auth: &str, tn: &Sender<Msg>) -> std::io::R
         if r.read_line(&mut line)? == 0 {
             return Ok(());
         }
-        let (mut len, mut ok) = (0usize, false);
+        let (mut len, mut ok) = (0usize, share);
         // HTTP/1.0 or Connection: close: answer, then close (clients that read to the end wait for it)
         let mut close = line.contains("HTTP/1.0");
         loop {
@@ -71,7 +94,7 @@ fn handle(sh: &Shared, s: TcpStream, auth: &str, tn: &Sender<Msg>) -> std::io::R
             let (k, v) = h.split_once(':').unwrap_or((h, ""));
             match k.to_ascii_lowercase().as_str() {
                 "content-length" => len = v.trim().parse().unwrap_or(0),
-                "authorization" => ok = v.trim() == auth,
+                "authorization" => ok = share || Some(v.trim()) == auth,
                 "connection" => close = v.trim().eq_ignore_ascii_case("close"),
                 _ => {}
             }
@@ -82,9 +105,9 @@ fn handle(sh: &Shared, s: TcpStream, auth: &str, tn: &Sender<Msg>) -> std::io::R
             (401, String::new())
         } else {
             match serde_json::from_slice::<Value>(&body) {
-                Ok(Value::Array(calls)) => (200, Value::Array(calls.iter().map(|c| one(sh, c, tn)).collect()).to_string()),
+                Ok(Value::Array(calls)) => (200, Value::Array(calls.iter().take(1000).map(|c| one(sh, c, tn, share)).collect()).to_string()),
                 Ok(c) => {
-                    let v = one(sh, &c, tn);
+                    let v = one(sh, &c, tn, share);
                     (if v["error"].is_null() { 200 } else { 500 }, v.to_string())
                 }
                 Err(_) => (400, json!({"result": null, "error": {"code": -32700, "message": "Parse error"}, "id": null}).to_string()),
@@ -99,10 +122,19 @@ fn handle(sh: &Shared, s: TcpStream, auth: &str, tn: &Sender<Msg>) -> std::io::R
     }
 }
 
-fn one(sh: &Shared, c: &Value, tn: &Sender<Msg>) -> Value {
+fn one(sh: &Shared, c: &Value, tn: &Sender<Msg>, share: bool) -> Value {
     let id = c["id"].clone();
     let p = c["params"].as_array().cloned().unwrap_or_default();
-    match call(sh, c["method"].as_str().unwrap_or(""), &p, tn) {
+    let m = c["method"].as_str().unwrap_or("");
+    if share && !SHARED.contains(&m) {
+        return json!({"result": null, "error": {"code": -32601, "message": format!("a shared node does not answer {m}")}, "id": id});
+    }
+    let r = call(sh, m, &p, tn).map(|v| match (share, m) {
+        // of the network info only what a borrower needs (the relay fee); the rest describes this machine
+        (true, "getnetworkinfo") => json!({"version": v["version"], "subversion": v["subversion"], "protocolversion": v["protocolversion"], "relayfee": v["relayfee"]}),
+        _ => v,
+    });
+    match r {
         Ok(v) => json!({"result": v, "error": null, "id": id}),
         Err((code, m)) => json!({"result": null, "error": {"code": code, "message": m}, "id": id}),
     }
@@ -359,6 +391,51 @@ fn call(sh: &Shared, m: &str, p: &[Value], tn: &Sender<Msg>) -> R {
             let mp = sh.mempool.lock().unwrap();
             Ok(json!({"size": mp.txs.len(), "bytes": mp.txs.values().map(|t| t.tx.raw.len()).sum::<usize>(), "mempoolminfee": 0.0}))
         }
+        // a coin of the coin set (Core's gettxout): null when spent (or, with include_mempool, spent in the mempool)
+        "gettxout" => {
+            let txid = hash_param(p.first().unwrap_or(&Value::Null))?;
+            let n = p.get(1).and_then(|v| v.as_u64()).filter(|v| *v <= u32::MAX as u64).ok_or((-8, "n".to_string()))? as u32;
+            let with_mempool = p.get(2).and_then(|v| v.as_bool()).unwrap_or(true);
+            let k = crate::store::outkey(&txid, n);
+            let mp = sh.mempool.lock().unwrap();
+            if with_mempool && mp.spends(&k).is_some() {
+                return Ok(Value::Null);
+            }
+            let (coin, conf) = match mp.coin(&k).filter(|_| with_mempool) {
+                Some(c) => (c, 0),
+                None => {
+                    let r = st.env.read_txn().map_err(|e| (-1, e.to_string()))?;
+                    match st.coins.get(&r, &k).ok().flatten().and_then(crate::store::Coin::decode) {
+                        Some(c) => {
+                            let conf = tip.saturating_sub(c.height) + 1;
+                            (c, conf)
+                        }
+                        None => return Ok(Value::Null),
+                    }
+                }
+            };
+            let mut spk = json!({"hex": hex::encode(&coin.script)});
+            if let Some((kind, a)) = crate::addr::address(sh.params, &coin.script) {
+                spk["type"] = json!(kind);
+                spk["addresses"] = json!([a]);
+                spk["reqSigs"] = json!(1);
+            } else {
+                spk["type"] = json!("nonstandard");
+            }
+            Ok(json!({"bestblock": st.id_at(tip).map(|h| h.to_hex()), "confirmations": conf, "value": coin.value as f64 / 1e8,
+                      "scriptPubKey": spk, "coinbase": coin.coinbase}))
+        }
+        "getmempoolentry" => {
+            let txid = hash_param(p.first().unwrap_or(&Value::Null))?;
+            let mp = sh.mempool.lock().unwrap();
+            let t = mp.txs.get(&txid).ok_or((-5, "Transaction not in mempool".to_string()))?;
+            Ok(json!({"size": t.tx.raw.len(), "fee": t.fee as f64 / 1e8, "modifiedfee": t.fee as f64 / 1e8, "time": t.time, "height": tip}))
+        }
+        "getdifficulty" => Ok(json!(difficulty(st.header(tip).ok_or((-1, "no tip".to_string()))?.1.bits))),
+        // no fee market estimate here: the relay minimum, per kB (as an old Core with too few data says)
+        "estimatefee" => Ok(json!(crate::mempool::MIN_FEE_PER_KB as f64 / 1e8)),
+        "estimatesmartfee" => Ok(json!({"feerate": crate::mempool::MIN_FEE_PER_KB as f64 / 1e8,
+                                        "blocks": p.first().and_then(|v| v.as_u64()).unwrap_or(2).max(1)})),
         "getnetworkinfo" => Ok(json!({"version": 10000, "subversion": "/chaind:0.1.0/", "protocolversion": sh.params.protocol_version,
             "connections": sh.relay.lock().unwrap().len(), "relayfee": crate::mempool::MIN_FEE_PER_KB as f64 / 1e8})),
         "sendrawtransaction" => {

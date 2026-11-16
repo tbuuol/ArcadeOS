@@ -21,6 +21,7 @@
 //!   CHAIND_WALLET      file of WIF keys for sendtoaddress / getbalance           (no wallet)
 //!   CHAIND_KOTIA_WALLET  Kotia: key file (dumpwallet) for Kotia Core's wallet RPCs (kotia_wallet.rs)  (none)
 //!   CHAIND_LISTEN      incoming peers, e.g. "[::]:46174": they get block data only (listen.rs)  (none)
+//!   CHAIND_RPC_SHARE   127.0.0.1:PORT without cookie, only chain reads + sendrawtransaction (rpc.rs SHARED)  (none)
 //!
 //! Built on arcade-chain and libbitcoinconsensus from Martin Seeger's arcade-v1 (MIT, see vendor/).
 
@@ -220,6 +221,11 @@ fn main() {
     {
         let (sh, tx, bind) = (sh.clone(), tx.clone(), env("CHAIND_RPC", "127.0.0.1:44880"));
         std::thread::spawn(move || rpc::serve(sh, bind, cookie, tx));
+    }
+    // share port for other arcades (through arcadeos-admin): 127.0.0.1 only, chain reads + signed txs only (rpc.rs SHARED)
+    if let Ok(bind) = std::env::var("CHAIND_RPC_SHARE") {
+        let (sh, tx) = (sh.clone(), tx.clone());
+        std::thread::spawn(move || rpc::serve_share(sh, bind, tx));
     }
     {
         let (sh, tx) = (sh.clone(), tx.clone());
