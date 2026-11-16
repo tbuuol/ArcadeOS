@@ -248,19 +248,21 @@ impl Idx {
             "pieces": p.pieces.iter().map(|(c, (b, t, h, pos))| json!([c, hex::encode(b), t, h, pos])).collect::<Vec<_>>()})).collect();
         let insc: serde_json::Map<String, Value> = self.insc.iter().map(|(t, i)| (t.clone(), json!([i.ctype, i.total, hex::encode(i.sha), i.creator, i.h, i.pieces, i.number, i.owner, i.json, i.pos])))
             .collect();
-        let v = json!({"version": 3, "height": self.height, "hash": shown(&self.hash), "inscriptions": self.inscriptions, "cards": cards, "pending": pending, "insc": insc});
+        let v = json!({"version": VERSION, "height": self.height, "hash": shown(&self.hash), "inscriptions": self.inscriptions, "cards": cards, "pending": pending, "insc": insc});
         let tmp = path.with_extension("new");
         if std::fs::write(&tmp, v.to_string()).is_ok() {
             let _ = std::fs::rename(&tmp, path);
         }
     }
 
-    fn load(path: &PathBuf) -> Idx {
+    fn load(path: &PathBuf) -> (Idx, u64) {
         let mut i = Idx { height: ACTIVATION as u32 - 1, ..Default::default() };
-        let Some(v) = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) else { return i };
-        // aeltere Fassung ohne die Stuecke jeder Inschrift: von vorn lesen
-        if v["version"] != 3 {
-            return i;
+        let Some(v) = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) else { return (i, VERSION) };
+        // aeltere Fassung ohne die Stuecke jeder Inschrift: von vorn lesen. Fassung 3 (ohne Tausch/Buendel, txid der
+        // Uebertragung verdreht) wird geladen und gezeigt, bis Fassung 4 neu gelesen ist (run)
+        let version = v["version"].as_u64().unwrap_or(0);
+        if version != 3 && version != VERSION {
+            return (i, VERSION);
         }
         for (t, x) in v["insc"].as_object().into_iter().flatten() {
             let Some(sha) = x[2].as_str().and_then(|s| hex::decode(s).ok()).and_then(|b| <[u8; 32]>::try_from(b).ok()) else { continue };
@@ -288,17 +290,21 @@ impl Idx {
             i.pending_bytes += pe.bytes;
             i.pending.insert((p["from"].as_str().unwrap_or("").into(), id), pe);
         }
-        i
+        (i, version)
     }
 }
 
 // ------------------------------------------------------------------ Ablauf
 
-fn step(app: &App, path: &PathBuf, marker: &[u8]) -> Result<bool, String> {
+/// Fassung der Datei: 4 = mit Tausch und Buendel, txid der Uebertragung wie angezeigt
+const VERSION: u64 = 4;
+
+/// Ein Stueck weiterlesen, in `ix`; `path`: dorthin speichern (None beim Neulesen im Hintergrund)
+fn step(app: &App, ix: &Mutex<Idx>, path: Option<&PathBuf>, marker: &[u8]) -> Result<bool, String> {
     let cfg = &app.cfg;
     let tip = rpc(cfg, "getblockcount", json!([]))?.as_u64().ok_or("getblockcount")? as u32;
     let height = {
-        let mut g = idx().lock().unwrap();
+        let mut g = ix.lock().unwrap();
         if g.hash == [0; 32] {
             let h = g.height;
             g.hash = internal(rpc(cfg, "getblockhash", json!([h]))?.as_str().unwrap_or(""))?;
@@ -315,10 +321,11 @@ fn step(app: &App, path: &PathBuf, marker: &[u8]) -> Result<bool, String> {
     let to = tip.min(height + BATCH);
     let hashes = batch(cfg, "getblockhash", (height + 1..=to).map(|h| json!([h])))?;
     let blocks = batch(cfg, "getblock", hashes.iter().map(|h| json!([h, false])))?;
-    let mut g = idx().lock().unwrap();
+    let mut g = ix.lock().unwrap();
     if g.height != height {
         return Ok(true);
     }
+    let mut look = |t: &Txid, n: u32| prevout(cfg, t, n);
     let before = g.cards.len();
     for (i, b) in blocks.iter().enumerate() {
         let raw = hex::decode(b.as_str().unwrap_or("")).map_err(|e| e.to_string())?;
@@ -330,13 +337,15 @@ fn step(app: &App, path: &PathBuf, marker: &[u8]) -> Result<bool, String> {
             return Ok(true);
         }
         for (pos, tx) in txs.iter().enumerate() {
-            g.apply(tx, marker, h, pos as u32);
+            g.apply(tx, marker, h, pos as u32, &mut look);
         }
         g.height = h;
         g.hash = hash;
     }
-    if g.cards.len() != before || g.height == tip || g.height % 10_000 < BATCH {
-        g.save(path);
+    if let Some(path) = path {
+        if g.cards.len() != before || g.height == tip || g.height % 10_000 < BATCH {
+            g.save(path);
+        }
     }
     Ok(g.height < tip)
 }
@@ -344,10 +353,30 @@ fn step(app: &App, path: &PathBuf, marker: &[u8]) -> Result<bool, String> {
 pub fn run(app: Arc<App>) {
     let path = app.cfg.state.join("appindex.json");
     let marker = crate::msgs::marker();
-    *idx().lock().unwrap() = Idx::load(&path);
+    let (loaded, version) = Idx::load(&path);
+    *idx().lock().unwrap() = loaded;
+    if version != VERSION {
+        // alte Fassung: weiter zeigen, waehrend eine neue von vorn gelesen wird; dann tauschen
+        log("App-Index: lese neu (Fassung 4: Tausch, Buendel, Uebertragungen)");
+        let fresh = Mutex::new(Idx { height: ACTIVATION as u32 - 1, ..Default::default() });
+        loop {
+            match step(&app, &fresh, None, &marker) {
+                Ok(true) => continue,
+                Ok(false) => break,
+                Err(e) => {
+                    log(&format!("App-Index (neu lesen): {e}"));
+                    std::thread::sleep(Duration::from_secs(20));
+                }
+            }
+        }
+        let fresh = fresh.into_inner().unwrap();
+        fresh.save(&path);
+        *idx().lock().unwrap() = fresh;
+        log("App-Index: neu gelesen, Fassung 4 gilt");
+    }
     let mut logged = false;
     loop {
-        match step(&app, &path, &marker) {
+        match step(&app, idx(), Some(&path), &marker) {
             Ok(true) => continue,
             Ok(false) => {
                 if !logged {
@@ -454,17 +483,113 @@ fn reference(tx: &crate::utxo::Tx, sender: &str, marker: &[u8]) -> Option<String
 
 impl Idx {
     /// Eine Transaktion eines Blocks: Uebertragung oder Stueck einer Inschrift
-    fn apply(&mut self, tx: &crate::utxo::Tx, marker: &[u8], h: u32, pos: u32) {
-        let Some((from, data)) = crate::msgs::anydata(tx, marker) else { return };
+    /// `look`: was ein Input ausgibt (Adresse, Betrag), fuer Tausch und Buendel (nur dort gefragt)
+    fn apply(&mut self, tx: &crate::utxo::Tx, marker: &[u8], h: u32, pos: u32, look: &mut dyn FnMut(&Txid, u32) -> Option<(Option<String>, u64)>) {
+        let mut found = crate::msgs::anydata(tx, marker);
+        // Class B, deren Absender (groesste Summe) nicht der erste Input ist: mit den anderen Inputs versuchen
+        if found.is_none() && !crate::msgs::is_class_c(tx) {
+            let mut tried = std::collections::HashSet::new();
+            for i in tx.ins.iter().skip(1) {
+                let Some(a) = crate::msgs::input_addr(i) else { continue };
+                if tried.insert(a.clone()) {
+                    if let Some(d) = crate::msgs::class_b_from(tx, marker, &a) {
+                        found = Some((a, d));
+                        break;
+                    }
+                }
+            }
+        }
+        let Some((from, data)) = found else { return };
         if let Some(target) = data.strip_prefix(b"INSC\x01\x02").and_then(|t| t.get(..32)) {
-            // Uebertragung: an die Referenzadresse, nur durch den Besitzer (state.py _inscription_transfer)
-            let mut id = target.to_vec();
-            id.reverse();
+            // Uebertragung: an die Referenzadresse, nur durch den Besitzer (state.py _inscription_transfer). Die txid
+            // steht so in der Nutzlast, wie sie angezeigt wird (bytes.fromhex der Arcades), nicht umgedreht.
             if let Some(to) = reference(tx, &from, marker) {
-                self.transfer(&hex::encode(id), &from, &to);
+                self.transfer(&hex::encode(target), &from, &to);
+            }
+        } else if let Some((give, take)) = data.strip_prefix(b"INSC\x01\x05").and_then(parse_swap) {
+            if crate::msgs::is_class_c(tx) {
+                let ins = inputs(tx, look);
+                self.swap(tx, &ins, &from, &give, &take);
+            }
+        } else if let Some(b) = data.strip_prefix(b"INSC\x01\x08").and_then(parse_bundle) {
+            if h >= BUNDLES_FROM {
+                let ins = inputs(tx, look);
+                self.bundle(tx, &ins, &b);
             }
         } else if let Some((id, countdown, body)) = chunk(&data) {
             self.piece(&from, id, countdown, body, shown(&tx.txid), h, pos);
+        }
+    }
+
+    /// Tausch (state.py _swap): der Verkaeufer ist der erste Input und gibt `give`, der Kaeufer ist der erste Input,
+    /// der nicht seiner ist, und gibt `take`. Beide Seiten werden geprueft, bevor eine sich bewegt.
+    fn swap(&mut self, tx: &crate::utxo::Tx, ins: &[(Option<String>, u64)], from: &str, give: &Leg, take: &Leg) -> bool {
+        let seller = ins.first().and_then(|x| x.0.clone()).unwrap_or_else(|| from.to_string());
+        let Some(buyer) = ins.iter().filter_map(|x| x.0.clone()).find(|a| *a != seller) else { return false };
+        if !(self.leg_ok(tx, ins, give, &seller, &buyer) && self.leg_ok(tx, ins, take, &buyer, &seller)) {
+            return false;
+        }
+        self.leg_move(give, &buyer);
+        self.leg_move(take, &seller);
+        true
+    }
+
+    /// Buendel (state.py _bundle): a gibt `give` an b, b gibt `take` an a; beide haben Inputs signiert, sonst niemand.
+    fn bundle(&mut self, tx: &crate::utxo::Tx, ins: &[(Option<String>, u64)], b: &Bundle) -> bool {
+        if b.a == b.b {
+            return false;
+        }
+        let signed = |x: &str| ins.iter().any(|i| i.0.as_deref() == Some(x));
+        if !signed(&b.a) || !signed(&b.b) || ins.iter().any(|i| i.0.as_deref() != Some(&b.a) && i.0.as_deref() != Some(&b.b)) {
+            return false;
+        }
+        let mut seen = std::collections::HashSet::new();
+        let (mut to_a, mut to_b) = (0u64, 0u64);
+        for (legs, giver, taker) in [(&b.give, &b.a, &b.b), (&b.take, &b.b, &b.a)] {
+            for leg in legs {
+                match leg {
+                    Leg::Insc(t) => {
+                        if !seen.insert(t.clone()) || !self.leg_ok(tx, ins, leg, giver, taker) {
+                            return false;
+                        }
+                    }
+                    Leg::Coins(n) => {
+                        let owed = if taker == &b.a { &mut to_a } else { &mut to_b };
+                        *owed = owed.saturating_add(*n);
+                    }
+                    Leg::Token(..) => {} // ohne Token-Ledger nicht pruefbar (siehe leg_ok)
+                }
+            }
+        }
+        if to_a > 0 && to_b > 0 {
+            return false; // Coins nur in eine Richtung
+        }
+        if (to_a > 0 && paid_to(tx, ins, &b.a) < to_a as i128) || (to_b > 0 && paid_to(tx, ins, &b.b) < to_b as i128) {
+            return false;
+        }
+        for (legs, taker) in [(&b.give, &b.b), (&b.take, &b.a)] {
+            for leg in legs {
+                self.leg_move(leg, taker);
+            }
+        }
+        true
+    }
+
+    /// Kann `giver` diesen Teil an `taker` geben? (state.py _check_leg). Token-Teile kann diese Box nicht pruefen
+    /// (kein Token-Ledger): sie gelten als gedeckt, damit ein Tausch Inschrift gegen Token den Besitz bewegt.
+    fn leg_ok(&self, tx: &crate::utxo::Tx, ins: &[(Option<String>, u64)], leg: &Leg, giver: &str, taker: &str) -> bool {
+        match leg {
+            Leg::Insc(t) => self.insc.get(t).is_some_and(|i| i.owner == giver),
+            Leg::Coins(n) => *n > 0 && paid_to(tx, ins, taker) >= *n as i128,
+            Leg::Token(p, n) => *p > 0 && *n > 0,
+        }
+    }
+
+    fn leg_move(&mut self, leg: &Leg, taker: &str) {
+        if let Leg::Insc(t) = leg {
+            if let Some(i) = self.insc.get_mut(t) {
+                i.owner = taker.to_string();
+            }
         }
     }
 
@@ -540,7 +665,7 @@ mod transfer_tests {
         assert_eq!(reference(&tx, &sender, &marker), Some(to.clone()));
         let mut ix = Idx::default();
         ix.insc.insert(piece.clone(), held_by(&sender));
-        ix.apply(&tx, &marker, 10, 1);
+        ix.apply(&tx, &marker, 10, 1, &mut |_, _| None);
         assert_eq!(ix.insc[&piece].owner, to);
 
         // ohne Wechselgeld
@@ -549,13 +674,293 @@ mod transfer_tests {
         let tx = crate::utxo::parse_tx(&raw).unwrap();
         let mut ix = Idx::default();
         ix.insc.insert(piece.clone(), held_by(&sender));
-        ix.apply(&tx, &marker, 10, 1);
+        ix.apply(&tx, &marker, 10, 1, &mut |_, _| None);
         assert_eq!(ix.insc[&piece].owner, to);
 
         // wer nicht besitzt, uebertraegt nichts
         let mut ix = Idx::default();
         ix.insc.insert(piece.clone(), held_by("nSomebodyElse"));
-        ix.apply(&tx, &marker, 10, 1);
+        ix.apply(&tx, &marker, 10, 1, &mut |_, _| None);
         assert_eq!(ix.insc[&piece].owner, "nSomebodyElse");
+    }
+}
+
+// ------------------------------------------------------------------ Tausch und Buendel (inscriptions.py Swap, Bundle, Leg)
+
+/// Buendel werden ab diesem Block gelesen (config.py TESTNET bundles_from); Tausch ab ACTIVATION (swaps_from)
+pub const BUNDLES_FROM: u32 = 1_527_064;
+pub const BUNDLE_MOST: usize = 64;
+const LEG_INSCRIPTION: u8 = 1;
+const LEG_TOKEN: u8 = 2;
+const LEG_COINS: u8 = 3;
+
+/// Ein Teil eines Tauschs: was eine Seite der anderen gibt
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Leg {
+    /// Inschrift (txid wie angezeigt)
+    Insc(String),
+    /// Token: Eigenschaft, Einheiten
+    Token(u32, u64),
+    /// Coins in Satoshi, in derselben Transaktion bezahlt
+    Coins(u64),
+}
+
+impl Leg {
+    pub fn encode(&self) -> Option<Vec<u8>> {
+        Some(match self {
+            Leg::Insc(t) => {
+                let b = hex::decode(t).ok().filter(|b| b.len() == 32)?;
+                [vec![LEG_INSCRIPTION], b].concat()
+            }
+            Leg::Token(p, n) if *p > 0 && *n > 0 => [vec![LEG_TOKEN], p.to_be_bytes().to_vec(), n.to_be_bytes().to_vec()].concat(),
+            Leg::Coins(n) if *n > 0 => [vec![LEG_COINS], n.to_be_bytes().to_vec()].concat(),
+            _ => return None,
+        })
+    }
+    fn decode(d: &[u8], at: usize) -> Option<(Leg, usize)> {
+        match *d.get(at)? {
+            LEG_INSCRIPTION => Some((Leg::Insc(hex::encode(d.get(at + 1..at + 33)?)), at + 33)),
+            LEG_TOKEN => {
+                let b = d.get(at + 1..at + 13)?;
+                Some((Leg::Token(u32::from_be_bytes(b[..4].try_into().ok()?), u64::from_be_bytes(b[4..].try_into().ok()?)), at + 13))
+            }
+            LEG_COINS => Some((Leg::Coins(u64::from_be_bytes(d.get(at + 1..at + 9)?.try_into().ok()?)), at + 9)),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Bundle {
+    pub a: String,
+    pub b: String,
+    pub give: Vec<Leg>,
+    pub take: Vec<Leg>,
+}
+
+/// Nach "INSC" 01 05: zwei Teile, danach nichts oder die 32 Bytes eines Auftrags
+pub fn parse_swap(d: &[u8]) -> Option<(Leg, Leg)> {
+    let (give, at) = Leg::decode(d, 0)?;
+    let (take, at) = Leg::decode(d, at)?;
+    match d.len() - at {
+        0 | 32 => Some((give, take)),
+        _ => None,
+    }
+}
+
+fn addr21(b: &[u8]) -> String {
+    crate::b58check(b[0], &b[1..21])
+}
+
+/// Nach "INSC" 01 08: a(21) b(21), je Seite n(1..64) Teile; danach nur Nullen (Polster von Class B)
+pub fn parse_bundle(d: &[u8]) -> Option<Bundle> {
+    if d.len() < 42 + 2 {
+        return None;
+    }
+    let (a, b) = (addr21(&d[..21]), addr21(&d[21..42]));
+    let mut at = 42;
+    let mut sides = Vec::new();
+    for _ in 0..2 {
+        let n = *d.get(at)? as usize;
+        at += 1;
+        if !(1..=BUNDLE_MOST).contains(&n) {
+            return None;
+        }
+        let mut legs = Vec::new();
+        for _ in 0..n {
+            let (l, next) = Leg::decode(d, at)?;
+            legs.push(l);
+            at = next;
+        }
+        sides.push(legs);
+    }
+    if d[at..].iter().any(|x| *x != 0) {
+        return None;
+    }
+    let take = sides.pop()?;
+    let give = sides.pop()?;
+    Some(Bundle { a, b, give, take })
+}
+
+/// Die Nutzlast eines Tauschs (ohne "arcd" und AnyData-Kopf): "INSC" 01 05 give take
+pub fn swap_data(give: &Leg, take: &Leg) -> Option<Vec<u8>> {
+    Some([b"INSC\x01\x05".to_vec(), give.encode()?, take.encode()?].concat())
+}
+
+/// Die Nutzlast eines Buendels: "INSC" 01 08 a(21) b(21) n give.. n take..
+pub fn bundle_data(a: &str, b: &str, give: &[Leg], take: &[Leg]) -> Option<Vec<u8>> {
+    let raw = |x: &str| -> Option<Vec<u8>> {
+        let v = bs58::decode(x).into_vec().ok()?;
+        (v.len() == 25).then(|| v[..21].to_vec())
+    };
+    if !(1..=BUNDLE_MOST).contains(&give.len()) || !(1..=BUNDLE_MOST).contains(&take.len()) {
+        return None;
+    }
+    let mut out = [b"INSC\x01\x08".to_vec(), raw(a)?, raw(b)?].concat();
+    for side in [give, take] {
+        out.push(side.len() as u8);
+        for l in side {
+            out.extend(l.encode()?);
+        }
+    }
+    Some(out)
+}
+
+/// Wer jeden Input ausgibt und wie viel (fuer Tausch und Buendel nachgeschlagen)
+fn inputs(tx: &crate::utxo::Tx, look: &mut dyn FnMut(&Txid, u32) -> Option<(Option<String>, u64)>) -> Vec<(Option<String>, u64)> {
+    tx.ins.iter().map(|i| look(&i.prev.0, i.prev.1).unwrap_or_else(|| (crate::msgs::input_addr(i), 0))).collect()
+}
+
+/// Was die Transaktion bei `addr` laesst, abzueglich dessen, was sie von dort nimmt (tx.py paid_to)
+fn paid_to(tx: &crate::utxo::Tx, ins: &[(Option<String>, u64)], addr: &str) -> i128 {
+    let got: i128 = tx.outs.iter().filter(|(_, s)| out_addr(s).as_deref() == Some(addr)).map(|(v, _)| *v as i128).sum();
+    let gave: i128 = ins.iter().filter(|i| i.0.as_deref() == Some(addr)).map(|i| i.1 as i128).sum();
+    got - gave
+}
+
+/// Ausgabe einer frueheren Transaktion (fuer `inputs`): ueber den Knoten
+fn prevout(cfg: &crate::Cfg, t: &Txid, n: u32) -> Option<(Option<String>, u64)> {
+    let hexs = rpc(cfg, "getrawtransaction", json!([shown(t), 0])).ok()?;
+    let raw = hex::decode(hexs.as_str()?).ok()?;
+    let tx = crate::utxo::parse_tx(&raw).ok()?;
+    let (v, s) = tx.outs.get(n as usize)?;
+    Some((out_addr(s), *v))
+}
+
+#[cfg(test)]
+mod swap_tests {
+    use super::*;
+
+    fn key(n: u8) -> ([u8; 33], String) {
+        let pk = k256::SecretKey::from_slice(&[n; 32]).unwrap().public_key();
+        let b: [u8; 33] = k256::elliptic_curve::sec1::ToEncodedPoint::to_encoded_point(&pk, true).as_bytes().try_into().unwrap();
+        let a = crate::b58check(crate::PKH, &crate::hash160(&b));
+        (b, a)
+    }
+
+    /// Inputs (Pubkey; prev txid [i+1; 32]:0), Ausgaben wie angegeben
+    fn raw_tx(signers: &[[u8; 33]], outs: &[(u64, String)]) -> Vec<u8> {
+        let mut t = 1u32.to_le_bytes().to_vec();
+        t.push(signers.len() as u8);
+        for (i, pk) in signers.iter().enumerate() {
+            t.extend_from_slice(&[i as u8 + 1; 32]);
+            t.extend_from_slice(&0u32.to_le_bytes());
+            let mut sig = vec![71u8];
+            sig.extend_from_slice(&[0x30; 71]);
+            sig.push(33);
+            sig.extend_from_slice(pk);
+            t.push(sig.len() as u8);
+            t.extend_from_slice(&sig);
+            t.extend_from_slice(&0xffff_ffffu32.to_le_bytes());
+        }
+        t.push(outs.len() as u8);
+        for (v, s) in outs {
+            let s = hex::decode(s).unwrap();
+            t.extend_from_slice(&v.to_le_bytes());
+            t.push(s.len() as u8);
+            t.extend_from_slice(&s);
+        }
+        t.extend_from_slice(&0u32.to_le_bytes());
+        t
+    }
+
+    fn held(owner: &str) -> Insc {
+        Insc { ctype: "image/png".into(), total: 1, sha: [0; 32], creator: owner.into(), h: 1, pieces: vec![], number: 1, owner: owner.into(), json: String::new(), pos: 0 }
+    }
+
+    fn pay(addr: &str, v: u64) -> (u64, String) {
+        (v, crate::utxo::script_of(&crate::utxo::key_of(addr).unwrap()))
+    }
+
+    fn class_c(data: &[u8]) -> (u64, String) {
+        let mut d = crate::MARKER.to_vec();
+        d.extend_from_slice(&[0, 0, 0, 0xc8]);
+        d.extend_from_slice(data);
+        (0, crate::op_return_script(&d))
+    }
+
+    const X: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+    const Y: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+    const C: u64 = crate::COIN;
+
+    /// Ein Index mit den Inschriften, und was die Inputs ausgeben (Adressen der Signierer, Betraege)
+    fn run(owners: &[(&str, &str)], signers: &[(&[u8; 33], &str, u64)], outs: &[(u64, String)], h: u32) -> Idx {
+        let mut ix = Idx::default();
+        for (t, o) in owners {
+            ix.insc.insert(t.to_string(), held(o));
+        }
+        let pks: Vec<[u8; 33]> = signers.iter().map(|s| *s.0).collect();
+        let raw = raw_tx(&pks, outs);
+        let tx = crate::utxo::parse_tx(&raw).unwrap();
+        let prev: Vec<(String, u64)> = signers.iter().map(|s| (s.1.to_string(), s.2)).collect();
+        let mut look = |t: &Txid, _n: u32| prev.get(t[0] as usize - 1).map(|(a, v)| (Some(a.clone()), *v));
+        ix.apply(&tx, &crate::msgs::marker(), h, 1, &mut look);
+        ix
+    }
+
+    #[test]
+    fn swap_inscription_for_coins() {
+        let ((spk, s), (bpk, b)) = (key(1), key(2));
+        let d = swap_data(&Leg::Insc(X.into()), &Leg::Coins(5 * C)).unwrap();
+        assert_eq!(parse_swap(&d[6..]), Some((Leg::Insc(X.into()), Leg::Coins(5 * C))));
+        // der Verkaeufer bekommt 5 PEP mehr, als er hineinsteckt (1 PEP Input)
+        let outs = vec![class_c(&d), pay(&s, 6 * C), pay(&b, 4 * C)];
+        let ix = run(&[(X, &s)], &[(&spk, &s, C), (&bpk, &b, 10 * C)], &outs, 1_500_000);
+        assert_eq!(ix.insc[X].owner, b);
+        // zu wenig: netto nur 4 PEP fuer den Verkaeufer -> nichts bewegt sich
+        let outs = vec![class_c(&d), pay(&s, 5 * C), pay(&b, 5 * C)];
+        let ix = run(&[(X, &s)], &[(&spk, &s, C), (&bpk, &b, 10 * C)], &outs, 1_500_000);
+        assert_eq!(ix.insc[X].owner, s);
+    }
+
+    #[test]
+    fn swap_refuses_the_wrong_party() {
+        let ((spk, s), (bpk, b), (_, other)) = (key(1), key(2), key(3));
+        let d = swap_data(&Leg::Insc(X.into()), &Leg::Insc(Y.into())).unwrap();
+        let outs = vec![class_c(&d), pay(&s, C)];
+        // richtig: beide Inschriften wechseln
+        let ix = run(&[(X, &s), (Y, &b)], &[(&spk, &s, C), (&bpk, &b, C)], &outs, 1_500_000);
+        assert_eq!((ix.insc[X].owner.as_str(), ix.insc[Y].owner.as_str()), (b.as_str(), s.as_str()));
+        // Y gehoert nicht dem Kaeufer: keine Seite bewegt sich
+        let ix = run(&[(X, &s), (Y, &other)], &[(&spk, &s, C), (&bpk, &b, C)], &outs, 1_500_000);
+        assert_eq!((ix.insc[X].owner.as_str(), ix.insc[Y].owner.as_str()), (s.as_str(), other.as_str()));
+        // X gehoert nicht dem Verkaeufer (erster Input)
+        let ix = run(&[(X, &other), (Y, &b)], &[(&spk, &s, C), (&bpk, &b, C)], &outs, 1_500_000);
+        assert_eq!(ix.insc[X].owner, other);
+        assert_eq!(ix.insc[Y].owner, b);
+        // nur der Verkaeufer hat signiert: kein Kaeufer
+        let ix = run(&[(X, &s), (Y, &b)], &[(&spk, &s, C), (&spk, &s, C)], &outs, 1_500_000);
+        assert_eq!(ix.insc[X].owner, s);
+    }
+
+    #[test]
+    fn bundle_both_ways_and_only_by_its_parties() {
+        let ((apk, a), (bpk, b), (opk, other)) = (key(1), key(2), key(3));
+        let d = bundle_data(&a, &b, &[Leg::Insc(X.into())], &[Leg::Insc(Y.into()), Leg::Coins(2 * C)]).unwrap();
+        let p = parse_bundle(&d[6..]).unwrap();
+        assert_eq!((p.a.as_str(), p.b.as_str(), p.give.len(), p.take.len()), (a.as_str(), b.as_str(), 1, 2));
+        // Class B, verschleiert mit b (groesster Einsatz), b ist NICHT der erste Input
+        let mut outs = crate::msgs::class_b_outputs(&b, &bpk, &d).unwrap();
+        outs.push(pay(&a, 3 * C)); // a: 1 PEP hinein, 3 PEP heraus -> netto 2 PEP
+        let at = BUNDLES_FROM;
+        let ix = run(&[(X, &a), (Y, &b)], &[(&apk, &a, C), (&bpk, &b, 10 * C)], &outs, at);
+        assert_eq!((ix.insc[X].owner.as_str(), ix.insc[Y].owner.as_str()), (b.as_str(), a.as_str()));
+        // vor dem ersten Buendel-Block nicht gelesen
+        let ix = run(&[(X, &a), (Y, &b)], &[(&apk, &a, C), (&bpk, &b, 10 * C)], &outs, at - 1);
+        assert_eq!(ix.insc[X].owner, a);
+        // ein Dritter hat mit signiert: abgewiesen
+        let ix = run(&[(X, &a), (Y, &b)], &[(&apk, &a, C), (&bpk, &b, 10 * C), (&opk, &other, C)], &outs, at);
+        assert_eq!(ix.insc[X].owner, a);
+        assert_eq!(ix.insc[Y].owner, b);
+        // b hat nicht signiert: abgewiesen
+        let mut outs2 = crate::msgs::class_b_outputs(&a, &apk, &d).unwrap();
+        outs2.push(pay(&a, 3 * C));
+        let ix = run(&[(X, &a), (Y, &b)], &[(&apk, &a, C)], &outs2, at);
+        assert_eq!(ix.insc[X].owner, a);
+        // Coins zu knapp (a bekommt netto 1 statt 2 PEP)
+        let mut outs3 = crate::msgs::class_b_outputs(&b, &bpk, &d).unwrap();
+        outs3.push(pay(&a, 2 * C));
+        let ix = run(&[(X, &a), (Y, &b)], &[(&apk, &a, C), (&bpk, &b, 10 * C)], &outs3, at);
+        assert_eq!(ix.insc[Y].owner, b);
     }
 }

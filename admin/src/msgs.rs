@@ -387,3 +387,26 @@ mod tests {
         }
     }
 }
+
+/// Die Adresse, die ein Input (laut scriptSig) ausgibt: P2PKH aus dem Pubkey, sonst P2SH aus dem letzten Push
+pub fn input_addr(i: &super::utxo::TxIn) -> Option<String> {
+    if i.prev.0 == [0; 32] {
+        return None;
+    }
+    let push = last_push(i.sig)?;
+    Some(if push.len() == 33 || push.len() == 65 { b58check(PKH, &hash160(push)) } else { b58check(P2SH, &hash160(push)) })
+}
+
+/// Hat die Transaktion eine Class-C-Nutzlast ("arcd" im OP_RETURN)?
+pub fn is_class_c(tx: &Tx) -> bool {
+    tx.outs.iter().any(|(_, s)| op_return_data(s).is_some_and(|d| d.starts_with(MARKER)))
+}
+
+/// Class B mit einem anderen Absender als dem ersten Input entschluesseln (bei Class B ist der Absender der mit der
+/// groessten Summe; der Schluessel der Verschleierung ist seine Adresse): AnyData-Nutzlast oder None
+pub fn class_b_from(tx: &Tx, marker: &[u8], from: &str) -> Option<Vec<u8>> {
+    if !tx.outs.iter().any(|(_, s)| *s == marker) {
+        return None;
+    }
+    Some(decode_class_b(from, &tx.outs)?.strip_prefix(&ANYDATA_HEAD)?.to_vec())
+}

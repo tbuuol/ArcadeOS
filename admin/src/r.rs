@@ -2,8 +2,8 @@
 //! der Form der Arcades (dogecoin-arcade web/app.py r_*, content.py describe). Nur Lesen, nur oeffentliche Daten der
 //! Chain: Inschriften, @names, Blockhoehe. Ohne Anmeldung; jede Seite darf fragen (CORS *).
 //!
-//! Noch nicht: Profile (Bio, Bild: nur @name und Adresse), Sammlungen (collection/edition: null), Tausch und
-//! Buendel als Besitzwechsel (nur Uebertragungen), Tokens, Maerkte, Ords (dafuer fehlt ein Token-Ledger).
+//! Noch nicht: Profile (Bio, Bild: nur @name und Adresse), Sammlungen (collection/edition: null),
+//! Tokens, Maerkte, Ords (dafuer fehlt ein Token-Ledger). Besitz: Uebertragungen, Tausch und Buendel (appindex.rs).
 
 use serde_json::{json, Value};
 

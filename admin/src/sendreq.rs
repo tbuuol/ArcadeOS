@@ -145,9 +145,10 @@ pub fn parse_amount(v: &Value) -> Option<u64> {
     w.checked_mul(COIN)?.checked_add(f)
 }
 
-/// Die Nutzlast einer Uebertragung (OP_RETURN-Daten): "arcd" + AnyData-Kopf + "INSC" 01 02 + txid (Leitungs-Reihenfolge)
+/// Die Nutzlast einer Uebertragung (OP_RETURN-Daten): "arcd" + AnyData-Kopf + "INSC" 01 02 + txid, so wie sie angezeigt
+/// wird (die Arcades schreiben bytes.fromhex(txid), nicht umgedreht)
 pub fn transfer_data(txid: &str) -> Option<Vec<u8>> {
-    let t = crate::utxo::internal(txid).ok()?;
+    let t = hex::decode(txid).ok().filter(|b| b.len() == 32)?;
     let mut d = MARKER.to_vec();
     d.extend_from_slice(&0u16.to_be_bytes());
     d.extend_from_slice(&ANYDATA.to_be_bytes());
@@ -391,12 +392,12 @@ mod tests {
     }
 
     #[test]
-    fn transfer_payload_is_wire_order() {
-        let txid = format!("{}ff", "00".repeat(31));
+    fn transfer_payload_names_the_shown_txid() {
+        let txid = format!("ff{}", "00".repeat(31));
         let d = transfer_data(&txid).unwrap();
         assert_eq!(&d[..14], b"arcd\x00\x00\x00\xc8INSC\x01\x02");
         assert_eq!(d.len(), 14 + 32);
-        assert_eq!(d[14], 0xff); // umgekehrt: die letzte Hex-Stelle zuerst
+        assert_eq!(d[14], 0xff); // wie angezeigt (bytes.fromhex), nicht umgedreht
         assert!(transfer_data("xyz").is_none());
     }
 
