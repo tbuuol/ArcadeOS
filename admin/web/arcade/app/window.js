@@ -307,7 +307,8 @@ async function realtime(m) {
   const name = String(m.room || '');
   if (m.op === 'join') {
     if (seats[name]) { const s = seats[name]; return { online: true, me: s.me, members: Object.values(s.members), fast: !!s.fast, media: false }; }
-    const r = await post('/rt/join', { page, room: name });
+    const cert = await playerCert();
+    const r = await post('/rt/join', { page, room: name, ...(cert || {}) });
     if (!r.online) return { online: false, why: r.why || 'offline', fast: false, media: false };
     const s = seats[name] = { token: r.token, me: r.me, members: {}, live: true, fast: null,
       link: Array.isArray(m.link) ? m.link.slice(0, FAST_PEERS_MAX).map(String) : null, fastMax: Math.max(1, Math.min(FAST_PEERS_MAX, (m.max | 0) || FAST_PEERS)) };
@@ -393,6 +394,63 @@ async function walletAsk() {
 // UNSIGNIERTE Transaktion bauen und zeigt sie. Nur nach dem Ja entsperrt der Browser den Tresor mit dem Passwort,
 // signiert hier (crypto.js signTx) und die Box sendet genau das. Die Schluessel verlassen den Browser nie.
 let acct = null, sendBusy = false, C = null;
+
+// ------------------------------------------------------------------ als @name in Raeumen (rt.rs "wer ist wer")
+// Angemeldet spielt man als die eigene Adresse: der Browser signiert einmal je Sitzung die Worte, die die Box nennt
+// (arcade-realtime / Netz / Knoten / Adresse / Ablauf, wie signmessage). Wer das Passwort nicht eingeben will,
+// spielt als Gast. Die Worte und der Schluessel bleiben hier; die Box prueft nur die Signatur.
+let cert = null, asGuest = false, certAsking = null;
+
+function certCard(who) {
+  return new Promise((done) => {
+    const box = document.createElement('div'); box.className = 'ask';
+    const c = document.createElement('div'); c.className = 'card';
+    const add = (tag, text) => { const e = document.createElement(tag); e.textContent = text; c.append(e); return e; };
+    const name = (appInfo && appInfo.name) || 'Diese App';
+    add('h2', `In ${name} als ${who.tag ? `@${who.tag}` : 'du selbst'} spielen?`);
+    add('p', 'Die anderen Spieler sehen dann deinen @name und deine Adresse statt eines Gastnamens; Tauschen geht nur so. Dein Browser signiert dafür einmal einen Nachweis (einen Tag gültig). Ausgeben kann damit niemand etwas.');
+    const why = add('p', '');
+    let pw = null;
+    if (!acct) {
+      pw = document.createElement('input'); pw.type = 'password'; pw.className = 'pw';
+      pw.placeholder = 'Dein Passwort'; pw.autocomplete = 'current-password';
+      c.append(pw);
+    }
+    const row = document.createElement('div'); row.className = 'row';
+    const bn = document.createElement('button'); bn.type = 'button'; bn.textContent = 'Als Gast spielen';
+    const by = document.createElement('button'); by.type = 'button'; by.className = 'yes'; by.textContent = 'Als ich spielen';
+    row.append(bn, by); c.append(row); box.append(c);
+    const end = (v) => { box.remove(); done(v); };
+    bn.onclick = () => end(null);
+    const go = async () => {
+      by.disabled = bn.disabled = true;
+      try { end(await unlockWith(pw ? pw.value : '')); }
+      catch (e) { why.textContent = String(e.message || e); by.disabled = bn.disabled = false; }
+    };
+    by.onclick = go;
+    if (pw) pw.onkeydown = (e) => { if (e.key === 'Enter') go(); };
+    $('#stage').append(box);
+    (pw || by).focus();
+  });
+}
+
+async function playerCert() {
+  if (!account || asGuest) return null;
+  if (cert && cert.expires > Date.now() / 1000 + 600) return cert;
+  if (certAsking) return certAsking;
+  certAsking = (async () => {
+    let h;
+    try { h = await get('/rt/hello'); } catch { return null; }
+    if (!h.online || !h.sign || !h.who) return null;
+    const a = acct || await certCard(h.who);
+    if (!a) { asGuest = true; return null; }
+    if (a.address !== h.who.address) return null;
+    C = C || await import('../crypto.js?v=5');
+    cert = { address: a.address, expires: h.sign.expires, sig: C.signMessage(a.priv, h.sign.message) };
+    return cert;
+  })();
+  try { return await certAsking; } finally { certAsking = null; }
+}
 const pep = (s) => (s / 1e8).toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
 
 async function unlockWith(pw) {

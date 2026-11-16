@@ -639,7 +639,8 @@ fn route(app: &App, p: &Pub, r: &Req) -> Out {
 }
 
 pub fn serve(app: Arc<App>, listen: String) {
-    let p = Pub::new(&app);
+    let p = Arc::new(Pub::new(&app));
+    let _ = PUB.set(p.clone());
     let server = match tiny_http::Server::http(&listen) {
         Ok(s) => s,
         Err(e) => {
@@ -676,4 +677,15 @@ pub fn serve(app: Arc<App>, listen: String) {
         }
         let _ = req.respond(resp);
     }
+}
+
+/// Die Konten, fuer andere Teile dieses Dienstes (rt.rs: wer tritt einem Raum bei)
+static PUB: std::sync::OnceLock<Arc<Pub>> = std::sync::OnceLock::new();
+
+/// Das angemeldete Konto zu diesem Cookie-Kopf: (Anmeldeschluessel, Pepecoin-Testnet-Adresse)
+pub fn account_of(cookie: &str) -> Option<(String, String)> {
+    let p = PUB.get()?;
+    let pk = p.session(cookie)?;
+    let addr = p.accounts.lock().unwrap().get(&pk)?["address"].as_str()?.to_string();
+    Some((pk, addr))
 }
