@@ -9,7 +9,7 @@
 //   });
 //
 // A room that cannot be joined still resolves, with online: false and why (playing alone is always possible).
-// Not on this arcade yet: the fast lane and media (room.fast, room.media are null), area(), ring().
+// With {fast: true}: room.fast (see Fast). Not on this arcade yet: media (room.media is null), area(), ring().
 (function () {
   if (window.arcade && window.arcade.realtime) return;
   var seq = 0, waiting = {}, rooms = {};
@@ -32,12 +32,39 @@
     delete waiting[m.seq];
     if (m.ok) w.resolve(m); else w.reject(new Error(m.error || 'refused'));
   });
+  // The fast lane: every pair of players in a room joined with {fast: true} is linked directly (WebRTC data,
+  // made by the app window); a pair that cannot link directly is carried over the room. Events: message, peer.
+  function Fast(room) { this.room = room; this._peers = {}; this._on = { message: [], peer: [] }; }
+  Fast.prototype.on = function (type, fn) {
+    if (!this._on[type]) throw new Error('fast lane events are: message, peer');
+    this._on[type].push(fn);
+    return this;
+  };
+  Fast.prototype._emit = function (type, a, b) { this._on[type].forEach(function (fn) { try { fn(a, b); } catch (err) { setTimeout(function () { throw err; }); } }); };
+  Fast.prototype.send = function (value, options) {
+    options = options || {};
+    var data;
+    if (value instanceof ArrayBuffer) data = value.slice(0);
+    else if (ArrayBuffer.isView(value)) data = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+    else data = typeof value === 'string' ? value : JSON.stringify(value);
+    var m = { arcade: 'realtime', seq: 0, op: 'fast', room: this.room.name, data: data, reliable: !!options.reliable };
+    if (options.to != null) m.to = [].concat(options.to).map(String);
+    window.parent.postMessage(m, '*');
+  };
+  Fast.prototype.routes = function () {
+    return ask({ op: 'fastroutes', room: this.room.name }).then(function (s) { return s.routes || {}; }, function () { return {}; });
+  };
+  Fast.prototype.link = function (ids, options) {
+    return ask({ op: 'fastlink', room: this.room.name, link: ids == null ? null : [].concat(ids).map(String), max: (options && options.max) | 0 })
+      .then(function (s) { return { ok: true, fast: !!s.fast }; }, function (err) { return { ok: false, error: err.message }; });
+  };
+  Fast.prototype.peers = function () { var o = {}; for (var k in this._peers) o[k] = this._peers[k]; return o; };
   function Room(name, said) {
     this.name = name;
     this.online = !!said.online;
     this.me = said.me || null;
     this.why = said.why || '';
-    this.fast = null;
+    this.fast = said.fast ? new Fast(this) : null;
     this.media = null;
     this._members = {};
     this._on = { message: [], join: [], leave: [], closed: [], rejoined: [], reconnecting: [] };
@@ -59,6 +86,15 @@
     else if (ev.type === 'closed') { this.online = false; this._emit('closed', ev.why || ''); }
     else if (ev.type === 'reconnecting') { this.online = false; this._emit('reconnecting'); }
     else if (ev.type === 'rejoined') { this.me = p || this.me; this.online = true; this._emit('rejoined', this.me, null); }
+    else if (ev.type === 'fast' && this.fast) {
+      var said = ev.data;
+      if (typeof said === 'string') { try { said = JSON.parse(said); } catch (err) {} }
+      this.fast._emit('message', said, p);
+    }
+    else if (ev.type === 'peer' && this.fast) {
+      if (ev.state === 'gone') delete this.fast._peers[p.id]; else this.fast._peers[p.id] = ev.state;
+      this.fast._emit('peer', p, ev.state);
+    }
     else if (ev.type === 'message') {
       var data = ev.data;
       if (typeof data === 'string') { try { data = JSON.parse(data); } catch (err) {} }
@@ -77,7 +113,10 @@
   };
   function joinOne(name, options) {
     if (rooms[name]) return Promise.resolve(rooms[name]);
-    return ask({ op: 'join', room: name, game: options.game || '', fast: !!options.fast, waits: true }, 60000).then(function (said) {
+    var m = { op: 'join', room: name, game: options.game || '', fast: !!options.fast, waits: true };
+    if (Array.isArray(options.link)) m.link = options.link.map(String);
+    if (options.max) m.max = options.max | 0;
+    return ask(m, 60000).then(function (said) {
       var room = new Room(name, said);
       if (room.online) rooms[name] = room;
       return room;
