@@ -70,6 +70,8 @@ pub struct Config {
     /// Wer diese Arcade betreibt (op/me-Rahmen wie die Arcades, dogecoin-arcade mesh/operators.py):
     /// JSON {tag, name, version, owner}, geschrieben von arcadeos-admin; fehlt sie, sagt meshd nichts
     pub about_file: Option<PathBuf>,
+    /// lokale Schnittstelle fuer Erweiterungen der Arcade (ext.rs); None = keine
+    pub ext: Option<crate::ext::ExtConfig>,
 }
 
 fn now_unix() -> f64 {
@@ -145,7 +147,7 @@ struct LinkInfo {
     inbound: bool, // die Gegenseite hat gewaehlt (zaehlt nicht zu den ausgehenden)
     since: Instant,
     rtt: Option<f64>,
-    tx: mpsc::UnboundedSender<Value>,
+    tx: mpsc::UnboundedSender<(Value, Vec<u8>)>,
     frames: BTreeMap<String, u64>,
     frames_logged: BTreeMap<String, u64>, // Stand bei der letzten Statistik (fuer Differenzen)
 }
@@ -166,6 +168,8 @@ pub struct Node {
     id: String,
     started: Instant,
     st: Mutex<State>,
+    /// lokale Schnittstelle fuer Erweiterungen (ext.rs); None = keine
+    ext: Option<Arc<crate::ext::Ext>>,
 }
 
 /// Mesh-Key laden oder (beim ersten Start) erzeugen: 32-Byte-Seed als Hex, Datei 0600
@@ -194,7 +198,8 @@ pub fn load_or_create_key(path: &PathBuf) -> std::io::Result<SigningKey> {
 }
 
 impl Node {
-    pub fn new(cfg: Config) -> std::io::Result<Arc<Node>> {
+    pub fn new(mut cfg: Config) -> std::io::Result<Arc<Node>> {
+        let ext = cfg.ext.take().map(crate::ext::Ext::new);
         let key = load_or_create_key(&cfg.key_file)?;
         let id = hex::encode(key.verifying_key().to_bytes());
         let node = Arc::new(Node {
@@ -202,6 +207,7 @@ impl Node {
             key,
             id,
             started: Instant::now(),
+            ext,
             st: Mutex::new(State {
                 addrs: HashMap::new(),
                 links: HashMap::new(),
@@ -345,6 +351,10 @@ impl Node {
                 }
                 Err(e) => ev("error", "listen_failed", json!({"port": port, "error": e.to_string()})),
             }
+        }
+        if let Some(x) = self.ext.clone() {
+            let n: Arc<dyn crate::ext::Links> = self.clone();
+            tokio::spawn(async move { x.run(n).await });
         }
         let n = self.clone();
         tokio::spawn(async move { n.status_loop().await });
@@ -521,14 +531,14 @@ impl Node {
         let st = self.st.lock().unwrap();
         for (id, l) in &st.links {
             if id != peer {
-                let _ = l.tx.send(json!({"t": "addrs", "a": [{"h": addr.0, "p": addr.1, "id": peer}]}));
+                let _ = l.tx.send((json!({"t": "addrs", "a": [{"h": addr.0, "p": addr.1, "id": peer}]}), Vec::new()));
             }
         }
     }
 
     async fn run_link(self: Arc<Self>, lk: link::Link, addr: (String, u16), peer: String, inbound: bool) {
         let link::Link { mut tx, mut rx, .. } = lk;
-        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Value>();
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<(Value, Vec<u8>)>();
         {
             let mut st = self.st.lock().unwrap();
             if st.links.contains_key(&peer) {
@@ -548,7 +558,7 @@ impl Node {
                 .map(|e| json!({"h": e.host, "p": e.port, "id": e.id}))
                 .collect();
             if !good.is_empty() {
-                let _ = out_tx.send(json!({"t": "addrs", "a": good}));
+                let _ = out_tx.send((json!({"t": "addrs", "a": good}), Vec::new()));
             }
             // Sind wir von aussen erreichbar? Die Gegenseite waehlt die Adresse, von der unsere Verbindung
             // kommt, auf unserem Port und sagt, ob dort wir antworten (dialback). Nur ueber direkte
@@ -561,14 +571,17 @@ impl Node {
                     st.dialback_asked.clear(); // unbeantwortete Fragen nicht ewig sammeln
                 }
                 st.dialback_asked.insert(n.clone(), peer.clone());
-                let _ = out_tx.send(json!({"t": "dialback", "port": port, "n": n}));
+                let _ = out_tx.send((json!({"t": "dialback", "port": port, "n": n}), Vec::new()));
             }
         }
 
+        if let Some(x) = &self.ext {
+            x.link_up(&peer, inbound);
+        }
         // Schreiber: alles, was in den Kanal kommt, geht verschluesselt raus
         let writer = tokio::spawn(async move {
             while let Some(v) = out_rx.recv().await {
-                if tx.send(&v, b"").await.is_err() {
+                if tx.send(&v.0, &v.1).await.is_err() {
                     break;
                 }
             }
@@ -578,7 +591,7 @@ impl Node {
         let teller = tokio::spawn(async move {
             loop {
                 if let Some(f) = n2.about_frame() {
-                    if t3.send(f).is_err() {
+                    if t3.send((f, Vec::new())).is_err() {
                         break;
                     }
                 }
@@ -604,7 +617,7 @@ impl Node {
                         }
                     }
                 }
-                if t2.send(json!({"t": "ping", "n": n})).is_err() {
+                if t2.send((json!({"t": "ping", "n": n}), Vec::new())).is_err() {
                     break;
                 }
                 sleep(PING_EVERY).await;
@@ -625,7 +638,7 @@ impl Node {
                 }
             };
             let (kind, header) = match body {
-                Body::Json(h, _) => (h.get("t").and_then(Value::as_str).unwrap_or("?").to_string(), Some(h)),
+                Body::Json(h, b) => (h.get("t").and_then(Value::as_str).unwrap_or("?").to_string(), Some((h, b))),
                 Body::BinaryPub(_) => ("pub".to_string(), None),
             };
             let first = {
@@ -637,17 +650,17 @@ impl Node {
             };
             if first {
                 // beim ersten Auftreten einer Nachrichtenart: Kopf (gekuerzt) mitschreiben
-                let sample = match &body_preview(&header) {
+                let sample = match &body_preview(&header.as_ref().map(|x| x.0.clone())) {
                     Some(s) => Value::from(s.clone()),
                     None => Value::Null,
                 };
                 ev("debug", "first_frame", json!({"peer": peer, "kind": kind, "sample": sample}));
             }
-            let Some(h) = header else { continue };
+            let Some((h, blob)) = header else { continue };
             match kind.as_str() {
                 "ping" => {
                     if let Some(n) = h.get("n").and_then(Value::as_str) {
-                        let _ = out_tx.send(json!({"t": "pong", "n": n.chars().take(16).collect::<String>()}));
+                        let _ = out_tx.send((json!({"t": "pong", "n": n.chars().take(16).collect::<String>()}), Vec::new()));
                     }
                 }
                 "pong" => {
@@ -692,14 +705,22 @@ impl Node {
                         ev("info", "dialback", json!({"peer": peer, "ok": ok, "seen_as": host}));
                     }
                 }
-                // sub/pub und Erweiterungen der Arcade-Software: zaehlen, nicht weiterleiten (Blatt)
-                _ => {}
+                // Erweiterungen, die ein lokaler Dienst bestellt hat (ext.rs, z. B. cr): an ihn; sonst und
+                // sub/pub: zaehlen, nicht weiterleiten (Blatt)
+                _ => {
+                    if let Some(x) = &self.ext {
+                        x.frame(&peer, &kind, &h, &blob);
+                    }
+                }
             }
         }
         pinger.abort();
         teller.abort();
         writer.abort();
         let gone = self.st.lock().unwrap().links.remove(&peer);
+        if let (Some(x), true) = (&self.ext, gone.is_some()) {
+            x.link_down(&peer);
+        }
         if let Some(l) = gone {
             ev("info", "link_down", json!({"peer": peer, "addr": dial_string(&l.addr.0, l.addr.1), "inbound": l.inbound, "reason": reason,
                 "up_s": l.since.elapsed().as_secs(), "rtt_ms": l.rtt.map(|r| (r * 10000.0).round() / 10.0), "frames": l.frames}));
@@ -774,6 +795,18 @@ impl Node {
             }
             sleep(STATUS_EVERY).await;
         }
+    }
+}
+
+impl crate::ext::Links for Node {
+    fn send_to(&self, peer: &str, h: Value, blob: Vec<u8>) -> bool {
+        self.st.lock().unwrap().links.get(peer).is_some_and(|l| l.tx.send((h, blob)).is_ok())
+    }
+    fn links(&self) -> Vec<(String, bool, Option<f64>)> {
+        self.st.lock().unwrap().links.iter().map(|(id, l)| (id.clone(), l.inbound, l.rtt)).collect()
+    }
+    fn node_id(&self) -> String {
+        self.id.clone()
     }
 }
 
@@ -866,6 +899,7 @@ mod tests {
             listen: Some(LISTEN_PORT),
             max_inbound,
             about_file: None,
+            ext: None,
         };
         (Node::new(cfg).unwrap(), dir)
     }

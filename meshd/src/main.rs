@@ -12,6 +12,7 @@
 //! JSON-Zeile aus.
 
 mod dlog;
+mod ext;
 mod link;
 mod node;
 mod ws;
@@ -178,6 +179,8 @@ fn cmd_run(args: Vec<String>) {
         listen,
         max_inbound: node::MAX_INBOUND,
         about_file: Some(about),
+        // lokale Schnittstelle fuer Erweiterungen (ext.rs); MESHD_EXT=off schaltet sie ab
+        ext: (std::env::var("MESHD_EXT").as_deref() != Ok("off")).then(ext::ExtConfig::from_env),
     };
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
     rt.block_on(async {
@@ -230,11 +233,75 @@ fn cmd_status(args: Vec<String>) {
     }
 }
 
+/// meshd ext-probe [SOCKET] [NET]: Pruefung der lokalen Schnittstelle (ext.rs) am laufenden meshd. Bestellt `cr`,
+/// sammelt 25 s lang die Angebote (offer) der verbundenen Arcades und fragt die erste, die NET (Standard "test")
+/// teilt, nach getblockcount und getbestblockhash (nur lesen). Gibt eine JSON-Zeile je Ereignis aus.
+fn cmd_ext_probe(args: Vec<String>) {
+    let sock = args.first().cloned().unwrap_or_else(|| "/run/meshd/ext.sock".into());
+    let net = args.get(1).cloned().unwrap_or_else(|| "test".into());
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+    rt.block_on(async move {
+        use tokio::io::AsyncWriteExt;
+        let s = match tokio::net::UnixStream::connect(&sock).await {
+            Ok(s) => s,
+            Err(e) => {
+                println!("{}", json!({"error": format!("{sock}: {e}")}));
+                std::process::exit(1);
+            }
+        };
+        let (mut r, mut w) = s.into_split();
+        w.write_all(&ext::encode(&json!({"op": "hello", "kinds": ["cr"]}), b"")).await.unwrap();
+        let start = Instant::now();
+        let mut offers: BTreeMap<String, Value> = BTreeMap::new();
+        let mut asked: Option<(String, Instant)> = None;
+        loop {
+            let left = Duration::from_secs(if asked.is_some() { 60 } else { 25 }).saturating_sub(start.elapsed());
+            let got = match timeout(left, ext::read_local(&mut r)).await {
+                Ok(Ok(x)) => x,
+                Ok(Err(e)) => {
+                    println!("{}", json!({"error": e.to_string()}));
+                    break;
+                }
+                Err(_) => {
+                    println!("{}", json!({"done": "time", "offers": offers.len(), "asked": asked.as_ref().map(|a| &a.0[..16])}));
+                    break;
+                }
+            };
+            let (h, blob) = got;
+            match h["op"].as_str() {
+                Some("frame") if h["h"]["op"] == "offer" => {
+                    let peer = h["peer"].as_str().unwrap_or("").to_string();
+                    let nets: Vec<&String> = h["h"]["nets"].as_object().map(|m| m.keys().collect()).unwrap_or_default();
+                    println!("{}", json!({"offer": &peer[..16.min(peer.len())], "nets": nets}));
+                    offers.insert(peer.clone(), h["h"]["nets"].clone());
+                    if asked.is_none() && h["h"]["nets"].get(&net).is_some() {
+                        let q = json!({"t": "cr", "op": "q", "id": 1, "net": net, "seq": 0, "end": true});
+                        let calls = br#"[["getblockcount",[]],["getbestblockhash",[]]]"#;
+                        w.write_all(&ext::encode(&json!({"op": "send", "peer": peer, "h": q}), calls)).await.unwrap();
+                        println!("{}", json!({"asked": &peer[..16], "net": net}));
+                        asked = Some((peer, Instant::now()));
+                    }
+                }
+                Some("frame") if h["h"]["op"] == "a" && h["h"]["id"] == 1 => {
+                    let ms = asked.as_ref().map(|a| a.1.elapsed().as_millis());
+                    let body: Value = serde_json::from_slice(&blob).unwrap_or(Value::Null);
+                    println!("{}", json!({"answer_from": h["peer"].as_str().map(|p| &p[..16]), "ms": ms, "head": h["h"], "answers": body}));
+                    break;
+                }
+                Some("hello") | Some("up") | Some("down") => println!("{}", json!({"event": h})),
+                Some("frame") => println!("{}", json!({"other_cr": h["h"], "from": h["peer"].as_str().map(|p| &p[..16]), "blob_len": blob.len()})),
+                _ => {}
+            }
+        }
+    });
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("run") => return cmd_run(args[1..].to_vec()),
         Some("status") => return cmd_status(args[1..].to_vec()),
+        Some("ext-probe") => return cmd_ext_probe(args[1..].to_vec()),
         Some("probe") => {}
         _ => usage(),
     }
