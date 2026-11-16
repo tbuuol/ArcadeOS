@@ -340,7 +340,7 @@ pub fn announce_output(pubkey: &[u8; 32], addr_h160: &[u8], tag: Option<&str>) -
         d.push(t.len() as u8);
         d.extend_from_slice(t.as_bytes());
     }
-    format!("6a{:02x}{}", d.len(), hex::encode(&d))
+    op_return_script(&d)
 }
 
 #[cfg(test)]
@@ -361,5 +361,18 @@ mod tests {
         assert_eq!(&data[4..4 + msg.len()], &msg[..]);
         assert!(data[4 + msg.len()..].iter().all(|b| *b == 0));
         assert_eq!(obfuscation(from, 2)[1], sha256(hex::encode_upper(sha256(from.as_bytes())).as_bytes()));
+    }
+
+    /// Ankuendigung mit langem @name (80 Bytes) muss als PUSHDATA1 lesbar sein - wie am 2026-11-15 mit @zzmsgtest1
+    #[test]
+    fn announce_long_tag_readable() {
+        for tag in ["ab", "tbuuol", "zzmsgtest1", "abcdefghijkl"] {
+            let s = hex::decode(announce_output(&[9u8; 32], &[1u8; 20], Some(tag))).unwrap();
+            let d = op_return_data(&s).expect("OP_RETURN lesbar");
+            let p = d.strip_prefix(MARKER).unwrap().strip_prefix(&ANYDATA_HEAD).unwrap();
+            let (key, _, _) = announcement(p).expect("Ankuendigung lesbar");
+            assert_eq!(key, hex::encode([9u8; 32]));
+            assert!(p.ends_with(tag.as_bytes()) || d.len() + 2 + tag.len() > 80);
+        }
     }
 }

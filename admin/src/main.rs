@@ -24,6 +24,7 @@ use base64::Engine;
 mod public;
 mod utxo;
 mod msgs;
+mod share;
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use ripemd::Ripemd160;
 use serde_json::{json, Value};
@@ -188,6 +189,16 @@ fn op_return_data(spk: &[u8]) -> Option<Vec<u8>> {
         _ => return None,
     };
     spk.get(at..at + n).map(|s| s.to_vec())
+}
+
+/// Gegenstueck: OP_RETURN mit einem Datenpush. Bis 75 Bytes direkte Laenge, darueber OP_PUSHDATA1 (0x4c) -
+/// sonst waere z. B. 0x50 kein Push, sondern OP_RESERVED, und keine Arcade koennte die Daten lesen.
+fn op_return_script(d: &[u8]) -> String {
+    if d.len() <= 75 {
+        format!("6a{:02x}{}", d.len(), hex::encode(d))
+    } else {
+        format!("6a4c{:02x}{}", d.len(), hex::encode(d))
+    }
 }
 
 // ------------------------------------------------------------------ RPC zum Pepecoin-Knoten
@@ -587,7 +598,7 @@ fn build_claim(app: &App, addr: &str, want: &str) -> Result<Value, (u16, String)
     }
     let tag = check["tag"].as_str().unwrap().to_string();
     let data = tag_data(&tag, KIND_CLAIM);
-    let op_return = format!("6a{:02x}{}", data.len(), hex::encode(&data));
+    let op_return = op_return_script(&data);
     let mut v = fund(app, addr, vec![(0, op_return)], &tag)?;
     v["tag"] = json!(tag);
     Ok(v)
@@ -707,6 +718,33 @@ fn owner(app: &App, b: &Value) -> Resp {
     (200, json!({"ok": true}))
 }
 
+/// Was der Betreiber fuer eine Aenderung der Freigaben signiert: "arcadeos-chains\n<Knoten>\n<Zufallszahl>\n" und
+/// je Chain (Reihenfolge von share::CHAINS) "share <net>=1|0" in einer Zeile, durch Leerzeichen getrennt.
+fn chains_message(node: &str, nonce: &str, share: &serde_json::Map<String, Value>) -> String {
+    let parts: Vec<String> = share::CHAINS.iter().map(|c| format!("{}={}", c.net, if share.get(c.net).and_then(Value::as_bool) == Some(true) { 1 } else { 0 })).collect();
+    format!("arcadeos-chains\n{node}\n{nonce}\nshare {}", parts.join(" "))
+}
+
+/// Freigaben aendern: nur mit der Signatur des Betreiber-Kontos (aus seinem Browser) ueber eine frische Zufallszahl
+fn set_chains(app: &App, b: &Value) -> Resp {
+    let Some(addr) = app.operator_addr() else { return err(409, "noch kein Betreiber") };
+    let (Some(share), Some(nonce), Some(sig)) = (b["share"].as_object(), b["nonce"].as_str(), b["sig"].as_str()) else {
+        return err(400, "share, nonce, sig fehlen");
+    };
+    if app.nonces.lock().unwrap().remove(nonce).is_none() {
+        return err(400, "Zufallszahl unbekannt oder abgelaufen, bitte neu laden");
+    }
+    let Some(node) = app.node_id() else { return err(503, "meshd laeuft nicht") };
+    if !verify_message(sig, &chains_message(&node, nonce, share), &addr) {
+        return err(403, "Signatur passt nicht zum Betreiber-Konto");
+    }
+    if let Err(e) = share::set_share(app, share) {
+        return err(500, &e);
+    }
+    log(&format!("Freigaben geaendert: {}", chains_message("-", "-", share).lines().last().unwrap_or("")));
+    (200, share::status())
+}
+
 fn route(app: &App, method: &str, url: &str, body: &Value) -> Resp {
     let (path, query) = url.split_once('?').unwrap_or((url, ""));
     let path = path.trim_start_matches("/admin/api");
@@ -722,6 +760,8 @@ fn route(app: &App, method: &str, url: &str, body: &Value) -> Resp {
         ("POST", "/claim") => claim(app, body),
         ("POST", "/send") => send(app, body),
         ("POST", "/owner") => owner(app, body),
+        ("GET", "/chains") => (200, share::status()),
+        ("POST", "/chains") => set_chains(app, body),
         _ => err(404, "unbekannt"),
     }
 }
@@ -745,13 +785,19 @@ fn main() {
         .unwrap_or_else(|| json!({"operator": null, "name": "", "pending": null, "owner": null}));
     let index = Index::load(&cfg.state.join("tags.json"));
     let app = Arc::new(App { cfg, index: Mutex::new(index), admin: Mutex::new(admin), nonces: Default::default(), offers: Default::default(), utxo: Default::default(), msgs: Default::default() });
-    app.write_about();
+    // ADMIN_ONLY=share: nur das Teilen (Tests mit eigener meshd-Instanz; keine Indizes)
+    if env("ADMIN_ONLY", "") != "share" {
+        app.write_about();
+        let a = app.clone();
+        std::thread::spawn(move || indexer(a));
+        let a = app.clone();
+        std::thread::spawn(move || utxo::run(a));
+        let a = app.clone();
+        std::thread::spawn(move || msgs::run(a));
+    }
+    // Teilen der Chain-Knoten mit anderen Arcades (standardmaessig nichts; share.rs)
     let a = app.clone();
-    std::thread::spawn(move || indexer(a));
-    let a = app.clone();
-    std::thread::spawn(move || utxo::run(a));
-    let a = app.clone();
-    std::thread::spawn(move || msgs::run(a));
+    std::thread::spawn(move || share::run(a));
     // Oeffentlicher Teil (Konten der Nutzer), eigener Port; Caddy reicht ihn ins Internet
     let a = app.clone();
     let public_listen = env("ADMIN_PUBLIC_LISTEN", "127.0.0.1:8091");

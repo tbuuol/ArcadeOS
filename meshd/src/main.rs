@@ -233,12 +233,13 @@ fn cmd_status(args: Vec<String>) {
     }
 }
 
-/// meshd ext-probe [SOCKET] [NET]: Pruefung der lokalen Schnittstelle (ext.rs) am laufenden meshd. Bestellt `cr`,
+/// meshd ext-probe [SOCKET] [NET] [PEER-PREFIX]: Pruefung der lokalen Schnittstelle (ext.rs) am laufenden meshd. Bestellt `cr`,
 /// sammelt 25 s lang die Angebote (offer) der verbundenen Arcades und fragt die erste, die NET (Standard "test")
 /// teilt, nach getblockcount und getbestblockhash (nur lesen). Gibt eine JSON-Zeile je Ereignis aus.
 fn cmd_ext_probe(args: Vec<String>) {
     let sock = args.first().cloned().unwrap_or_else(|| "/run/meshd/ext.sock".into());
     let net = args.get(1).cloned().unwrap_or_else(|| "test".into());
+    let only = args.get(2).cloned().unwrap_or_default(); // nur diesen Knoten fragen (Anfang seiner Kennung)
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
     rt.block_on(async move {
         use tokio::io::AsyncWriteExt;
@@ -274,9 +275,10 @@ fn cmd_ext_probe(args: Vec<String>) {
                     let nets: Vec<&String> = h["h"]["nets"].as_object().map(|m| m.keys().collect()).unwrap_or_default();
                     println!("{}", json!({"offer": &peer[..16.min(peer.len())], "nets": nets}));
                     offers.insert(peer.clone(), h["h"]["nets"].clone());
-                    if asked.is_none() && h["h"]["nets"].get(&net).is_some() {
+                    if asked.is_none() && peer.starts_with(&only) && h["h"]["nets"].get(&net).is_some() {
                         let q = json!({"t": "cr", "op": "q", "id": 1, "net": net, "seq": 0, "end": true});
-                        let calls = br#"[["getblockcount",[]],["getbestblockhash",[]]]"#;
+                        let calls = std::env::var("MESHD_PROBE_CALLS").unwrap_or_else(|_| r#"[["getblockcount",[]],["getbestblockhash",[]]]"#.into());
+                        let calls = calls.as_bytes();
                         w.write_all(&ext::encode(&json!({"op": "send", "peer": peer, "h": q}), calls)).await.unwrap();
                         println!("{}", json!({"asked": &peer[..16], "net": net}));
                         asked = Some((peer, Instant::now()));
